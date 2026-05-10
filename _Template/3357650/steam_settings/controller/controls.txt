@@ -1,0 +1,4 @@
+AxisL=LJOY=joystick_move
+AxisR=RJOY=joystick_move
+AnalogL=LTRIGGER=trigger
+AnalogR=RTRIGGER=trigger

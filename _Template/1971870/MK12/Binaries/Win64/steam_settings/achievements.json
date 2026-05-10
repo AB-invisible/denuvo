@@ -1,0 +1,402 @@
+[
+  {
+    "description": "Ukończ samouczek podstawowy",
+    "displayName": "Zostań ninja w mgnieniu oka",
+    "hidden": 0,
+    "icon": "achievement_images/0ca3fd6890fb2b0f05ba686627b602d3cc37eba8.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "08DC9D95"
+  },
+  {
+    "description": "Spędź 1 godzinę w trybie treningu",
+    "displayName": "Oko TaiGora",
+    "hidden": 0,
+    "icon": "achievement_images/e0e72a6e20c69df2e422e151c3679f0668e2222b.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "968797EF"
+  },
+  {
+    "description": "Ukończ 50% części 1 trybu fabularnego",
+    "displayName": "Nowa linia czasu",
+    "hidden": 0,
+    "icon": "achievement_images/6ff6f37fbd81c6ec318ced3cd744a1ab17477c48.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "FD51A4B8"
+  },
+  {
+    "description": "Ukończ 100% części 1 trybu fabularnego",
+    "displayName": "Co się właśnie stało??",
+    "hidden": 0,
+    "icon": "achievement_images/62a6b5e8e7c9f4bd4b1bd3049b73847e6349acfd.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "6054139B"
+  },
+  {
+    "description": "Ukończ rozdział 15 dwukrotnie",
+    "displayName": "Kto to był???",
+    "hidden": 0,
+    "icon": "achievement_images/5bba793994096221ce7aea99e715ab83ec59b947.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "5BE04C6D"
+  },
+  {
+    "description": "Zadaj 10 000 pkt. obrażeń przeciwnikom",
+    "displayName": "Tytani",
+    "hidden": 0,
+    "icon": "achievement_images/eada11e2faaf3113d28cb0a9a2d41ed5ebb6da3d.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "31F43485"
+  },
+  {
+    "description": "Rozlej 5 000 pint krwi",
+    "displayName": "Obić i złamać",
+    "hidden": 0,
+    "icon": "achievement_images/eb3f6e02cf303677d34599b5268eefa87f136738.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "66FFB3DB"
+  },
+  {
+    "description": "Ukończ samouczek rezydencji Cage'a",
+    "displayName": "Zaczęło się!!!",
+    "hidden": 0,
+    "icon": "achievement_images/bcfb5ecb04102027703dd02b56761ffe022d186c.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "C7E206E8"
+  },
+  {
+    "description": "Rozegraj 5 meczy Ligi Kombat",
+    "displayName": "Aspiracja",
+    "hidden": 0,
+    "icon": "achievement_images/e345de2e988f29ea6840ff6b6ba11ad12419f137.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "A9467ADA"
+  },
+  {
+    "description": "Wykonaj 20 różnych Fatality",
+    "displayName": "Niosąc śmierć",
+    "hidden": 0,
+    "icon": "achievement_images/7b3774365c1efd51552115d3856d52472c60f056.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "EB0D4578"
+  },
+  {
+    "description": "Wykonaj 10 różnych Brutality",
+    "displayName": "Rzeź",
+    "hidden": 0,
+    "icon": "achievement_images/608e5dc1e4e51c511806aa50dba9c2bee69f11b6.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "1A4D8C3E"
+  },
+  {
+    "description": "Wykonaj 10 różnych Fatality postaci Kameo",
+    "displayName": "Anihilacja",
+    "hidden": 0,
+    "icon": "achievement_images/f4605a9af2fd21e7addf5b779dfe90887de8026a.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "EDC10C55"
+  },
+  {
+    "description": "Zagraj 10 różnymi postaciami Kameo",
+    "displayName": "Nawiązywanie przyjaźni to łatwizna",
+    "hidden": 0,
+    "icon": "achievement_images/a1d1c6d7e2a2fa24b45d0dccc548bf39ee50fc7f.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "2E7840DA"
+  },
+  {
+    "description": "Ukończ Wieżę Klasyczną 5 różnymi postaciami",
+    "displayName": "Mistrzowie marionetek",
+    "hidden": 0,
+    "icon": "achievement_images/8740abdcdf3c5207d0d528e59974c52f968f9943.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "180FA847"
+  },
+  {
+    "description": "Wydaj 10 000 żetonów w Kapliczce",
+    "displayName": "Grosza daj",
+    "hidden": 0,
+    "icon": "achievement_images/132ae58087fb5887a94b3f372d4ef35aedd74b13.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "20745379"
+  },
+  {
+    "description": "Ukończ 5 unikalnych napotkań (sprawdzian siły)",
+    "displayName": "Sprawdzian siły",
+    "hidden": 0,
+    "icon": "achievement_images/44201eecb8b29d20ecbd95eea679cd40427c2bc1.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "AD3C819A"
+  },
+  {
+    "description": "Ukończ 5 unikalnych napotkań",
+    "displayName": "Czyli po prostu masakruję??",
+    "hidden": 0,
+    "icon": "achievement_images/4ab957be62c65a7409671ced140f72efca12b9d9.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "02BF389A"
+  },
+  {
+    "description": "Ukończ 25 unikalnych napotkań",
+    "displayName": "Pora na przygodę",
+    "hidden": 0,
+    "icon": "achievement_images/1f67327be35a092479d58d0f1aa5032cbd941645.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "4A34C442"
+  },
+  {
+    "description": "Zdetronizuj władcę",
+    "displayName": "Królobójcy",
+    "hidden": 0,
+    "icon": "achievement_images/914bc1157f9392b8e7f66c4caf0275a325339d15.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "8E211095"
+  },
+  {
+    "description": "Osiągnij mistrzostwo 1 postacią Kameo",
+    "displayName": "Układ kumpelski",
+    "hidden": 0,
+    "icon": "achievement_images/6c5ce85704748c63ed3c57ce5bf7a0fa3660c596.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "5386188E"
+  },
+  {
+    "description": "Osiągnij mistrzostwo 5 postaciami Kameo",
+    "displayName": "Bujając się z ziomkami",
+    "hidden": 0,
+    "icon": "achievement_images/fb3ad04cdd349d7253b2aa8362eef1ac877d831d.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "B697C705"
+  },
+  {
+    "description": "Kup przedmiot w sklepie Pozaświata",
+    "displayName": "Gdzie jest Blanche",
+    "hidden": 0,
+    "icon": "achievement_images/21682870d8af49143f1c296076c60292a01a2f08.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "7A28A4B6"
+  },
+  {
+    "description": "Kup przedmiot w sklepie Ziemskiego Wymiaru",
+    "displayName": "Bierz i odbieraj",
+    "hidden": 0,
+    "icon": "achievement_images/44f7da5eefdd1b8ca68896a6a1e5602da54013b1.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "A51459F2"
+  },
+  {
+    "description": "Wykorzystaj talizman",
+    "displayName": "Potęga ostateczna",
+    "hidden": 0,
+    "icon": "achievement_images/45fd91e91ff1d7bcfc3dd431c0ef0a90b58145b2.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "92963123"
+  },
+  {
+    "description": "Wykorzystaj talizman 10 razy",
+    "displayName": "Taliz-Mania",
+    "hidden": 0,
+    "icon": "achievement_images/d419dbfd7889767155cdaeff48ba181416ebbafe.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "E9EC214C"
+  },
+  {
+    "description": "Naładuj talizman",
+    "displayName": "Na pustym baku",
+    "hidden": 0,
+    "icon": "achievement_images/e34ebe9a08109e142ead6ea70c0636c431e43a1c.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "2D2A1BCC"
+  },
+  {
+    "description": "Wykuj talizman",
+    "displayName": "Taka zręczność",
+    "hidden": 0,
+    "icon": "achievement_images/339703bc01cd08375ebe5d2123f7b0bc0298935d.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "C500AC22"
+  },
+  {
+    "description": "Osiągnij 5 poziom w Inwazjach",
+    "displayName": "Czując siłę",
+    "hidden": 0,
+    "icon": "achievement_images/c2415bd423c063f2ca70d7c2f4836b302964ded8.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "F0F609FE"
+  },
+  {
+    "description": "Osiągnij 10 poziom w Inwazjach",
+    "displayName": "Nie do powstrzymania",
+    "hidden": 0,
+    "icon": "achievement_images/25c3b71096d4d2d401e4595a137c4be99aa8fd44.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "E5E57ED0"
+  },
+  {
+    "description": "Osiągnij 20 poziom w Inwazjach",
+    "displayName": "Niszczycielska siła",
+    "hidden": 0,
+    "icon": "achievement_images/0de937d798ac316a52197b3ad3dcc3db8654ea75.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "DA30DFAB"
+  },
+  {
+    "description": "Pokonaj mini bossa w Inwazjach",
+    "displayName": "Już nie taki straszny, co??",
+    "hidden": 0,
+    "icon": "achievement_images/70c2dc42d230da9cbaa3ab581fb0c3fe709d680f.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "3F5D5C9C"
+  },
+  {
+    "description": "Pokonaj głównego bossa w Inwazjach",
+    "displayName": "Kto jest debeściak??",
+    "hidden": 0,
+    "icon": "achievement_images/e16b3a3cb3415c8b848e7adf24e1e46987a0a45d.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "F8F2646E"
+  },
+  {
+    "description": "Pokonaj ostatecznego bossa w sezonie Inwazji",
+    "displayName": "Triumf",
+    "hidden": 0,
+    "icon": "achievement_images/c2bc85ee2936c7b24315bd54bfb3bc1efcf55d58.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "B1DD915B"
+  },
+  {
+    "description": "Wyposaż relikt",
+    "displayName": "Nie zapomnij o dodatkach",
+    "hidden": 0,
+    "icon": "achievement_images/5ea64a0549273feaeb26539b4fcea67b954fee6c.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "7F452FCB"
+  },
+  {
+    "description": "Wyposaż 3 różne relikty",
+    "displayName": "Kollector",
+    "hidden": 0,
+    "icon": "achievement_images/c94a3f89e00e535f8ee70e622a004a633bbc4acf.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "3860DC56"
+  },
+  {
+    "description": "Ukończ walkę z tytanem",
+    "displayName": "Upadek z wielkości",
+    "hidden": 0,
+    "icon": "achievement_images/f9eab6d068bc6052ea3844411b6932b5561b7185.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "1B67450A"
+  },
+  {
+    "description": "Użyj klucza",
+    "displayName": "ABACABB",
+    "hidden": 0,
+    "icon": "achievement_images/b6f97bfce06107f48b651647357080d65475207e.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "CED753D4"
+  },
+  {
+    "description": "Ukończ napotkanie (przetrwanie)",
+    "displayName": "Uchodząc z życiem",
+    "hidden": 0,
+    "icon": "achievement_images/8366af54e7ba62bc522327eebe55f5451e6b7c0b.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "C97F8DBD"
+  },
+  {
+    "description": "Usuń przeszkodę w Inwazjach",
+    "displayName": "Z drogi, idę",
+    "hidden": 0,
+    "icon": "achievement_images/dfb1338078f7ef9ca936ab0360efeb7302f1eca9.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "F9F3E277"
+  },
+  {
+    "description": "Odblokuj tajną walkę",
+    "displayName": "Mam cię",
+    "hidden": 0,
+    "icon": "achievement_images/866616383c716af53ec6b20a685ab69c641b67e5.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "3BFFE5C8"
+  },
+  {
+    "description": "Przeżyj zasadzkę",
+    "displayName": "Przestań się ukrywać",
+    "hidden": 0,
+    "icon": "achievement_images/2d063e2fb56889ea3323b2df5c66fc6de76e5966.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "AA5B83E5"
+  },
+  {
+    "description": "Ukończ 3 codzienne zadania",
+    "displayName": "Mistrzowie zadań",
+    "hidden": 0,
+    "icon": "achievement_images/d40836ed59418c1c6136fb5c0f753fb17570bdd2.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "739F481A"
+  },
+  {
+    "description": "Ukończ cotygodniowe zadanie",
+    "displayName": "Nadgodziny",
+    "hidden": 0,
+    "icon": "achievement_images/86918b79d07e9993134c1198aa08d050544b39bb.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "6F78FB2F"
+  },
+  {
+    "description": "Osiągnij wynik 5 000 000 pkt. w Wieże Czasu",
+    "displayName": "Najwyższy wynik, to chyba dobrze?",
+    "hidden": 0,
+    "icon": "achievement_images/7b242acaad93eb4b6ab5a3f9ff768357cbcabb73.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "602D8B93"
+  },
+  {
+    "description": "Wykorzystaj 10 przedmiotów jednorazowych",
+    "displayName": "Każda wiedza to potęga",
+    "hidden": 0,
+    "icon": "achievement_images/e423b6bc32d0e8839abc068bc6df7d0269fa2fe9.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "D26A387E"
+  },
+  {
+    "description": "Odblokuj 10 zakończeń wieży",
+    "displayName": "Radosne zakończenia",
+    "hidden": 0,
+    "icon": "achievement_images/92acd4c76bbfab7ccd374b3c80b0e41b8fc0adc3.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "14F35B3B"
+  },
+  {
+    "description": "Wydaj 10 000 kredytów sezonowych",
+    "displayName": "Rozrzutność",
+    "hidden": 0,
+    "icon": "achievement_images/924acc52cb5c0dd1cb1b3d2f37917f3579b6b573.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "1E981181"
+  },
+  {
+    "description": "Wykonaj drwinę bez przerywania podczas meczu online",
+    "displayName": "Kompletny brak szacunku",
+    "hidden": 0,
+    "icon": "achievement_images/5c7e78e2e3665005b649ef4a51c314c23bfe7886.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "3ED79833"
+  },
+  {
+    "description": "Wyświetl listę twórców",
+    "displayName": "Dziękujemy fanom!!!",
+    "hidden": 0,
+    "icon": "achievement_images/a80b6a42f9a75789971ccdb77383cab8618cb058.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "1741C06F"
+  },
+  {
+    "description": "Zmień wygląd karty walki gracza",
+    "displayName": "Patrz na mnie!!!",
+    "hidden": 0,
+    "icon": "achievement_images/76fb1ea7e759fbf710d1916c5107e7b1dbedff3c.jpg",
+    "icongray": "achievement_images/415ab18fb24d0687e97aabae6887e5e51b4ada5d.jpg",
+    "name": "6E240A1A"
+  }
+]

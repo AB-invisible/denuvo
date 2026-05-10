@@ -1,0 +1,7 @@
+{
+  "coldloader.dll": "coldloader.b80e5f55504c.dll",
+  "GameOverlayRenderer64.dll": "GameOverlayRenderer64.f20d9a87ca0f.dll",
+  "steamclient64.dll": "steamclient64.bb26df893b66.dll",
+  "version.dll": "version.52c74d2f8a5f.dll",
+  "ConSim_Data/Plugins/x86_64/steam_api64.dll": "steam_api64.d48938046d6a.dll"
+}

@@ -1,0 +1,8 @@
+{
+  "coldloader.dll": "coldloader.b80e5f55504c.dll",
+  "dinput8.dll": "dinput8.ff52e455cb53.dll",
+  "GameOverlayRenderer64.dll": "GameOverlayRenderer64.f20d9a87ca0f.dll",
+  "steamclient64.dll": "steamclient64.d95e0f4ef8fa.dll",
+  "version.dll": "version.39d4c1175550.dll",
+  "steam_settings/load_dlls/GameOverlayRenderer64.dll": "GameOverlayRenderer64.8b4203a43c9d.dll"
+}

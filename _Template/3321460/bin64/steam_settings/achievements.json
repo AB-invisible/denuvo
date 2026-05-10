@@ -1,0 +1,274 @@
+[
+  {
+    "description": "Complete chapter 1 of main quests.",
+    "displayName": "Novice Adventurer",
+    "hidden": 0,
+    "icon": "images/c05f04fc5033ff67d2078db084751b45eba3b91d.jpg",
+    "icongray": "images/c05f04fc5033ff67d2078db084751b45eba3b91d.jpg",
+    "name": "ach1"
+  },
+  {
+    "description": "Complete the activation of the camp at Howling Hill.",
+    "displayName": "Master Camper",
+    "hidden": 0,
+    "icon": "images/2df91d42db90145457a0561585d88108054d66f7.jpg",
+    "icongray": "images/2df91d42db90145457a0561585d88108054d66f7.jpg",
+    "name": "ach2"
+  },
+  {
+    "description": "Complete chapter 7 of main quests.",
+    "displayName": "Protector of Pailune",
+    "hidden": 0,
+    "icon": "images/30efce32e45de2979d7405ca7a6df2b5bc957cae.jpg",
+    "icongray": "images/30efce32e45de2979d7405ca7a6df2b5bc957cae.jpg",
+    "name": "ach3"
+  },
+  {
+    "description": "Complete all main quests.",
+    "displayName": "Expert Storyteller",
+    "hidden": 0,
+    "icon": "images/790e5659ae8d8b915e47e57d753080df8724eb98.jpg",
+    "icongray": "images/790e5659ae8d8b915e47e57d753080df8724eb98.jpg",
+    "name": "ach4"
+  },
+  {
+    "description": "Complete all spire challenges.",
+    "displayName": "Conqueror of Spires",
+    "hidden": 0,
+    "icon": "images/9c791e66809413ced99624b9e0fe2ac18d0f1101.jpg",
+    "icongray": "images/9c791e66809413ced99624b9e0fe2ac18d0f1101.jpg",
+    "name": "ach5"
+  },
+  {
+    "description": "Complete all shield challenges.",
+    "displayName": "Master of Shields",
+    "hidden": 0,
+    "icon": "images/3b1df180431b87706ad49798cb1361b9fa5bb6e4.jpg",
+    "icongray": "images/3b1df180431b87706ad49798cb1361b9fa5bb6e4.jpg",
+    "name": "ach6"
+  },
+  {
+    "description": "Complete all sword challenges.",
+    "displayName": "Master of Swords",
+    "hidden": 0,
+    "icon": "images/076ddb13bb16683a13fff314b792314a133a0ded.jpg",
+    "icongray": "images/076ddb13bb16683a13fff314b792314a133a0ded.jpg",
+    "name": "ach7"
+  },
+  {
+    "description": "Complete all spear challenges.",
+    "displayName": "Master of Spears",
+    "hidden": 0,
+    "icon": "images/257444acc5d9411a3d3324d7cc8b814de492a070.jpg",
+    "icongray": "images/257444acc5d9411a3d3324d7cc8b814de492a070.jpg",
+    "name": "ach8"
+  },
+  {
+    "description": "Complete all sanctum challenges.",
+    "displayName": "Lightbringer",
+    "hidden": 0,
+    "icon": "images/99d2b0f01339cfe3937e4e92652f0e65417eb3d4.jpg",
+    "icongray": "images/99d2b0f01339cfe3937e4e92652f0e65417eb3d4.jpg",
+    "name": "ach9"
+  },
+  {
+    "description": "Complete all maze challenges.",
+    "displayName": "Maze Pathfinder",
+    "hidden": 0,
+    "icon": "images/119768c5fce4b96db3c8a45c5b918f75844c1d2d.jpg",
+    "icongray": "images/119768c5fce4b96db3c8a45c5b918f75844c1d2d.jpg",
+    "name": "ach10"
+  },
+  {
+    "description": "Complete all constellation challenges.",
+    "displayName": "Navigator of the Stars",
+    "hidden": 0,
+    "icon": "images/6abf780b94efe545a78862dd886ab29012e126e2.jpg",
+    "icongray": "images/6abf780b94efe545a78862dd886ab29012e126e2.jpg",
+    "name": "ach11"
+  },
+  {
+    "description": "Complete all bow challenges.",
+    "displayName": "Master of Bows",
+    "hidden": 0,
+    "icon": "images/8c3495c4c5e0a4ae6f4475aca2cf2a0210c9b92c.jpg",
+    "icongray": "images/8c3495c4c5e0a4ae6f4475aca2cf2a0210c9b92c.jpg",
+    "name": "ach12"
+  },
+  {
+    "description": "Complete all cannon challenges.",
+    "displayName": "Master of Artillery",
+    "hidden": 0,
+    "icon": "images/7cbe129dc0bb025e7bfc7dc4913b52559eff2eaf.jpg",
+    "icongray": "images/7cbe129dc0bb025e7bfc7dc4913b52559eff2eaf.jpg",
+    "name": "ach13"
+  },
+  {
+    "description": "Complete all operation challenges.",
+    "displayName": "Brilliant Tactician",
+    "hidden": 0,
+    "icon": "images/625609b8e7ba322dc2135986505ce3713fbb1dbb.jpg",
+    "icongray": "images/625609b8e7ba322dc2135986505ce3713fbb1dbb.jpg",
+    "name": "ach14"
+  },
+  {
+    "description": "Complete all New Power challenges.",
+    "displayName": "Beast Slayer",
+    "hidden": 0,
+    "icon": "images/385743dbdbce3c3d363191a279e557a95f3f6848.jpg",
+    "icongray": "images/385743dbdbce3c3d363191a279e557a95f3f6848.jpg",
+    "name": "ach15"
+  },
+  {
+    "description": "Complete all Challenges and Changes challenges.",
+    "displayName": "Lord of Honor",
+    "hidden": 0,
+    "icon": "images/dd97c5172615b7176bd786ef086c89446238f02a.jpg",
+    "icongray": "images/dd97c5172615b7176bd786ef086c89446238f02a.jpg",
+    "name": "ach16"
+  },
+  {
+    "description": "Complete all secret place challenges.",
+    "displayName": "Pilgrim of Wonders",
+    "hidden": 0,
+    "icon": "images/5e61be52f0a5f57b48c3e28df350927ecc5fb25f.jpg",
+    "icongray": "images/5e61be52f0a5f57b48c3e28df350927ecc5fb25f.jpg",
+    "name": "ach17"
+  },
+  {
+    "description": "Complete all ancient ruins challenges.",
+    "displayName": "Puzzle Solver",
+    "hidden": 0,
+    "icon": "images/0482a83ab0498e6cce5f95027ab58c2c9ca4d2d3.jpg",
+    "icongray": "images/0482a83ab0498e6cce5f95027ab58c2c9ca4d2d3.jpg",
+    "name": "ach18"
+  },
+  {
+    "description": "Complete all special equipment challenges.",
+    "displayName": "Grand Collector of Arms",
+    "hidden": 0,
+    "icon": "images/1f75d635084e5553ca24e699fa4fbbea2db9b451.jpg",
+    "icongray": "images/1f75d635084e5553ca24e699fa4fbbea2db9b451.jpg",
+    "name": "ach19"
+  },
+  {
+    "description": "Complete all Abyss challenges.",
+    "displayName": "Conqueror of the Abysses",
+    "hidden": 0,
+    "icon": "images/686a3c4abed8551b5de3c9e7cf06d7742bf7a6f8.jpg",
+    "icongray": "images/686a3c4abed8551b5de3c9e7cf06d7742bf7a6f8.jpg",
+    "name": "ach20"
+  },
+  {
+    "description": "Complete all Above the Law challenges.",
+    "displayName": "Shadowlord",
+    "hidden": 0,
+    "icon": "images/3d5bcf197cad22d785aa622a1159a831c18acbd9.jpg",
+    "icongray": "images/3d5bcf197cad22d785aa622a1159a831c18acbd9.jpg",
+    "name": "ach21"
+  },
+  {
+    "description": "Complete all horse challenges.",
+    "displayName": "Tamer of Legends",
+    "hidden": 0,
+    "icon": "images/0ddc1f406a0e400e644f53befb2df3800e2bc0a8.jpg",
+    "icongray": "images/0ddc1f406a0e400e644f53befb2df3800e2bc0a8.jpg",
+    "name": "ach22"
+  },
+  {
+    "description": "Complete all two-handed weapon challenges.",
+    "displayName": "Master of Two-Handed Weapons",
+    "hidden": 0,
+    "icon": "images/69affa1164fe87c2b391b5ccf54e92ad6b09d5d7.jpg",
+    "icongray": "images/69affa1164fe87c2b391b5ccf54e92ad6b09d5d7.jpg",
+    "name": "ach23"
+  },
+  {
+    "description": "Complete all rapier and shield challenges.",
+    "displayName": "Master of Rapiers",
+    "hidden": 0,
+    "icon": "images/aec1f62bdb827b93d02c51a36b13eedbd236bb5e.jpg",
+    "icongray": "images/aec1f62bdb827b93d02c51a36b13eedbd236bb5e.jpg",
+    "name": "ach24"
+  },
+  {
+    "description": "Complete all gun challenges.",
+    "displayName": "Master of Firearms",
+    "hidden": 0,
+    "icon": "images/a28700b6deeca57541ec26322afbdf969f6576e7.jpg",
+    "icongray": "images/a28700b6deeca57541ec26322afbdf969f6576e7.jpg",
+    "name": "ach25"
+  },
+  {
+    "description": "Complete all training challenges.",
+    "displayName": "Relentless Warrior",
+    "hidden": 0,
+    "icon": "images/e4767ae4b05c1ae6e0914947e6bc354284d3baa6.jpg",
+    "icongray": "images/e4767ae4b05c1ae6e0914947e6bc354284d3baa6.jpg",
+    "name": "ach26"
+  },
+  {
+    "description": "Complete all battle challenges.",
+    "displayName": "Battlefield Conqueror",
+    "hidden": 0,
+    "icon": "images/7dfe8c02c6cb6015df9e46c384cfe998ca9d2ae7.jpg",
+    "icongray": "images/7dfe8c02c6cb6015df9e46c384cfe998ca9d2ae7.jpg",
+    "name": "ach27"
+  },
+  {
+    "description": "Complete all trade challenges.",
+    "displayName": "The Golden Merchant",
+    "hidden": 0,
+    "icon": "images/3865607b5e7f544e121f971e3e635b1d30c8a382.jpg",
+    "icongray": "images/3865607b5e7f544e121f971e3e635b1d30c8a382.jpg",
+    "name": "ach28"
+  },
+  {
+    "description": "Complete the camp relocation to Pailune.",
+    "displayName": "Proud Returnee",
+    "hidden": 0,
+    "icon": "images/52e174374d915e41a99d58304b4f98f312192cbc.jpg",
+    "icongray": "images/52e174374d915e41a99d58304b4f98f312192cbc.jpg",
+    "name": "ach29"
+  },
+  {
+    "description": "Complete all minigame challenges.",
+    "displayName": "True Gamer",
+    "hidden": 0,
+    "icon": "images/6a3435f25c05104b43c0b9f0c581cf9e4bc611b2.jpg",
+    "icongray": "images/6a3435f25c05104b43c0b9f0c581cf9e4bc611b2.jpg",
+    "name": "ach30"
+  },
+  {
+    "description": "Complete all hunting challenges.",
+    "displayName": "Ultimate Hunter",
+    "hidden": 0,
+    "icon": "images/aea72c848e3819ce2d1f880c4b72e1be49d9123e.jpg",
+    "icongray": "images/aea72c848e3819ce2d1f880c4b72e1be49d9123e.jpg",
+    "name": "ach31"
+  },
+  {
+    "description": "Complete all life challenges.",
+    "displayName": "Natural Collector",
+    "hidden": 0,
+    "icon": "images/0fd8de88f3ab48b55e74812105b932c81a57e30b.jpg",
+    "icongray": "images/0fd8de88f3ab48b55e74812105b932c81a57e30b.jpg",
+    "name": "ach32"
+  },
+  {
+    "description": "Complete all exploration challenges.",
+    "displayName": "Expert Explorer",
+    "hidden": 0,
+    "icon": "images/eabcf404e3d39552127b70c60f422a515217f825.jpg",
+    "icongray": "images/eabcf404e3d39552127b70c60f422a515217f825.jpg",
+    "name": "ach33"
+  },
+  {
+    "description": "Complete all mastery challenges.",
+    "displayName": "Unvanquished Strategist",
+    "hidden": 0,
+    "icon": "images/90b42713d14ac72b8e87f54342c18e17bb541776.jpg",
+    "icongray": "images/90b42713d14ac72b8e87f54342c18e17bb541776.jpg",
+    "name": "ach34"
+  }
+]

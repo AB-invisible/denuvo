@@ -1,0 +1,6 @@
+{
+  "bin64/coldloader.dll": "coldloader.b80e5f55504c.dll",
+  "bin64/GameOverlayRenderer64.dll": "GameOverlayRenderer64.f20d9a87ca0f.dll",
+  "bin64/steamclient64.dll": "steamclient64.78e8b4dfe18c.dll",
+  "bin64/version.dll": "version.39d4c1175550.dll"
+}

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://schema.railpack.com",
+  "provider": "node",
+  "packages": {
+    "node": "22",
+    "python": "3.11"
+  },
+  "steps": {
+    "install": {
+      "commands": [
+        "npm ci",
+        "python -m ensurepip --upgrade || true",
+        "python -m pip install --no-cache-dir --upgrade pip",
+        "python -m pip install --no-cache-dir --target=/app/python_deps -r requirements.txt"
+      ]
+    },
+    "build": {
+      "inputs": [{ "step": "install" }],
+      "commands": ["npx prisma generate"]
+    }
+  },
+  "deploy": {
+    "startCommand": "npx prisma db push --accept-data-loss && npm run start"
+  }
+}

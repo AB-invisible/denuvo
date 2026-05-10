@@ -1,0 +1,1 @@
+ermaccer            - Creating MK1Hookghostyface          - MK1Hook fork with support for MK12TTH and Inventory unlocking, UE4SS (EHP Edition)Saul, Goldberg      - Cold Client Loader (emulator)tinytth             - MK12TTH and for being a big Mortal Kombat modder :)

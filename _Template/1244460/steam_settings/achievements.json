@@ -1,0 +1,434 @@
+[
+  {
+    "description": "Manually Tranquillise a Dinosaur or reptile",
+    "displayName": "Count Backwards from 5, 4, 3...",
+    "hidden": 0,
+    "icon": "images/26c0a65171bc5fb53c08970e2baffd83c414ad8b.jpg",
+    "icongray": "images/0d6cb38e14f097db8233dd331e6a368c584c3c10.jpg",
+    "name": "ManuallyTranquiliseAReptile"
+  },
+  {
+    "description": "Manually Scan a Dinosaur or reptile",
+    "displayName": "What do we Have Here?",
+    "hidden": 0,
+    "icon": "images/05088fa04c010787d662cdf582fddbd7bc93ce11.jpg",
+    "icongray": "images/9b523e66aec99085e73fdbd1250a7b0cfe6b08bd.jpg",
+    "name": "ManuallyScanAReptile"
+  },
+  {
+    "description": "Complete the first Story Location",
+    "displayName": "Brave New World",
+    "hidden": 0,
+    "icon": "images/fd29e46662a639b2cbb184e913524e81eb1ccacf.jpg",
+    "icongray": "images/e65c2c47c5a20c5f95ba48d2f98f70e2685e400f.jpg",
+    "name": "FirstStoryLocationCompleted"
+  },
+  {
+    "description": "Complete a Research Task",
+    "displayName": "Down in the Laboratory",
+    "hidden": 0,
+    "icon": "images/96e51fe686fd578c7ca10b467e8e0a38030fe528.jpg",
+    "icongray": "images/1969abd24b95eccd861faff8ed4c914d0fd0d563.jpg",
+    "name": "CompleteOnePieceOfResearch"
+  },
+  {
+    "description": "Release a dinosaur",
+    "displayName": "Life Finds a Way",
+    "hidden": 0,
+    "icon": "images/998dfa7c5d273cadd2bbbedaaae9ea1bc7108e48.jpg",
+    "icongray": "images/2a914c1c7f651ba9f4652febd0964f2b06235ea8.jpg",
+    "name": "ReleaseADinosaur"
+  },
+  {
+    "description": "Complete the second Story Location",
+    "displayName": "Washington Complete",
+    "hidden": 0,
+    "icon": "images/104850a0fecb34b45de9be8057f5b785fc47c04a.jpg",
+    "icongray": "images/12a9af2f7935b4b39008a40ab7f62af23711e95e.jpg",
+    "name": "SecondStoryLocationCompleted"
+  },
+  {
+    "description": "Release a Pteranodon",
+    "displayName": "Flapped",
+    "hidden": 1,
+    "icon": "images/5688bcc54ce0a99fc6f445300a5cbfaef2f6d890.jpg",
+    "icongray": "images/d44b8663bcc6784e47876b688001ac202373b8c0.jpg",
+    "name": "ReleasePteranodon"
+  },
+  {
+    "description": "Complete the third Story Location",
+    "displayName": "Pennsylvania Done",
+    "hidden": 0,
+    "icon": "images/92e88ef5424f1eded46ce9226a3d6365aa856d87.jpg",
+    "icongray": "images/f3bae6d8fb96df999a7d10e70c0144397921a640.jpg",
+    "name": "ThirdStoryLocationCompleted"
+  },
+  {
+    "description": "Release a genetically modified dinosaur (excluding cosmetics)",
+    "displayName": "This One is Special",
+    "hidden": 0,
+    "icon": "images/72735e958f6de2e28a78c16ec12104fc5033466a.jpg",
+    "icongray": "images/d68510ff7a52f4175eb15981473ae4d45ba3bda2.jpg",
+    "name": "ReleaseAGeneticallyModifiedDinosaur"
+  },
+  {
+    "description": "Complete the fourth Story Location",
+    "displayName": "Oregon Out",
+    "hidden": 0,
+    "icon": "images/a700d64a5d0780de1ceda3712586351f0d8b5b82.jpg",
+    "icongray": "images/b8e038a8d3d9b1cf67559b99b7e7b3e72661f35a.jpg",
+    "name": "FourthStoryLocationCompleted"
+  },
+  {
+    "description": "Complete any genome to 100%",
+    "displayName": "Prehistoric Perfection",
+    "hidden": 1,
+    "icon": "images/e3d57a0cee2f5453b74e37e6598c3dc8b69c2c8c.jpg",
+    "icongray": "images/27e09bd48fb03e94425e7860b4f7f6de8ad54d58.jpg",
+    "name": "CompleteAGenome"
+  },
+  {
+    "description": "Release a T. rex",
+    "displayName": "So Many Teeth",
+    "hidden": 1,
+    "icon": "images/66d07c063cbbda621bdfd4ff9ecee3fd49a1cec1.jpg",
+    "icongray": "images/47f4adca909534be909c45f37ffa50de5011ac41.jpg",
+    "name": "ReleaseTRex"
+  },
+  {
+    "description": "Complete the fifth Story Location",
+    "displayName": "Entered a New Era",
+    "hidden": 0,
+    "icon": "images/126112c9d9e2edeb73fc796e6171e5c5c8a10d46.jpg",
+    "icongray": "images/0ede97257bf68cc52e0aba78580aba5e8d1c163a.jpg",
+    "name": "FifthStoryLocationCompleted"
+  },
+  {
+    "description": "House at least 50 live dinosaurs on a single map",
+    "displayName": "That's a lot of Dinosaurs",
+    "hidden": 0,
+    "icon": "images/a4a069f2b107ea12bd04bcea2e67caca00f8618e.jpg",
+    "icongray": "images/8dd193bab2002bb6538c1994532c91d03e2972f3.jpg",
+    "name": "FiftySimultaneousDinosaurs"
+  },
+  {
+    "description": "Complete 50% of the Jurassic World Database",
+    "displayName": "Starting a Collection",
+    "hidden": 1,
+    "icon": "images/6be4086b6be9c95f30ac5261d49bbc6c0bab3fd7.jpg",
+    "icongray": "images/d689b83f451960932f1dfef3c667a41d1a2b03c5.jpg",
+    "name": "CompleteFiftyPercentOfTheJurassicWorldDatabase"
+  },
+  {
+    "description": "Have at least 2000 guests in a park",
+    "displayName": "On the Road to Success",
+    "hidden": 0,
+    "icon": "images/f42da4055d460c09efc15df49ee6e9a8e088b5da.jpg",
+    "icongray": "images/0ffccd39cd8c43737d64f63ba5f4204b5ddb9fa2.jpg",
+    "name": "TwoThousandGuests"
+  },
+  {
+    "description": "Release a Mosasaurus",
+    "displayName": "That's No Tadpole",
+    "hidden": 1,
+    "icon": "images/d2f65385053af082fa50a2af0b07d3e7d4c72fc7.jpg",
+    "icongray": "images/c4e582474a175e721c15100c2a1137cd8f2df6fc.jpg",
+    "name": "ReleaseMosasaurus"
+  },
+  {
+    "description": "Bioengineer either of the following Hybrids: Indominus Rex, Indoraptor",
+    "displayName": "This is a Modern Prehistoric Marvel",
+    "hidden": 0,
+    "icon": "images/80b548473e693d9911f56c5c9ad45f893441a0c1.jpg",
+    "icongray": "images/63b2e1c9b9a2776de30a3a4954e13867b096e1c5.jpg",
+    "name": "ReleaseAnIndo"
+  },
+  {
+    "description": "Manually cure a Dinosaur or reptile of a disease",
+    "displayName": "I'm a Doctor",
+    "hidden": 0,
+    "icon": "images/00287dd0272c1c204a428ed9cf22160928253483.jpg",
+    "icongray": "images/df360deeaa37311163a3886bca480cb1c679413e.jpg",
+    "name": "ManuallyMedicateAReptile"
+  },
+  {
+    "description": "Hit a dinosaur or reptile with a tranquiliser dart from a distance of at least 125m",
+    "displayName": "That Wasn't Luck",
+    "hidden": 0,
+    "icon": "images/3c93ff00fd039bd2888f0d9e5a9b55d1b0e3d8ee.jpg",
+    "icongray": "images/05caff340b320483192ed9859af2f8b33b9fbbe4.jpg",
+    "name": "LongShot"
+  },
+  {
+    "description": "Release the following dinosaurs on a single map: Raptor, T. rex, Indominus Rex",
+    "displayName": "Jurassic Showdown",
+    "hidden": 0,
+    "icon": "images/ccabb5bc8c670f284a5a9540cd90d65f5d6ddb99.jpg",
+    "icongray": "images/16c896f9063cd9a73807af095a2dd3208bad0a14.jpg",
+    "name": "JurassicTrio"
+  },
+  {
+    "description": "Reach Logistics level 10 with a staff member",
+    "displayName": "Engineer 1st Class",
+    "hidden": 1,
+    "icon": "images/3e3069b09b8829819b84537f26c19fcebd431014.jpg",
+    "icongray": "images/6b9399ae3dac83a95c31e19693b6f95333220f65.jpg",
+    "name": "ReachEngineeringLevelTen"
+  },
+  {
+    "description": "Get 5 seconds of air time with a ground vehicle (within a 20-second window)",
+    "displayName": "As Light as a Feather",
+    "hidden": 1,
+    "icon": "images/bdf70824261c0af542d42192e30eae5358aa12e3.jpg",
+    "icongray": "images/4e917267f050d13129cec8518faa68b9338ba0f6.jpg",
+    "name": "FiveSecondsAirTime"
+  },
+  {
+    "description": "Reach Genetics level 10 with a staff member",
+    "displayName": "PHD in the Field",
+    "hidden": 1,
+    "icon": "images/69b28cac9ddb58dbc0d44ad69b4df62fe58660fa.jpg",
+    "icongray": "images/c9a04ddadccc81195e6c35f19569c43f56026328.jpg",
+    "name": "ReachScienceLevelTen"
+  },
+  {
+    "description": "Reach Welfare level 10 with a staff member",
+    "displayName": "Veterinary Wonder",
+    "hidden": 1,
+    "icon": "images/d65644fcba361f3b31aaabb10365e1c61c50cd71.jpg",
+    "icongray": "images/54afb0fcb87d4dd73ef47c76f4e311b1d25af884.jpg",
+    "name": "ReachWelfareLevelTen"
+  },
+  {
+    "description": "Complete Jurassic Park (Chaos Theory)",
+    "displayName": "Hold Onto Your Butts",
+    "hidden": 0,
+    "icon": "images/d8fa83c541b494e0515414e8b629c1c6602f1747.jpg",
+    "icongray": "images/f0371c9395911383677bd8df75ec686a79cc361b.jpg",
+    "name": "CompleteJurassicParkOrigins"
+  },
+  {
+    "description": "Complete Isla Sorna: Site B (Chaos Theory)",
+    "displayName": "Where's the Phone?",
+    "hidden": 0,
+    "icon": "images/bc4d33ace178c1903ed9c3172e3e5e6cf532765a.jpg",
+    "icongray": "images/490d6bdc91c7b22ee62414d3cdb0961c4e4dcbd2.jpg",
+    "name": "CompleteJurassicParkThreeOrigins"
+  },
+  {
+    "description": "Complete Challenge 1 (Any difficulty)",
+    "displayName": "Quite the Challenge",
+    "hidden": 0,
+    "icon": "images/7f4c3125310e5d2cccee5015dfc2d2bf0b63a1d5.jpg",
+    "icongray": "images/8bbfc4066ec176fc71799e7d9ba5d0f6c9353b22.jpg",
+    "name": "CompleteChallenge1AnyDifficulty"
+  },
+  {
+    "description": "Complete Jurassic Park: San Diego (Chaos Theory)",
+    "displayName": "Not Making the Same Mistakes Again",
+    "hidden": 0,
+    "icon": "images/a999f850e233a61357c59ed1f33827f9f056df68.jpg",
+    "icongray": "images/461a49085e9a8f426ee93d4f24e803b306501b98.jpg",
+    "name": "CompleteTheLostWorldOrigins"
+  },
+  {
+    "description": "Buy a dinosaur from the Dinosaur Exchange",
+    "displayName": "Pleasure doing business with you",
+    "hidden": 0,
+    "icon": "images/21ab40606ce1cb19c24e78e56eea362ea80616da.jpg",
+    "icongray": "images/6736caf90afe735d1b174a5d907302c29dca951e.jpg",
+    "name": "BoughtADinosaurFromMarketplace"
+  },
+  {
+    "description": "Complete Return to Isla Nublar (Chaos Theory)",
+    "displayName": "Blue is alive!",
+    "hidden": 0,
+    "icon": "images/baf0012bdccb05f153382c99d2ca2fac7d79d264.jpg",
+    "icongray": "images/8b890fbf1077519b77ac0cdb554b59e688c3f7ca.jpg",
+    "name": "CompleteFallenKingdomOrigins"
+  },
+  {
+    "description": "Complete Jurassic World (Chaos Theory)",
+    "displayName": "Open Paddock 9!",
+    "hidden": 0,
+    "icon": "images/e5becc64cb4d83fd2a7c689ab9da4af5d0fdca23.jpg",
+    "icongray": "images/1f79e4af07fbc3268f37afa1623c022185c40e39.jpg",
+    "name": "CompleteJurassicWorldOrigins"
+  },
+  {
+    "description": "Wrangle a Goat",
+    "displayName": "That'll do",
+    "hidden": 1,
+    "icon": "images/c7be5bc745707aaa6a9b558dceed7951d158cae0.jpg",
+    "icongray": "images/c20934235dc24f973b16fbe358b8794d564ba149.jpg",
+    "name": "WrangleAGoat"
+  },
+  {
+    "description": "Complete Challenge 2 (Any difficulty)",
+    "displayName": "Good Job",
+    "hidden": 0,
+    "icon": "images/e89f4bb91d067ba9dafccab55390eb0e792cb2c7.jpg",
+    "icongray": "images/bd27f5dab28d968e84d6052582c649f149c6382d.jpg",
+    "name": "CompleteChallenge2AnyDifficulty"
+  },
+  {
+    "description": "Complete the Biosyn Dominion Campaign",
+    "displayName": "Breakthrough Genetics",
+    "hidden": 0,
+    "icon": "images/5e049e82b11438dd7db880c33f73532aae820933.jpg",
+    "icongray": "images/e3089a71641f08bb786d39687a3b5d9fbea94c62.jpg",
+    "name": "BiosynStoryLocationCompleted"
+  },
+  {
+    "description": "Destroy a Ranger 4x4 through reckless driving",
+    "displayName": "Insurance Claim",
+    "hidden": 1,
+    "icon": "images/16f35647518535ed910dfbf5a077ca97fee82830.jpg",
+    "icongray": "images/386e2d67bdcc05e3003c3db26dc22f7af3b0b3a4.jpg",
+    "name": "DestroyJeepByDriving"
+  },
+  {
+    "description": "Complete Challenge 3 (Any difficulty)",
+    "displayName": "You Did That?",
+    "hidden": 0,
+    "icon": "images/c2e0a68961b97817529e2fb72e48be32d169c26a.jpg",
+    "icongray": "images/34ec156b891ad6c44f87f50f8f1a5e2924ca0667.jpg",
+    "name": "CompleteChallenge3AnyDifficulty"
+  },
+  {
+    "description": "Complete Challenge 4 (Any difficulty)",
+    "displayName": "All Done",
+    "hidden": 0,
+    "icon": "images/609e784eaaa20513fd126f219858ccbf677c9b01.jpg",
+    "icongray": "images/68c35aea6d5bec7ac94d882df7ddf7e3b69cb539.jpg",
+    "name": "CompleteChallenge4AnyDifficulty"
+  },
+  {
+    "description": "Chase away a Rustler",
+    "displayName": "Scram!",
+    "hidden": 0,
+    "icon": "images/98c16dac329dfb517203160283f9c8ed9a47dcf0.jpg",
+    "icongray": "images/66b11f333ce0d5b0c4e0184a1945ed7a9dc60032.jpg",
+    "name": "ChaseAwayARustler"
+  },
+  {
+    "description": "Tranquilise a dinosaur with the Intelligent trait",
+    "displayName": "Clever Girl",
+    "hidden": 0,
+    "icon": "images/842e6fab64dc2931eb0ea46c557b408ca4bef056.jpg",
+    "icongray": "images/c530b5023510349a03f1dd82a77a58fea67df6a6.jpg",
+    "name": "ManuallyTranquiliseAnObservantReptile"
+  },
+  {
+    "description": "Manually Tranquillise an escaped Flying Reptile",
+    "displayName": "Good Aim",
+    "hidden": 0,
+    "icon": "images/13ad85fa125ee47e1361469292e4210bba5bd498.jpg",
+    "icongray": "images/8f391e8b6cfa354cd7a6a45432667b7543b94929.jpg",
+    "name": "ManuallyTranquiliseAnEscapedFlyingReptile"
+  },
+  {
+    "description": "Release at least one of every dinosaur genus in the game",
+    "displayName": "One More for the Sticker Book",
+    "hidden": 0,
+    "icon": "images/97e35781b9e70cfe691e562ec315357cd5539259.jpg",
+    "icongray": "images/5e5df328cb13582e8c860247d5a74c98de8d87d9.jpg",
+    "name": "ReleaseAllSpecies"
+  },
+  {
+    "description": "Complete Challenge 5 (Any difficulty)",
+    "displayName": "Glad That's Over",
+    "hidden": 0,
+    "icon": "images/f17ee91a1ab642d707310b94a9db6fcee1b9973a.jpg",
+    "icongray": "images/f9cb64237490f31dda47ce3c36772e085961037d.jpg",
+    "name": "CompleteChallenge5AnyDifficulty"
+  },
+  {
+    "description": "Complete Challenge 1 (Jurassic difficulty)",
+    "displayName": "That, that was a Challenge",
+    "hidden": 0,
+    "icon": "images/733235f1ea27074cd439a26fb91597cf2e481307.jpg",
+    "icongray": "images/a9a7ba0f4ccfc68c4dfd4ecba2730135b4953a31.jpg",
+    "name": "CompleteChallenge1JurassicDifficulty"
+  },
+  {
+    "description": "Complete Challenge 2 (Jurassic difficulty)",
+    "displayName": "You've Done Well",
+    "hidden": 0,
+    "icon": "images/32d73b42fd54e5db7afe6fa1474ce5e017200476.jpg",
+    "icongray": "images/ed1c9b3a3e8c866f9275694163a9c54303dbe468.jpg",
+    "name": "CompleteChallenge2JurassicDifficulty"
+  },
+  {
+    "description": "Complete California Challenge",
+    "displayName": "Do-you-think-he-saurus?",
+    "hidden": 0,
+    "icon": "images/148333a9cef3dbd3f6dce5403d78af58738b780b.jpg",
+    "icongray": "images/73cf55ab488ba717bdfc6ea73af782fe312681c0.jpg",
+    "name": "CompleteCampaignChallenge5AnyDifficulty"
+  },
+  {
+    "description": "Complete 100% of the Jurassic World Database",
+    "displayName": "I Can See Everything",
+    "hidden": 1,
+    "icon": "images/6159c809f97b577045d73c7aefa3729935b4ad53.jpg",
+    "icongray": "images/05ecd215186dba06a62a80ece5b6917514cd9c96.jpg",
+    "name": "CompleteOneHundredPercentOfTheJurassicWorldDatabase"
+  },
+  {
+    "description": "Complete Challenge 3 (Jurassic difficulty)",
+    "displayName": "Was That Tough?",
+    "hidden": 0,
+    "icon": "images/cafc001e04b67d3ae17cf06f2ec353ea8f30b5d9.jpg",
+    "icongray": "images/b92ec56286aaa2053bc0883a068a04f1a6e5bd14.jpg",
+    "name": "CompleteChallenge3JurassicDifficulty"
+  },
+  {
+    "description": "Complete Challenge 4 (Jurassic difficulty)",
+    "displayName": "Challenge Your Limits",
+    "hidden": 0,
+    "icon": "images/c2640ce8729e0c795a1a8c927468cccc928cd292.jpg",
+    "icongray": "images/93c880e9c2a9370401962e90fd1ed1d4e447e409.jpg",
+    "name": "CompleteChallenge4JurassicDifficulty"
+  },
+  {
+    "description": "Rehabilitate 5 dinosaurs with Psychological Trauma",
+    "displayName": "Dinosaur whisperer",
+    "hidden": 0,
+    "icon": "images/a8084b4368bb64a60d1d7efff5584e90e0998cfa.jpg",
+    "icongray": "images/5b7c1d05d1eb98d27ebd79a2d659ab1245da6bfb.jpg",
+    "name": "CuredFiveTraumaticStressDinosaurs"
+  },
+  {
+    "description": "Complete Challenge 5 (Jurassic difficulty)",
+    "displayName": "You Call That a Challenge?",
+    "hidden": 0,
+    "icon": "images/9e1cae7105482f49de398b3cec9c3786e68584cb.jpg",
+    "icongray": "images/18e4a6158f8543e76debd1a6832c19367f868af0.jpg",
+    "name": "CompleteChallenge5JurassicDifficulty"
+  },
+  {
+    "description": "Wrangle 30 dinosaurs at once",
+    "displayName": "Head 'em up, move 'em out",
+    "hidden": 0,
+    "icon": "images/7f950deddd8ef79c356f4b63951fcbce45610726.jpg",
+    "icongray": "images/e957931944a08aaa1f61d9e3defed1f655517ef7.jpg",
+    "name": "Wrangle30Dinosaurs"
+  },
+  {
+    "description": "Reach max trust with Authorities and Underground",
+    "displayName": "You can't engineer loyalty",
+    "hidden": 0,
+    "icon": "images/6e36effe12caa520b8e9382e6210e74ab93531d0.jpg",
+    "icongray": "images/2ede9ed78c8957972fcc908c90ee1f545beead58.jpg",
+    "name": "ReachedMaxTrust"
+  },
+  {
+    "description": "Reach 5 stars on all Malta Campaign islands",
+    "displayName": "Cabot Finch's dream",
+    "hidden": 0,
+    "icon": "images/623174e09080ba965158c80c93e31bd163bed643.jpg",
+    "icongray": "images/a9a54cc6ef77186e4faf73b52083d9766ae1b558.jpg",
+    "name": "FiveStarredMaltaIslands"
+  }
+]

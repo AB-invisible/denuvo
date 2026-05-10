@@ -1,0 +1,458 @@
+[
+  {
+    "description": "Discovered a collection item.",
+    "displayName": "Traces of a Stranger",
+    "hidden": 0,
+    "icon": "images/9f79a910befc5af75c2808b4fd8baaede9468227.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Mission_17"
+  },
+  {
+    "description": "Used a consumable for the first time.",
+    "displayName": "Combat Essentials",
+    "hidden": 0,
+    "icon": "images/edc01c22f6efa98a4af3d791230db9616d6f2802.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Mission_14"
+  },
+  {
+    "description": "Upgraded a stat.",
+    "displayName": "Upgrade Stats",
+    "hidden": 0,
+    "icon": "images/35ee2f466063dd13ca4e013373afc03f317bcc9e.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Mission_06"
+  },
+  {
+    "description": "Retrieved Lacrima using the power of the ghost.",
+    "displayName": "Tears of the Soul",
+    "hidden": 0,
+    "icon": "images/8f37adba3f0f1049613f383009e0263d2d0139c6.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Mission_01"
+  },
+  {
+    "description": "Used a brutal attack.",
+    "displayName": "Finishing Strike",
+    "hidden": 0,
+    "icon": "images/86658e989be73c06b2f97db3c182bdc99bec20fd.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Skill_01"
+  },
+  {
+    "description": "Defeated an enemy using a breakfall.",
+    "displayName": "Ambush",
+    "hidden": 0,
+    "icon": "images/b31dc6834ccc04008ecf157a4394663c1127bedc.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Skill_03"
+  },
+  {
+    "description": "Learned a combat skill.",
+    "displayName": "Skilled Combatant",
+    "hidden": 0,
+    "icon": "images/432ff5020676f43fe9c5270a99becf8ff5e73c91.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Mission_13"
+  },
+  {
+    "description": "Equipped a piece of gear in every slot.",
+    "displayName": "Fully Equipped",
+    "hidden": 0,
+    "icon": "images/32ff804a03360fe374b73d154a938088208f80e8.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Mission_19"
+  },
+  {
+    "description": "Used the javelin.",
+    "displayName": "Piercing Power",
+    "hidden": 0,
+    "icon": "images/0d03701fffa37b9e1f5141cca3ae15cf5dfc0fb0.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Skill_04"
+  },
+  {
+    "description": "Defeated Yetuga.",
+    "displayName": "Ruler of the Frozen Mountain",
+    "hidden": 1,
+    "icon": "images/653af8ab9ee57dd9c85411391f3705e2c9f507b3.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Boss_01"
+  },
+  {
+    "description": "Defeated Blade Phantom.",
+    "displayName": "Netherworld's Phantom of Combat",
+    "hidden": 1,
+    "icon": "images/9261d3220d2cef99f8cd4c9261184f979186d48d.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Boss_02"
+  },
+  {
+    "description": "Obtained a special scroll.",
+    "displayName": "Special Scroll",
+    "hidden": 0,
+    "icon": "images/b82902e94ee1e8faa08c9e5372ec97d5c29d264a.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Mission_15"
+  },
+  {
+    "description": "Upgraded abilities by unleashing the power of Soulstones.",
+    "displayName": "Soulstone Unleashed",
+    "hidden": 0,
+    "icon": "images/b772151285f92f42bf6f573c715fdb8d3e6f5358.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Mission_11"
+  },
+  {
+    "description": "Woke a dormant ghost from its slumber.",
+    "displayName": "Awakened Ghost",
+    "hidden": 0,
+    "icon": "images/bf36c763eb68e9049c6d5bfe7d9033492ff7c6dd.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Mission_10"
+  },
+  {
+    "description": "Had Oksana extract Lacrima.",
+    "displayName": "Remnants of the Soul",
+    "hidden": 0,
+    "icon": "images/27ebb6878e853feaccb23a23017af3dcc3acecd3.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Mission_05"
+  },
+  {
+    "description": "Defeated Viper.",
+    "displayName": "Berserk Dragon's General",
+    "hidden": 1,
+    "icon": "images/ccdafa841e99c20765c3ee6aacf39d29961788be.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Boss_03"
+  },
+  {
+    "description": "Summoned a wandering soul of the rift.",
+    "displayName": "Wandering Soul",
+    "hidden": 0,
+    "icon": "images/b4b25a22310a8e7f225dcc229c64d170ddf1430a.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Mission_18"
+  },
+  {
+    "description": "Defeated Volbaino.",
+    "displayName": "Fallen Guardian",
+    "hidden": 1,
+    "icon": "images/8265311cd9f0a259f1829e8b3930251dc3643dd4.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Boss_04"
+  },
+  {
+    "description": "Found one of Danjin's jarlings.",
+    "displayName": "Danjin's Jars",
+    "hidden": 0,
+    "icon": "images/6be3ca13d7a582d46aa40650314f19f2676c99fd.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Mission_12"
+  },
+  {
+    "description": "Defeated Aratra.",
+    "displayName": "Origin of the Mutation",
+    "hidden": 1,
+    "icon": "images/903a1a4de40b82a69be2187bbf16aa82855bec57.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Boss_05"
+  },
+  {
+    "description": "Purchased an item from Duimuk.",
+    "displayName": "Resourceful Merchant",
+    "hidden": 0,
+    "icon": "images/393472acbf93ceb0c45911330488d716c4944b1e.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Mission_08"
+  },
+  {
+    "description": "Had Qazumaka dismantle gear.",
+    "displayName": "Blacksmith's Resolve",
+    "hidden": 0,
+    "icon": "images/0a4a91722d8a416e20e840e04932172230f9be48.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Mission_03"
+  },
+  {
+    "description": "Defeated Rangkus.",
+    "displayName": "Slayer in the Citadel",
+    "hidden": 1,
+    "icon": "images/80fde1420edf0d03ebfe3cd9ddd1114c9b49e142.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Boss_06"
+  },
+  {
+    "description": "Formed a pact with Blade Phantom.",
+    "displayName": "Pact",
+    "hidden": 0,
+    "icon": "images/2b88860a16db0cd7cf9193c2a277f60091bf2fa7.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Skill_02"
+  },
+  {
+    "description": "Defeated Maluca.",
+    "displayName": "Consumed by Chaos",
+    "hidden": 1,
+    "icon": "images/cdcb9cf049a02e57715ea21b93e67b6c90e7ba3e.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Boss_07"
+  },
+  {
+    "description": "Crafted a special item.",
+    "displayName": "Artisanship",
+    "hidden": 0,
+    "icon": "images/71d57af903cc56329b0cfc19fb17689c9785f56e.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Mission_16"
+  },
+  {
+    "description": "Had Qazumaka craft gear.",
+    "displayName": "Skilled Blacksmith",
+    "hidden": 0,
+    "icon": "images/09c097efeb0b8225ee490d5d6d3ecbc6b2a5d0d4.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Mission_02"
+  },
+  {
+    "description": "Allowed Xilence to find peace at last.",
+    "displayName": "Human Xilence",
+    "hidden": 1,
+    "icon": "images/6ff8912e0e3f79bfcd14935a31f9a7c9a0105c4f.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Sub_08"
+  },
+  {
+    "description": "Defeated Elamein.",
+    "displayName": "No Turning Back",
+    "hidden": 1,
+    "icon": "images/24ff2281798d683d68155c96ef56da6e7ebd4fae.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Boss_08"
+  },
+  {
+    "description": "Sold an item to Duimuk.",
+    "displayName": "Merchant's Wisdom",
+    "hidden": 0,
+    "icon": "images/cf02b08e5cd3e30833d1a754c2403744da081bf5.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Mission_09"
+  },
+  {
+    "description": "Had Oksana alter attributes.",
+    "displayName": "Kaleido",
+    "hidden": 0,
+    "icon": "images/2065658e59039a405dc98eecf4b2fc3268b339eb.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Mission_04"
+  },
+  {
+    "description": "Defeated Shactuka.",
+    "displayName": "Linon's Beast",
+    "hidden": 1,
+    "icon": "images/857d78420bef7ea38bd2752f2142e75ba1137b1c.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Boss_09"
+  },
+  {
+    "description": "Augmented gear.",
+    "displayName": "Indomitable",
+    "hidden": 0,
+    "icon": "images/0f8423275a1dc943a67f01b7fe6e4b29ce8576e4.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Mission_07"
+  },
+  {
+    "description": "Rescued the wrongfully accused subordinates.",
+    "displayName": "Desperate Escape",
+    "hidden": 1,
+    "icon": "images/11e00e214225fa0c2b6df912e74567b4a6dbe68d.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Sub_04"
+  },
+  {
+    "description": "Defeated Trokka.",
+    "displayName": "Return of the Witch",
+    "hidden": 1,
+    "icon": "images/a46f542a4c102b452ccac893b310f8a88ab956f8.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Boss_10"
+  },
+  {
+    "description": "Defeated Bellerian.",
+    "displayName": "Hermit",
+    "hidden": 1,
+    "icon": "images/03c4d44ca3636f62641cac535e7383b77b71bb0d.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Boss_11"
+  },
+  {
+    "description": "Defeated Skalpel.",
+    "displayName": "Bloodthirsty Fiend",
+    "hidden": 1,
+    "icon": "images/3ffa1476c7a58f379da90aa52af965c70e1f4bf6.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Boss_12"
+  },
+  {
+    "description": "Overcame the trial of the sword.",
+    "displayName": "Trial of the Sword",
+    "hidden": 1,
+    "icon": "images/56e5ed78b37b964b29165fe6e771d7af15bfbaa9.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Sub_07"
+  },
+  {
+    "description": "Defeated Princess Ilyna.",
+    "displayName": "Tragedy of Pell Los",
+    "hidden": 1,
+    "icon": "images/64064243dd914b762c6d9916905a229bce68eb7f.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Boss_13"
+  },
+  {
+    "description": "Defeated Hismar.",
+    "displayName": "Hismar the Berserk Dragon",
+    "hidden": 1,
+    "icon": "images/3f00a3ba030614d909071b49eda25d4a09f9b297.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Boss_14"
+  },
+  {
+    "description": "Discovered the fate of Princess Ilyna and Skalpel.",
+    "displayName": "The Order",
+    "hidden": 1,
+    "icon": "images/3150937ce71589298b19d7fff9944c551acac35e.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Sub_01"
+  },
+  {
+    "description": "Unveiled the mysteries of El Ravaca's laboratory.",
+    "displayName": "The Hidden Laboratory",
+    "hidden": 1,
+    "icon": "images/a54e1e3ee79e9c6dcc0e780d570cbc4b66a62917.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Sub_03"
+  },
+  {
+    "description": "Obtained Charon's Chains.",
+    "displayName": "Tool of the Netherworld",
+    "hidden": 1,
+    "icon": "images/100db12f344684eef6275fa4f9c6a23cca15c55c.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Sub_06"
+  },
+  {
+    "description": "Learned of Yulian and Tristan's story.",
+    "displayName": "Undying Loyalty",
+    "hidden": 1,
+    "icon": "images/ffb429b1eb74e4921c675375971e298f20bcd25a.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Sub_09"
+  },
+  {
+    "description": "Defeated Reese.",
+    "displayName": "Faded Memories",
+    "hidden": 1,
+    "icon": "images/f8bae709e1e8334a474bf3c1e8b213480c4d461b.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Boss_15"
+  },
+  {
+    "description": "Learned of Andell and Seona's story.",
+    "displayName": "Traces of Two",
+    "hidden": 1,
+    "icon": "images/ac23f51fbbdc15717d4068d78b5bbd0be28e1ff4.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Sub_02"
+  },
+  {
+    "description": "Uncovered Reese's past.",
+    "displayName": "Reese's Past",
+    "hidden": 1,
+    "icon": "images/da96a6d94a7aecabb173dda9e62f81d6e94c044c.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Sub_05"
+  },
+  {
+    "description": "Reached the ending.",
+    "displayName": "The Challenger's Journey",
+    "hidden": 0,
+    "icon": "images/5b5e49750494d5f9af7450155905c57bef64d001.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Ending_01"
+  },
+  {
+    "description": "Completed all bonus missions.",
+    "displayName": "Countless Tales",
+    "hidden": 0,
+    "icon": "images/1bb4fcc131c8285f276308207aac5b316f1f43c3.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Sub_10"
+  },
+  {
+    "description": "Learned about Digor's hidden past.",
+    "displayName": "The Bard's Lamentations",
+    "hidden": 1,
+    "icon": "images/9abc501ea487873022103b673669cc692f968d16.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Complete_01"
+  },
+  {
+    "description": "Reached the ending after a difficult journey.",
+    "displayName": "The Expert's Journey",
+    "hidden": 0,
+    "icon": "images/183ae2b8752e041eb1080efe59754b4ce2e793e3.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Ending_02"
+  },
+  {
+    "description": "Embarked on the second journey.",
+    "displayName": "A New Path",
+    "hidden": 0,
+    "icon": "images/75bb9e0a787f2c5ac434ed1112e4ec30d5398aa6.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Mission_20"
+  },
+  {
+    "description": "Discovered the truth about Ozma.",
+    "displayName": "Ozma's Past",
+    "hidden": 1,
+    "icon": "images/bf5bedab3fc771579ba08a01256ec76ee902dd6d.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Complete_04"
+  },
+  {
+    "description": "Reached the ending without summoning a Spirit of Advocacy.",
+    "displayName": "Standing Alone",
+    "hidden": 0,
+    "icon": "images/b8f8f08de9b7aa8ec6e120445deb343f3eab1a10.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Complete_05"
+  },
+  {
+    "description": "Found all of Danjin's jarlings.",
+    "displayName": "Jar Enthusiast",
+    "hidden": 1,
+    "icon": "images/3cd27e4609b5962ca90e8d15e00a83a5cde25a54.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Complete_02"
+  },
+  {
+    "description": "Reached 'THE FIRST BERSERKER' ending.",
+    "displayName": "THE FIRST BERSERKER",
+    "hidden": 1,
+    "icon": "images/3b333722a69ca117d80ce1a61649db2bb87bdb92.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Ending_03"
+  },
+  {
+    "description": "Destroyed every Soulstone.",
+    "displayName": "Agent of the Netherworld",
+    "hidden": 1,
+    "icon": "images/6a1a1fa7d75d65752f4b690708a730dff247c2f0.jpg",
+    "icongray": "images/8767da4f8b9dbedd396df556ca2919b033c2e489.jpg",
+    "name": "Complete_03"
+  }
+]

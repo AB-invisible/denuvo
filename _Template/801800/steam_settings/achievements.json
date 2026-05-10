@@ -1,0 +1,362 @@
+[
+  {
+    "description": "Pick up the metal detector",
+    "displayName": "Detectorist",
+    "hidden": 0,
+    "icon": "images/471adf3a3daa8030cf40f9a72ac1cccbcde34571.jpg",
+    "icongray": "images/ae3a8819447093e25328e6d2d07b47d6de159c9d.jpg",
+    "name": "14"
+  },
+  {
+    "description": "Unlock the Interchange",
+    "displayName": "The Interchange",
+    "hidden": 1,
+    "icon": "images/66f8dbfda08171e9d6f1b9735430547e930091b0.jpg",
+    "icongray": "images/93957d2506cf5eab590291b50e299fd71b305753.jpg",
+    "name": "07"
+  },
+  {
+    "description": "Find 5 traders in the Quarantine Zone",
+    "displayName": "Mate's Rates",
+    "hidden": 0,
+    "icon": "images/3c7aaf721b47ae3f5724982e93bf5c3b23edfbf4.jpg",
+    "icongray": "images/7ba082c3b05c4ce9eee0a7aaffe77a29e05a65e8.jpg",
+    "name": "19"
+  },
+  {
+    "description": "Power up Data Store Charlie",
+    "displayName": "Charlie",
+    "hidden": 1,
+    "icon": "images/e9aba0e8d0afdc84a9e63b4a28ed112876dd80c1.jpg",
+    "icongray": "images/2a484e2261c6f9c16e7ee44871429ef4d7b538e2.jpg",
+    "name": "10"
+  },
+  {
+    "description": "Extract the battery from an overheating robot",
+    "displayName": "Unplugged",
+    "hidden": 1,
+    "icon": "images/a8b9166e31b03307bfff31335cf8260dde0a6f90.jpg",
+    "icongray": "images/c7026016326e850426350eea229dfb6450001189.jpg",
+    "name": "27"
+  },
+  {
+    "description": "Find 10 metal detector caches",
+    "displayName": "Where There's Muck There's Brass",
+    "hidden": 0,
+    "icon": "images/4a14cb2c0bc0164ca58c448261c8384c026bb02b.jpg",
+    "icongray": "images/1943b78d9a84bcad4e7eb2a37f53df69e57e1c48.jpg",
+    "name": "15"
+  },
+  {
+    "description": "Power up Data Store Delta",
+    "displayName": "Delta",
+    "hidden": 1,
+    "icon": "images/9fb92c24e11f59874ef75ec640fcc99b02d51ace.jpg",
+    "icongray": "images/769db1f835aa9284ed1c3b4c331d0786c879bf82.jpg",
+    "name": "11"
+  },
+  {
+    "description": "Read 50 notes in the Quarantine Zone",
+    "displayName": "We Want Information",
+    "hidden": 0,
+    "icon": "images/67a99df2fe92216ec51a3ce3b6fd0519b0b04b05.jpg",
+    "icongray": "images/928c8bf5a1c499fbb64728b6e06f9550262c5b7b.jpg",
+    "name": "20"
+  },
+  {
+    "description": "Find the Signal Redirector",
+    "displayName": "Reverse the Polarity",
+    "hidden": 1,
+    "icon": "images/c7bf52974743921aaa965ee5ec7f2c55f177a69c.jpg",
+    "icongray": "images/4ecdf894758ae43bd6fadbbbf83cbff25c1bb0bd.jpg",
+    "name": "12"
+  },
+  {
+    "description": "Find 5 buried lunchboxes",
+    "displayName": "Packed Lunch",
+    "hidden": 0,
+    "icon": "images/b0164210a19273c3fa805e547bcb2eb0b59be939.jpg",
+    "icongray": "images/29724db4b9206c1a29ddd56dd6a220700fe17339.jpg",
+    "name": "16"
+  },
+  {
+    "description": "Power up Data Store Bravo",
+    "displayName": "Bravo",
+    "hidden": 1,
+    "icon": "images/22200a3ce47696228644a309980fe97e78e34ccf.jpg",
+    "icongray": "images/2c507ddbf647e5e12ae305651b77bbc2810ef52d.jpg",
+    "name": "09"
+  },
+  {
+    "description": "Power up Data Store Alpha",
+    "displayName": "Alpha",
+    "hidden": 1,
+    "icon": "images/b4e389ac9a80b0c2ae232500d739f7cd825e006f.jpg",
+    "icongray": "images/12b467b71a7131a2a9cb2199fe8b84c09a40129a.jpg",
+    "name": "08"
+  },
+  {
+    "description": "Find and learn 10 recipes",
+    "displayName": "Homemade",
+    "hidden": 0,
+    "icon": "images/702da105db53708c1bb183c5f32d2235c55289a6.jpg",
+    "icongray": "images/eee3d4192f03ea32302f7d3cf3f8966c6a33db86.jpg",
+    "name": "25"
+  },
+  {
+    "description": "Use the Signal Redirector to unlock 5 doors",
+    "displayName": "Burglar",
+    "hidden": 0,
+    "icon": "images/c4e8a283192da508fe7253082402d8487b3f9756.jpg",
+    "icongray": "images/a4fcb47d115b6f25efcb290306caa8704bf59244.jpg",
+    "name": "31"
+  },
+  {
+    "description": "Cause an enemy to drop their Molotov cocktail",
+    "displayName": "Caught Red-handed",
+    "hidden": 0,
+    "icon": "images/84c80def4e03d47a1e3188016c68fe14c1c1f208.jpg",
+    "icongray": "images/8054b702eb8d93a21b5d835de36a455844bf5b23.jpg",
+    "name": "33"
+  },
+  {
+    "description": "Learn 12 skills",
+    "displayName": "Refer to Manual",
+    "hidden": 0,
+    "icon": "images/051f3d7d1fca4ba39f48b526239eae6e9e569d96.jpg",
+    "icongray": "images/f50f72b151f645b51996a89be90c0c5e6eb50c05.jpg",
+    "name": "21"
+  },
+  {
+    "description": "Find 5 audio logs",
+    "displayName": "Radiophonic",
+    "hidden": 0,
+    "icon": "images/8aaea9b35dca6c5c9266b70cc68b560ef39a77b6.jpg",
+    "icongray": "images/57b504a3d7499c2479a99dac6a2fd35e863a9b94.jpg",
+    "name": "18"
+  },
+  {
+    "description": "Upgrade a firearm to pristine condition",
+    "displayName": "Make Do and Mend",
+    "hidden": 0,
+    "icon": "images/28683299b652be799f74d0ff6cf1af933b366e9e.jpg",
+    "icongray": "images/c4a95fb4ee17d25a65d0f921658b4f250ac322cb.jpg",
+    "name": "26"
+  },
+  {
+    "description": "Gain access to the Oberon site",
+    "displayName": "Oberon",
+    "hidden": 1,
+    "icon": "images/0fee25ea77b155309eb83423e52e5e2d100e7131.jpg",
+    "icongray": "images/85eb4c353d7ee20a8e1f739790e1318b5f1b8e17.jpg",
+    "name": "13"
+  },
+  {
+    "description": "Escape the Quarantine Zone with the Voice on the Telephone",
+    "displayName": "Do you require the Operator?",
+    "hidden": 1,
+    "icon": "images/0f09a998d290d3c9c18c73eb2353623c438a6da0.jpg",
+    "icongray": "images/32bfd59a7514ca4ab20b1bada4defb45f133e03c.jpg",
+    "name": "06"
+  },
+  {
+    "description": "Take out at least 5 enemies in one explosion",
+    "displayName": "Grand Slam",
+    "hidden": 0,
+    "icon": "images/3f750a08c20f23410f24d099636cc80bf4235bea.jpg",
+    "icongray": "images/4e240d63cdd3819f60947125f4b51d1e58839370.jpg",
+    "name": "35"
+  },
+  {
+    "description": "Completely destroy a robot",
+    "displayName": "Any Old Iron",
+    "hidden": 1,
+    "icon": "images/4c9059d1c4746054420658e342930124b4e00808.jpg",
+    "icongray": "images/1260f5055ba116366f1a33213a276732bc17e595.jpg",
+    "name": "28"
+  },
+  {
+    "description": "Consume a Cornish pasty, English tea, and a slice of cake in 30s",
+    "displayName": "High Tea",
+    "hidden": 0,
+    "icon": "images/21032b07e1172fb3733c48d5e313a4e0aa7f8133.jpg",
+    "icongray": "images/f5b40e6a614b44de1375a945705f9dee5b074568.jpg",
+    "name": "36"
+  },
+  {
+    "description": "Escape the Quarantine Zone with Dr Holder",
+    "displayName": "Oubliette",
+    "hidden": 1,
+    "icon": "images/5e5aebbd5dd3711d7c1d4651b3583240c2c69c80.jpg",
+    "icongray": "images/e81f849c26de54fb94193004316033d4eb449cad.jpg",
+    "name": "05"
+  },
+  {
+    "description": "Get 6 kills with the MK.VI Revolver without reloading",
+    "displayName": "Target Practice",
+    "hidden": 0,
+    "icon": "images/0dd3f75b01ce4fa9fd6b7f3e36c8d1d9f57077f3.jpg",
+    "icongray": "images/2cc7639ee0de376359e7868a4e420cd5150550d8.jpg",
+    "name": "34"
+  },
+  {
+    "description": "Escape the Quarantine Zone with Joyce Tanner",
+    "displayName": "Emergency Extraction",
+    "hidden": 1,
+    "icon": "images/d44990c5828374c5cca9db3d921e9cb028b58e21.jpg",
+    "icongray": "images/8aa570dbde383e3b6ac860b0d30b9596c1237c07.jpg",
+    "name": "02"
+  },
+  {
+    "description": "Escape the Quarantine Zone with Captain Sims",
+    "displayName": "Operation Atomfall",
+    "hidden": 1,
+    "icon": "images/9ece4e769cd8386f7b9f97a5881f30f1f493a115.jpg",
+    "icongray": "images/cc3edf62ad1c15a8fa6c274be467bee60e706bb5.jpg",
+    "name": "04"
+  },
+  {
+    "description": "Find and destroy 10 Garden Gnomes",
+    "displayName": "Orna mental",
+    "hidden": 0,
+    "icon": "images/07b8f3fbc3435801f9feb083526b94ef0178cf1b.jpg",
+    "icongray": "images/ccaab191d4dbdd5bfdd86aff2cb1fa9c21205691.jpg",
+    "name": "24"
+  },
+  {
+    "description": "Escape the Quarantine Zone with Mother Jago",
+    "displayName": "At One with the Soil",
+    "hidden": 1,
+    "icon": "images/80ff606de503f21bd7082aae7bd62178bf72b64d.jpg",
+    "icongray": "images/15c97a31e1f026b2606c37ba53d15b310a69e9c4.jpg",
+    "name": "03"
+  },
+  {
+    "description": "Kill 10 enemies with a thrown weapon",
+    "displayName": "Fast Bowl",
+    "hidden": 0,
+    "icon": "images/32eae9e35dc012e70311869aa7b60f526cd66586.jpg",
+    "icongray": "images/a0941b53006cf4cf4f61d0a07fa567d3dd2da597.jpg",
+    "name": "29"
+  },
+  {
+    "description": "Power up a deactivated robot",
+    "displayName": "Batteries Not Included",
+    "hidden": 0,
+    "icon": "images/dbd591bc72bd81a2415f913a2ccf7a948243d5b7.jpg",
+    "icongray": "images/27d5c4851f14875cb225961356906e2431eaeb42.jpg",
+    "name": "32"
+  },
+  {
+    "description": "Escape the Quarantine Zone with Dr Garrow",
+    "displayName": "Back Door",
+    "hidden": 1,
+    "icon": "images/41fd92cc929cdad291dc58956461a9546e96e5aa.jpg",
+    "icongray": "images/e759ab2867dc2cceedc10c513eec7e654c9fa242.jpg",
+    "name": "01"
+  },
+  {
+    "description": "Find 10 comics",
+    "displayName": "Avid Collector",
+    "hidden": 0,
+    "icon": "images/520deb058ad9e9a6c72ca5e96dfca39163f8bac5.jpg",
+    "icongray": "images/0f1ac75fbc9be99671b1a1776ef4af2889db0b54.jpg",
+    "name": "17"
+  },
+  {
+    "description": "Redirect a thrown grenade with the cricket bat",
+    "displayName": "Hit for Six",
+    "hidden": 0,
+    "icon": "images/cfe31146c320ba26bbe71e3d43064624711f5a5b.jpg",
+    "icongray": "images/590565df1f39c1aa52495d604cd606617539f421.jpg",
+    "name": "30"
+  },
+  {
+    "description": "Escape the Quarantine Zone without answering the telephone",
+    "displayName": "Not Expecting a Call",
+    "hidden": 1,
+    "icon": "images/48d11f9583f84f717072f761968873f0645b21b8.jpg",
+    "icongray": "images/eab2201ee053d06cf39e920bc8c25b4d80761a8a.jpg",
+    "name": "23"
+  },
+  {
+    "description": "Escape the Quarantine Zone in under 5 hours",
+    "displayName": "Quick Exit",
+    "hidden": 1,
+    "icon": "images/fdd10339378301967b7bb6b887ef9fdf4afb30f1.jpg",
+    "icongray": "images/4db11e6d3342e05cca3cf4976a1bcbfcf25f81f4.jpg",
+    "name": "22"
+  },
+  {
+    "description": "Open the sealed door inside the Midsummer Abbey crypt",
+    "displayName": "Exhumation",
+    "hidden": 1,
+    "icon": "images/06275f54eef7c504ed35a6931d9a1ad5b5576f01.jpg",
+    "icongray": "images/9b0e36893f137bf1865d9b629d82671ea36c2beb.jpg",
+    "name": "40"
+  },
+  {
+    "description": "View 8 memories of the Midsummer monks",
+    "displayName": "Recalling Our Past",
+    "hidden": 1,
+    "icon": "images/90fa04e8f5f75c2fa466bb4ffa2d37fc6779f41f.jpg",
+    "icongray": "images/c7eb8cee0e51f5fd9e4676f799c6a35afbbf7c46.jpg",
+    "name": "42"
+  },
+  {
+    "description": "Kill an Aquatic Feral in a fist fight",
+    "displayName": "Fish Fingers",
+    "hidden": 0,
+    "icon": "images/1f27ba05c9bf5e869f1049ac0bf8d5ab1041b3be.jpg",
+    "icongray": "images/685e6af9e29a935436b8a34c953654f5a3fa5a99.jpg",
+    "name": "43"
+  },
+  {
+    "description": "Escape the Quarantine Zone by joining the Angel",
+    "displayName": "A Throne Fit For All Things",
+    "hidden": 1,
+    "icon": "images/3a8f51cc8129e95e88467005c518963f17c85d0f.jpg",
+    "icongray": "images/eb23b2cea67ebe31104e13ce08164b7e13968577.jpg",
+    "name": "38"
+  },
+  {
+    "description": "Use an Explosive Lure on the Beekeeper’s Swarm",
+    "displayName": "Buzzkill",
+    "hidden": 0,
+    "icon": "images/566702e7c37e70c1365cf21a9052effe797732a7.jpg",
+    "icongray": "images/0aa35a29ec7a1d8cc67b13a704ebd7d9f036bb47.jpg",
+    "name": "45"
+  },
+  {
+    "description": "Consume an Infection Sample, Infected Honeycomb, and Druids' Tonic within 10 seconds",
+    "displayName": "Midsummer Picnic",
+    "hidden": 0,
+    "icon": "images/62e4b6ca29078a926895059e5790c007de6242d8.jpg",
+    "icongray": "images/d4c393ab0b8ac7a48f6422a1b83679daeb7cd830.jpg",
+    "name": "44"
+  },
+  {
+    "description": "Escape the Quarantine Zone by talking down the Angel",
+    "displayName": "Mind Over Matter",
+    "hidden": 1,
+    "icon": "images/6582989c1e9c86e796ec2928c52f686fd1103c0d.jpg",
+    "icongray": "images/2fbfdcf50291443a9504cf2d980537fe387272a8.jpg",
+    "name": "37"
+  },
+  {
+    "description": "Escape the Quarantine Zone with Jean Hamer",
+    "displayName": "Seaworthy",
+    "hidden": 1,
+    "icon": "images/5bb359754636cbea1a96e2114fa18334ece34254.jpg",
+    "icongray": "images/c7ff2b653f890e2c6bab29e613321d98b8df3a4d.jpg",
+    "name": "39"
+  },
+  {
+    "description": "Find and destroy 15 Garden Gnomes on Midsummer Isle",
+    "displayName": "Our Island Gnome",
+    "hidden": 0,
+    "icon": "images/691681ba55f6f56b00dab1005e66a5aa69259e60.jpg",
+    "icongray": "images/d9dd51c4a87f45613eafeeae0800aa78f4924c21.jpg",
+    "name": "41"
+  }
+]

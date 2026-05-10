@@ -1,0 +1,9 @@
+{
+  "MK12/Binaries/Win64/coldloader.dll": "coldloader.b80e5f55504c.dll",
+  "MK12/Binaries/Win64/dsound.dll": "dsound.82d2c6672f39.dll",
+  "MK12/Binaries/Win64/GameOverlayRenderer64.dll": "GameOverlayRenderer64.f20d9a87ca0f.dll",
+  "MK12/Binaries/Win64/steamclient64.dll": "steamclient64.2d455fcdcc5a.dll",
+  "MK12/Binaries/Win64/steam_api64.dll": "steam_api64.4df999c0c8cb.dll",
+  "MK12/Binaries/Win64/version.dll": "version.9ea04c823798.dll",
+  "MK12/Binaries/Win64/winmm.dll": "winmm.4ed77ec99436.dll"
+}

@@ -1,0 +1,474 @@
+{
+  "games": [
+    {
+      "name": "Assassin's Creed Shadows",
+      "appId": 3159330,
+      "disabled": false,
+      "boosterOnly": false
+    },
+    {
+      "name": "Atomfall",
+      "appId": 801800,
+      "disabled": false,
+      "steampassUuid": "3766431d-5d5c-4496-b88f-edd928146917"
+    },
+    {
+      "name": "Atomic Heart",
+      "appId": 668580,
+      "disabled": false,
+      "steampassUuid": "8c0a64b7-a1ed-4ccd-878d-921c7a08dc19"
+    },
+    {
+      "name": "Avatar: Frontiers of Pandora",
+      "appId": 2840770,
+      "disabled": true
+    },
+    {
+      "name": "Black Myth: Wukong",
+      "appId": 2358720,
+      "disabled": false,
+      "steampassUuid": "d05699a0-efb3-44c4-b7de-f058a21629fc"
+    },
+    {
+      "name": "Borderlands 4",
+      "appId": 1285190,
+      "disabled": false,
+      "steampassUuid": "7df71f34-04bc-45a7-b645-0d5e479ba40c"
+    },
+    {
+      "name": "CODE VEIN II",
+      "appId": 2362060,
+      "disabled": false,
+      "steampassUuid": "963f66e9-de8c-4c9d-a9c2-e61216655fe0"
+    },
+    {
+      "name": "Construction Simulator",
+      "appId": 1273400,
+      "disabled": false,
+      "steampassUuid": "24b7a0b7-a84d-4594-aa6a-ea965a4e46b6"
+    },
+    {
+      "name": "Crimson Desert",
+      "appId": 3321460,
+      "disabled": false,
+      "donatorOnly": false,
+      "boosterOnly": false,
+      "steampassUuid": "41e21856-5552-44fe-936f-9c11398bff18"
+    },
+    {
+      "name": "Dead Space",
+      "appId": 1693980,
+      "disabled": false,
+      "steampassUuid": "59f4fa5e-d051-4389-9669-02626e0dc6e8"
+    },
+    {
+      "name": "Dead Island 2",
+      "appId": 934700,
+      "disabled": false,
+      "steampassUuid": "bc28880c-f9cb-4075-971e-7360fc7326b7"
+    },
+    {
+      "name": "Demon Slayer -Kimetsu no Yaiba- The Hinokami Chronicles",
+      "appId": 1490890,
+      "disabled": false,
+      "steampassUuid": "f1351b93-ac1a-4e9f-9f8f-e46451464e5c"
+    },
+    {
+      "name": "Demon Slayer -Kimetsu no Yaiba- The Hinokami Chronicles 2",
+      "appId": 2928600,
+      "disabled": false,
+      "steampassUuid": "c9a15c7b-2b36-4d1a-86ff-4f72df6147bf"
+    },
+    {
+      "name": "Digimon Story: Time Stranger",
+      "appId": 1984270,
+      "disabled": false,
+      "steampassUuid": "47eb885d-cc00-4778-b08e-8f2cda24b2e9"
+    },
+    {
+      "name": "Dirt 5",
+      "appId": 1038250,
+      "disabled": false,
+      "steampassUuid": "3888a178-f68d-4d30-8981-dd8425dccf50"
+    },
+    {
+      "name": "DOOM: The Dark Ages",
+      "appId": 3017860,
+      "disabled": false,
+      "steampassUuid": "646ffbd5-187e-4cf0-861d-0b534859c9f1"
+    },
+    {
+      "name": "DRAGON QUEST VII Reimagined",
+      "appId": 2499860,
+      "disabled": false,
+      "steampassUuid": "98720236-e0d5-42dc-9428-9bba22ead56e"
+    },
+    {
+      "name": "Dragon's Dogma 2",
+      "appId": 2054970,
+      "disabled": false,
+      "steampassUuid": "5394e95b-9f41-4594-a55f-749f3af73ae1"
+    },
+    {
+      "name": "F1 Manager 2024",
+      "appId": 2591280,
+      "disabled": false,
+      "steampassUuid": "72761e03-4d6d-4f1d-a7e0-f9c5a4d6611a"
+    },
+    {
+      "name": "FAR: Changing Tides",
+      "appId": 1570010,
+      "disabled": false,
+      "steampassUuid": "2b048499-f259-4856-92f8-25dcb622a825"
+    },
+    {
+      "name": "Final Fantasy XV",
+      "appId": 637650,
+      "disabled": false,
+      "steampassUuid": "fd4ca283-4be0-4dcd-8088-43739226617e"
+    },
+    {
+      "name": "Football Manager 26",
+      "appId": 3551340,
+      "disabled": true
+    },
+    {
+      "name": "Hello Kitty Island Adventure",
+      "appId": 2495100,
+      "disabled": false,
+      "steampassUuid": "f2becc20-fa33-41a8-9093-d973dd003c52"
+    },
+    {
+      "name": "Hogwarts Legacy",
+      "appId": 990080,
+      "highDemand": false,
+      "disabled": false,
+      "steampassUuid": "2a93143b-1782-44b6-9c40-a56db14e1c6c"
+    },
+    {
+      "name": "Judgment",
+      "appId": 2058180,
+      "disabled": false,
+      "steampassUuid": "eb211a73-34bd-4249-a4fa-0505e5e45cce"
+    },
+    {
+      "name": "Jurassic World Evolution 2",
+      "appId": 1244460,
+      "disabled": false,
+      "steampassUuid": "0ce92101-c95d-4ee0-bea9-19d63f86a1dc"
+    },
+    {
+      "name": "Jurassic World Evolution 3",
+      "appId": 2958130,
+      "disabled": false,
+      "steampassUuid": "c7c50600-fb0b-4e7a-8dd0-b485b2f1c1ac"
+    },
+    {
+      "name": "Life is Strange : Reunion",
+      "appId": 2624870,
+      "disabled": false,
+      "steampassUuid": "e621bda3-f4d9-4b84-804e-d3e3ed174c3a"
+    },
+    {
+      "name": "Like a Dragon Gaiden: The Man Who Erased His Name",
+      "appId": 2375550,
+      "disabled": false,
+      "steampassUuid": "4ee3462b-09f3-467b-8d84-56360a7a8a19"
+    },
+    {
+      "name": "Like a Dragon: Infinite Wealth",
+      "appId": 2072450,
+      "disabled": false,
+      "steampassUuid": "a37f75da-ffd2-478d-8eeb-1a22789a9ffa"
+    },
+    {
+      "name": "Like a Dragon: Ishin",
+      "appId": 1805480,
+      "disabled": false,
+      "steampassUuid": "440e98db-b011-4346-9eb2-97e4e5f8baf4"
+    },
+    {
+      "name": "Like a Dragon: Pirate Yakuza in Hawaii",
+      "appId": 3061810,
+      "disabled": false,
+      "steampassUuid": "e40e388f-9944-4c80-aecb-c3613421cb84"
+    },
+    {
+      "name": "Lost Judgment",
+      "appId": 2058190,
+      "disabled": false,
+      "steampassUuid": "1861ac9e-45de-4b13-9575-d322e6e9a58a"
+    },
+    {
+      "name": "Mafia: The Old Country",
+      "appId": 1941540,
+      "disabled": false,
+      "steampassUuid": "5643d683-94b5-4502-9414-14073b6919b2"
+    },
+    {
+      "name": "Maneater",
+      "appId": 629820,
+      "disabled": false,
+      "steampassUuid": "57f1bcae-ff8e-44d4-b994-a1fac169d113"
+    },
+    {
+      "name": "Marvel's Midnight Suns",
+      "appId": 368260,
+      "disabled": false,
+      "steampassUuid": "7210ff4d-acd4-46c8-8e71-ca8bc2977d39"
+    },
+    {
+      "name": "Metaphor: ReFantazio",
+      "appId": 2679460,
+      "disabled": false,
+      "steampassUuid": "2d599ab8-37fb-4f6e-aa12-c7cb26e1d6c8"
+    },
+    {
+      "name": "Monster Hunter: Wilds",
+      "appId": 2246340,
+      "disabled": false,
+      "steampassUuid": "a2584c61-20e1-45e8-a734-cf1d9e5a621c"
+    },
+    {
+      "name": "Mortal Kombat 1",
+      "appId": 1971870,
+      "disabled": false,
+      "steampassUuid": "0f59246b-ce86-4e0f-8d38-356846409cd2"
+    },
+    {
+      "name": "NBA 2K25",
+      "appId": 2878980,
+      "disabled": true
+    },
+    {
+      "name": "NBA 2K26",
+      "appId": 3472040,
+      "disabled": true
+    },
+    {
+      "name": "Octopath Traveler 0",
+      "appId": 3014320,
+      "disabled": false,
+      "steampassUuid": "f1509b65-1531-4063-a12f-c09cbaee057c"
+    },
+    {
+      "name": "Persona 3 Portable",
+      "appId": 1809700,
+      "disabled": false,
+      "steampassUuid": "315d129b-5d52-4293-b1b3-d0ddf9dd3410"
+    },
+    {
+      "name": "Persona 3 Reload",
+      "appId": 2161700,
+      "disabled": false,
+      "steampassUuid": "08f77aab-a19d-4726-a258-b2aad31b1970"
+    },
+    {
+      "name": "Persona 4 Golden",
+      "appId": 1113000,
+      "disabled": false,
+      "steampassUuid": "d340808b-215d-4c1a-be9e-a37178bf0833"
+    },
+    {
+      "name": "Persona 5 Royal",
+      "appId": 1687950,
+      "disabled": false,
+      "steampassUuid": "e5b18ffc-9e93-4884-ae1a-baf253578428"
+    },
+    {
+      "name": "Planet Coaster ",
+      "appId": 493340,
+      "disabled": false
+    },
+    {
+      "name": "Planet Coaster 2",
+      "appId": 2688950,
+      "disabled": false,
+      "steampassUuid": "cbf33469-f2b8-471a-b3c5-ca4eb89c9690"
+    },
+    {
+      "name": "Planet Zoo",
+      "appId": 703080,
+      "disabled": false,
+      "steampassUuid": "1cbae7e3-d2bf-4db0-a6b1-986215da883a"
+    },
+    {
+      "name": "Pragmata",
+      "appId": 3357650,
+      "disabled": false,
+      "steampassUuid": "19b851d8-93c5-4ecc-83dd-cf8d39b06fd2"
+    },
+    {
+      "name": "Resident Evil : Requiem",
+      "appId": 3764200,
+      "disabled": false,
+      "donatorOnly": false,
+      "steampassUuid": "f7f284e1-4ad2-4e80-b785-1541f10a2bf4"
+    },
+    {
+      "name": "SHINOBI: Art of Vengeance",
+      "appId": 2361770,
+      "disabled": false,
+      "steampassUuid": "ebb0ca66-98e6-4a22-abed-947bb0303a29"
+    },
+    {
+      "name": "Shin Megami Tensei V: Vengeance",
+      "appId": 1875830,
+      "disabled": false,
+      "steampassUuid": "6b07c1d9-2db4-4bd1-9b2a-733ba607efdb"
+    },
+    {
+      "name": "Sniper Elite 5",
+      "appId": 1029690,
+      "disabled": false,
+      "steampassUuid": "8f969077-d0a0-45a0-a52b-3bce31fcdf5c"
+    },
+    {
+      "name": "Sniper Elite: Resistance",
+      "appId": 2169200,
+      "disabled": false,
+      "steampassUuid": "4ee1ac29-4b04-43ba-8647-cc85aadbb7e1"
+    },
+    {
+      "name": "Sonic Colors: Ultimate",
+      "appId": 2055290,
+      "disabled": false,
+      "steampassUuid": "0e682b99-16a0-4dca-9e41-4c3e9fde3bc0"
+    },
+    {
+      "name": "Sonic Frontiers",
+      "appId": 1237320,
+      "disabled": false,
+      "steampassUuid": "d68f68a3-5ff9-468a-a4de-f183f9845b45"
+    },
+    {
+      "name": "Sonic Origins",
+      "appId": 1794960,
+      "disabled": false,
+      "steampassUuid": "6d63a8b1-4dbf-4e75-9d59-96cc751a2f68"
+    },
+    {
+      "name": "Sonic Racing: CrossWorlds",
+      "appId": 2486820,
+      "disabled": false,
+      "steampassUuid": "c17abd1c-88bb-4e70-af6b-a1abed1a1088"
+    },
+    {
+      "name": "Sonic Superstars",
+      "appId": 2022670,
+      "disabled": false,
+      "steampassUuid": "fcfc4519-f13e-4b91-a211-e1168db468dc"
+    },
+    {
+      "name": "Sonic X Shadow Generations",
+      "appId": 2513280,
+      "disabled": false,
+      "steampassUuid": "579f94bf-b224-4da3-baab-a29fa4cd8354"
+    },
+    {
+      "name": "Star Wars Outlaws",
+      "appId": 2842040,
+      "disabled": true
+    },
+    {
+      "name": "Stellar Blade\u00ae",
+      "appId": 3489700,
+      "disabled": false,
+      "steampassUuid": "39594087-774b-48ff-ac40-6c70fb9f4b77"
+    },
+    {
+      "name": "Street Fighter 6",
+      "appId": 1364780,
+      "disabled": false,
+      "steampassUuid": "231644ee-2d2f-4c50-a9f1-605426646d45"
+    },
+    {
+      "name": "The Bus",
+      "appId": 491540,
+      "disabled": false,
+      "steampassUuid": "830aa597-e7c5-4aca-a4ab-8c56daabf65a"
+    },
+    {
+      "name": "The First Berserker: Khazan",
+      "appId": 2680010,
+      "disabled": false,
+      "steampassUuid": "f92ae3c1-0613-4095-a255-bbdebb9551d2"
+    },
+    {
+      "name": "Total War: THREE KINGDOMS",
+      "appId": 779340,
+      "disabled": false,
+      "steampassUuid": "af8660d0-41b2-4e04-a0a7-ed79d085ca7e"
+    },
+    {
+      "name": "Total War: PHARAOH Dynasties",
+      "appId": 2951630,
+      "disabled": false,
+      "steampassUuid": "d02733e3-78da-4234-8d1a-33a4e7855dac"
+    },
+    {
+      "name": "Total War: WARHAMMER III",
+      "appId": 1142710,
+      "disabled": false,
+      "steampassUuid": "e6403dba-07f3-43ba-a8fd-ae2f0aad7b71"
+    },
+    {
+      "name": "Two Point Campus",
+      "appId": 1649080,
+      "disabled": false,
+      "steampassUuid": "1a3bd4fb-88fc-426f-b281-e24ebb865f70"
+    },
+    {
+      "name": "Two Point Museum",
+      "appId": 2185060,
+      "disabled": false,
+      "steampassUuid": "243fe079-cae1-462e-8e03-ac1c8454cb54"
+    },
+    {
+      "name": "Valkyria Chronicles 4 Complete Edition",
+      "appId": 790820,
+      "disabled": false
+    },
+    {
+      "name": "Warhammer 40,000: Chaos Gate \u2013 Daemonhunters",
+      "appId": 1611910,
+      "disabled": false,
+      "steampassUuid": "27e6ec77-8af1-4a28-ac92-4e8eacd7f36d"
+    },
+    {
+      "name": "Warhammer Age of Sigmar: Realms of Ruin",
+      "appId": 1844380,
+      "disabled": false
+    },
+    {
+      "name": "WWE 2K24",
+      "appId": 2315690,
+      "disabled": false,
+      "steampassUuid": "aff42b4d-64b7-479b-abd5-24bf43297e5d"
+    },
+    {
+      "name": "WWE 2K25",
+      "appId": 2878960,
+      "disabled": false,
+      "steampassUuid": "1de49965-6790-4368-b022-0846cb553892"
+    },
+    {
+      "name": "WWE 2K26",
+      "appId": 3717070,
+      "disabled": false,
+      "steampassUuid": "ccb1a858-857f-4b01-b77d-651b1582645d"
+    },
+    {
+      "name": "Yakuza: Like a Dragon",
+      "appId": 1235140,
+      "disabled": false,
+      "steampassUuid": "e56953e4-70d8-4cb9-92a9-83c4b59f1530"
+    },
+    {
+      "name": "Zombie Army VR",
+      "appId": 2058030,
+      "disabled": false,
+      "steampassUuid": "6d0cde63-e945-4e19-8753-5c5f182d8106"
+    }
+  ]
+}

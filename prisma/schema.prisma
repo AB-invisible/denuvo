@@ -1,0 +1,112 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Game {
+  id              Int      @id @default(autoincrement())
+  name            String   @unique
+  appId           Int?
+  stock           Int      @default(5)
+  lastDepletedAt  DateTime?
+  disabled        Boolean  @default(false)
+  highDemand      Boolean  @default(false)
+  donatorOnly     Boolean  @default(false)
+  boosterOnly     Boolean  @default(false)
+  excludeRegen    Boolean  @default(false)
+  steampassUuid   String?  // steampass.gg product UUID for headless token generation
+  updatedAt       DateTime @default(now()) @updatedAt
+  tickets         Ticket[]
+  restocks        Restock[]
+  subscriptions   Subscription[]
+}
+
+model Ticket {
+  id        Int      @id @default(autoincrement())
+  channelId        String   @unique
+  controlMessageId String?
+  userId           String
+  gameId           Int
+  game      Game     @relation(fields: [gameId], references: [id])
+  status             String   @default("OPEN") // OPEN, CLAIMED, CLOSED
+  staffId            String?
+  screenshotVerified Boolean  @default(false)
+  vouchExpiresAt        DateTime?
+  vouchStaffId          String?
+  vouchChannelMessageId String?
+  deliveryMessageId     String?
+  activeClosingStaffId  String?
+  claimedAt             DateTime?
+  closedAt              DateTime?
+  lastUserActivityAt    DateTime @default(now())
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @default(now()) @updatedAt
+  verification          PendingVerification?
+}
+
+model PendingVerification {
+  id          Int      @id @default(autoincrement())
+  ticketId    Int      @unique
+  ticket      Ticket   @relation(fields: [ticketId], references: [id])
+  retryCount  Int      @default(0)
+  isProcessing Boolean  @default(false)
+  updatedAt   DateTime @default(now()) @updatedAt
+}
+
+model Maintenance {
+  id        Int      @id @default(autoincrement())
+  channelId String   @unique
+  messageId String
+  endTime   DateTime
+  createdAt DateTime @default(now())
+}
+
+model Cooldown {
+  id        Int      @id @default(autoincrement())
+  userId    String    @unique
+  until     DateTime
+  createdAt DateTime @default(now())
+}
+
+model Panel {
+  id        Int      @id @default(autoincrement())
+  channelId String
+  messageId String
+  createdAt DateTime @default(now())
+}
+
+// Bug #20: Verification model removed — unused (state is managed in-memory via pendingVerifications map)
+
+model Restock {
+  id        Int      @id @default(autoincrement())
+  gameId    Int
+  game      Game     @relation(fields: [gameId], references: [id])
+  restockAt DateTime
+  createdAt DateTime @default(now())
+}
+
+model Metadata {
+  id    Int    @id @default(autoincrement())
+  key   String @unique
+  value String
+}
+
+model Subscription {
+  id        Int      @id @default(autoincrement())
+  userId    String
+  gameId    Int
+  game      Game     @relation(fields: [gameId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@unique([userId, gameId])
+}
+
+model DutyStatus {
+  id          Int      @id @default(autoincrement())
+  staffId     String   @unique
+  isOnDuty    Boolean  @default(false)
+  lastUpdated DateTime @default(now())
+}

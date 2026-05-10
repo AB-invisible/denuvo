@@ -1,0 +1,12 @@
+/node_modules
+# Keep environment variables out of version control
+.env
+
+/generated/prisma
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Generated test/token zips (created at runtime)
+/Generated_Tokens/

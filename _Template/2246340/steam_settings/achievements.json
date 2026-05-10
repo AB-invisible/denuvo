@@ -1,0 +1,402 @@
+[
+  {
+    "description": "",
+    "displayName": "Windward Lands",
+    "hidden": 1,
+    "icon": "images/1143bb0eff64a59f597611251a8466a9973c1ff3.jpg",
+    "icongray": "images/1143bb0eff64a59f597611251a8466a9973c1ff3.jpg",
+    "name": "ach1"
+  },
+  {
+    "description": "Obtained your first silver crown or higher in the Hunting Log.",
+    "displayName": "Giant Crown",
+    "hidden": 0,
+    "icon": "images/cd3a75cab38d48ee232360990e8c2a1c32c11275.jpg",
+    "icongray": "images/cd3a75cab38d48ee232360990e8c2a1c32c11275.jpg",
+    "name": "ach2"
+  },
+  {
+    "description": "Successfully mounted a monster for the first time.",
+    "displayName": "The Bigger They Are...",
+    "hidden": 0,
+    "icon": "images/d0ed6c488ce791813434de04cc78d9208d8591a0.jpg",
+    "icongray": "images/d0ed6c488ce791813434de04cc78d9208d8591a0.jpg",
+    "name": "ach3"
+  },
+  {
+    "description": "",
+    "displayName": "Shadow in the Downpour",
+    "hidden": 1,
+    "icon": "images/5f4fd625717abc79cbb4c4881a73aa7ae2242575.jpg",
+    "icongray": "images/5f4fd625717abc79cbb4c4881a73aa7ae2242575.jpg",
+    "name": "ach4"
+  },
+  {
+    "description": "Cooked over the BBQ Grill for the first time.",
+    "displayName": "Was It a Meal to Remember?",
+    "hidden": 0,
+    "icon": "images/64044e8ecae44b23baf4880f7577f2f3d2f74ab2.jpg",
+    "icongray": "images/64044e8ecae44b23baf4880f7577f2f3d2f74ab2.jpg",
+    "name": "ach5"
+  },
+  {
+    "description": "Completed your first Field Survey.",
+    "displayName": "The Hunt Is On!",
+    "hidden": 0,
+    "icon": "images/b40b6d0665b2b21a10485e8d72c547d6731a1b96.jpg",
+    "icongray": "images/b40b6d0665b2b21a10485e8d72c547d6731a1b96.jpg",
+    "name": "ach6"
+  },
+  {
+    "description": "Completed a quest via multiplayer.",
+    "displayName": "Hunters United",
+    "hidden": 0,
+    "icon": "images/361bd943dab1c4352c1229937bacf867149d784f.jpg",
+    "icongray": "images/361bd943dab1c4352c1229937bacf867149d784f.jpg",
+    "name": "ach7"
+  },
+  {
+    "description": "",
+    "displayName": "Guardians of the Forge",
+    "hidden": 1,
+    "icon": "images/d89dc1a4cfc30c3cdc1f948859e6110cb197f716.jpg",
+    "icongray": "images/d89dc1a4cfc30c3cdc1f948859e6110cb197f716.jpg",
+    "name": "ach8"
+  },
+  {
+    "description": "Completed your first side mission.",
+    "displayName": "A Step Toward Mutual Understanding",
+    "hidden": 0,
+    "icon": "images/7c6e179ca0ac1cbbe7c9c3294811ae26d0672eb2.jpg",
+    "icongray": "images/7c6e179ca0ac1cbbe7c9c3294811ae26d0672eb2.jpg",
+    "name": "ach9"
+  },
+  {
+    "description": "",
+    "displayName": "Bringer of Harmony",
+    "hidden": 1,
+    "icon": "images/434c1f03130cd56e4180d3e8bd488dac12f8d6ac.jpg",
+    "icongray": "images/434c1f03130cd56e4180d3e8bd488dac12f8d6ac.jpg",
+    "name": "ach10"
+  },
+  {
+    "description": "Landed 50 successful attacks on weak points or wounds in Focus Mode.",
+    "displayName": "Hit 'Em Where It Hurts!",
+    "hidden": 0,
+    "icon": "images/a7ac49d56e962be7c239a88b6d73cfe547801266.jpg",
+    "icongray": "images/a7ac49d56e962be7c239a88b6d73cfe547801266.jpg",
+    "name": "ach11"
+  },
+  {
+    "description": "",
+    "displayName": "New Ecosystems",
+    "hidden": 1,
+    "icon": "images/c6313a9e6881d9f445655d960e7c8c049d5fbe66.jpg",
+    "icongray": "images/c6313a9e6881d9f445655d960e7c8c049d5fbe66.jpg",
+    "name": "ach12"
+  },
+  {
+    "description": "Successfully fished for the first time.",
+    "displayName": "Angling for a Bite",
+    "hidden": 0,
+    "icon": "images/ecd73d7a40f73ebfe801d8cb4a6fc225be60b1d1.jpg",
+    "icongray": "images/ecd73d7a40f73ebfe801d8cb4a6fc225be60b1d1.jpg",
+    "name": "ach13"
+  },
+  {
+    "description": "Performed your first successful Sneak Attack.",
+    "displayName": "Hunter-Assassin",
+    "hidden": 0,
+    "icon": "images/f6b863746a002fe0bafb31337dacfbbcc1be2c70.jpg",
+    "icongray": "images/f6b863746a002fe0bafb31337dacfbbcc1be2c70.jpg",
+    "name": "ach14"
+  },
+  {
+    "description": "",
+    "displayName": "A Bitter Environment",
+    "hidden": 1,
+    "icon": "images/36464277f3954348a99d166c3df5b2cb1e5678ca.jpg",
+    "icongray": "images/36464277f3954348a99d166c3df5b2cb1e5678ca.jpg",
+    "name": "ach15"
+  },
+  {
+    "description": "Customized your Seikret or changed its decorations for the first time.",
+    "displayName": "Ride-or-die Companion",
+    "hidden": 0,
+    "icon": "images/8ca66f104a4704aa30ce2b8bd40735d3b3def149.jpg",
+    "icongray": "images/8ca66f104a4704aa30ce2b8bd40735d3b3def149.jpg",
+    "name": "ach16"
+  },
+  {
+    "description": "Completed 50 quests.",
+    "displayName": "A True Hunter Is Never Satisfied",
+    "hidden": 0,
+    "icon": "images/ee560f5141c63b678c2a817e950bc9d453228d90.jpg",
+    "icongray": "images/ee560f5141c63b678c2a817e950bc9d453228d90.jpg",
+    "name": "ach17"
+  },
+  {
+    "description": "",
+    "displayName": "Beyond the Black Wings",
+    "hidden": 1,
+    "icon": "images/e8b7b10ba56a9463ec659c7f1f980f3613662962.jpg",
+    "icongray": "images/e8b7b10ba56a9463ec659c7f1f980f3613662962.jpg",
+    "name": "ach18"
+  },
+  {
+    "description": "Completed your first investigation.",
+    "displayName": "Let the Investigations Begin!",
+    "hidden": 0,
+    "icon": "images/02c84ed35965e5dc1ed3653d8ac7e32747036986.jpg",
+    "icongray": "images/02c84ed35965e5dc1ed3653d8ac7e32747036986.jpg",
+    "name": "ach19"
+  },
+  {
+    "description": "",
+    "displayName": "One Corner of the World",
+    "hidden": 1,
+    "icon": "images/4a43b779d1953fd87e920d44a497d97fbbfc2572.jpg",
+    "icongray": "images/4a43b779d1953fd87e920d44a497d97fbbfc2572.jpg",
+    "name": "ach20"
+  },
+  {
+    "description": "Established Pop-up Camps in 10 places.",
+    "displayName": "Campmaster",
+    "hidden": 0,
+    "icon": "images/fedb517d9fc971e72138b220de9df59e049e63b6.jpg",
+    "icongray": "images/fedb517d9fc971e72138b220de9df59e049e63b6.jpg",
+    "name": "ach21"
+  },
+  {
+    "description": "Forged five different pieces of armor with Rarity 7 or higher.",
+    "displayName": "Impregnable Defense",
+    "hidden": 0,
+    "icon": "images/86dac2d987165a8815edaaefecd00edb053bf973.jpg",
+    "icongray": "images/86dac2d987165a8815edaaefecd00edb053bf973.jpg",
+    "name": "ach22"
+  },
+  {
+    "description": "Hunted 100 large monsters.",
+    "displayName": "Monster Slayer",
+    "hidden": 0,
+    "icon": "images/10fdc7f671bae8b203d76d728d2ce2d0506fd4cf.jpg",
+    "icongray": "images/10fdc7f671bae8b203d76d728d2ce2d0506fd4cf.jpg",
+    "name": "ach23"
+  },
+  {
+    "description": "Hunted many different large monsters.",
+    "displayName": "Monster Ph.D.",
+    "hidden": 0,
+    "icon": "images/19a29baf3cc204ecbba1b03bbd417fc095a8121e.jpg",
+    "icongray": "images/19a29baf3cc204ecbba1b03bbd417fc095a8121e.jpg",
+    "name": "ach24"
+  },
+  {
+    "description": "",
+    "displayName": "A Legacy Restored",
+    "hidden": 1,
+    "icon": "images/90d14a8c4b293735187c7b30d0ad1ca7b17e7194.jpg",
+    "icongray": "images/90d14a8c4b293735187c7b30d0ad1ca7b17e7194.jpg",
+    "name": "ach25"
+  },
+  {
+    "description": "Customized a Pop-up Camp for the first time.",
+    "displayName": "Glamper",
+    "hidden": 0,
+    "icon": "images/593ecddb3b6cc55038c5cc1a0ba336467da1fe07.jpg",
+    "icongray": "images/593ecddb3b6cc55038c5cc1a0ba336467da1fe07.jpg",
+    "name": "ach26"
+  },
+  {
+    "description": "Obtained your first miniature crown in the Hunting Log.",
+    "displayName": "Miniature Crown",
+    "hidden": 0,
+    "icon": "images/8156c82ea21096992aad8e736c9d7c086d6a3893.jpg",
+    "icongray": "images/8156c82ea21096992aad8e736c9d7c086d6a3893.jpg",
+    "name": "ach27"
+  },
+  {
+    "description": "Forged five different weapons with Rarity 7 or higher.",
+    "displayName": "Power Is Everything",
+    "hidden": 0,
+    "icon": "images/e2a8d70bfd30df982e7766eb39f3e3d2032a9679.jpg",
+    "icongray": "images/e2a8d70bfd30df982e7766eb39f3e3d2032a9679.jpg",
+    "name": "ach28"
+  },
+  {
+    "description": "Successfully cooked a well-done steak for the first time.",
+    "displayName": "Mmm, So Tasty!",
+    "hidden": 0,
+    "icon": "images/ae10e960258f84b0be85fee351b08daa5d4b0731.jpg",
+    "icongray": "images/ae10e960258f84b0be85fee351b08daa5d4b0731.jpg",
+    "name": "ach29"
+  },
+  {
+    "description": "Possessed 1,000,000 zenny.",
+    "displayName": "Bourgeois Hunter",
+    "hidden": 0,
+    "icon": "images/b7056102c53d59596a8797081cc7c31a39304d51.jpg",
+    "icongray": "images/b7056102c53d59596a8797081cc7c31a39304d51.jpg",
+    "name": "ach30"
+  },
+  {
+    "description": "Reached Hunter Rank 100.",
+    "displayName": "Established Hunter",
+    "hidden": 0,
+    "icon": "images/b602528855b0e0537f2960b4a653f68a83df6fac.jpg",
+    "icongray": "images/b602528855b0e0537f2960b4a653f68a83df6fac.jpg",
+    "name": "ach31"
+  },
+  {
+    "description": "",
+    "displayName": "Seasoned Hunter",
+    "hidden": 1,
+    "icon": "images/bbf15074c8d8d6e21cab3ccbebb62fc43f33b50f.jpg",
+    "icongray": "images/bbf15074c8d8d6e21cab3ccbebb62fc43f33b50f.jpg",
+    "name": "ach32"
+  },
+  {
+    "description": "Completed 100 quests with your Palico deployed.",
+    "displayName": "Someone Worth Following",
+    "hidden": 0,
+    "icon": "images/c3823eeb0df771379c01db04da7bec6fb01af7a7.jpg",
+    "icongray": "images/c3823eeb0df771379c01db04da7bec6fb01af7a7.jpg",
+    "name": "ach33"
+  },
+  {
+    "description": "Completed 30 different side missions.",
+    "displayName": "East to West, A Hunter Never Rests",
+    "hidden": 0,
+    "icon": "images/2cdfdb7492d15bcc0918d1cee247e95e7a9273b0.jpg",
+    "icongray": "images/2cdfdb7492d15bcc0918d1cee247e95e7a9273b0.jpg",
+    "name": "ach34"
+  },
+  {
+    "description": "Followed someone for the first time.",
+    "displayName": "Newly Forged Bonds",
+    "hidden": 0,
+    "icon": "images/aca058cc5ccf2a092c39aa441f8ecd409b638a70.jpg",
+    "icongray": "images/aca058cc5ccf2a092c39aa441f8ecd409b638a70.jpg",
+    "name": "ach35"
+  },
+  {
+    "description": "Completed 100 quests via multiplayer.",
+    "displayName": "Hunters United Forever",
+    "hidden": 0,
+    "icon": "images/c22a0cec096d9a007161db3b3ecd5bc06600b1c6.jpg",
+    "icongray": "images/c22a0cec096d9a007161db3b3ecd5bc06600b1c6.jpg",
+    "name": "ach36"
+  },
+  {
+    "description": "",
+    "displayName": "A Prize Held High",
+    "hidden": 1,
+    "icon": "images/59a53ddd54433edd83001583a7d2a3aa8fe885eb.jpg",
+    "icongray": "images/59a53ddd54433edd83001583a7d2a3aa8fe885eb.jpg",
+    "name": "ach37"
+  },
+  {
+    "description": "",
+    "displayName": "I Caught a Shooting Star!",
+    "hidden": 1,
+    "icon": "images/83697031a88e3787f45d3a217be4bea461370d02.jpg",
+    "icongray": "images/83697031a88e3787f45d3a217be4bea461370d02.jpg",
+    "name": "ach38"
+  },
+  {
+    "description": "Captured 50 monsters.",
+    "displayName": "Capture Pro",
+    "hidden": 0,
+    "icon": "images/cd4e28ed9ae42fe93d2e30c7fac88f6fd85c61f6.jpg",
+    "icongray": "images/cd4e28ed9ae42fe93d2e30c7fac88f6fd85c61f6.jpg",
+    "name": "ach39"
+  },
+  {
+    "description": "Used the binoculars to spot a gold-crown large monster.",
+    "displayName": "A Keen-eyed Observation",
+    "hidden": 0,
+    "icon": "images/71d0b604bcfc2f08c13d5a2c5395e810f29a4cef.jpg",
+    "icongray": "images/71d0b604bcfc2f08c13d5a2c5395e810f29a4cef.jpg",
+    "name": "ach40"
+  },
+  {
+    "description": "Caught a giant squid while fishing.",
+    "displayName": "Monster (Squid) Hunter",
+    "hidden": 0,
+    "icon": "images/bf275cf3f6ee6ba966c0842f3591e6cd67eb4496.jpg",
+    "icongray": "images/bf275cf3f6ee6ba966c0842f3591e6cd67eb4496.jpg",
+    "name": "ach41"
+  },
+  {
+    "description": "",
+    "displayName": "Top of the Food Chain",
+    "hidden": 1,
+    "icon": "images/ba000c3c6d49e99493bc49a64478bd53c043743c.jpg",
+    "icongray": "images/ba000c3c6d49e99493bc49a64478bd53c043743c.jpg",
+    "name": "ach42"
+  },
+  {
+    "description": "Obtained a gold crown for 10 or more monsters in the Hunting Log.",
+    "displayName": "Giant Crown Collector",
+    "hidden": 0,
+    "icon": "images/4892108fcf89dec2e32ab155629ab1621c7ecc0d.jpg",
+    "icongray": "images/4892108fcf89dec2e32ab155629ab1621c7ecc0d.jpg",
+    "name": "ach43"
+  },
+  {
+    "description": "Obtained 10 different special items of Rarity 6.",
+    "displayName": "Explorer of the Eastlands",
+    "hidden": 0,
+    "icon": "images/0f18f43711c4e9da3613d86de9db805bf9441f58.jpg",
+    "icongray": "images/0f18f43711c4e9da3613d86de9db805bf9441f58.jpg",
+    "name": "ach44"
+  },
+  {
+    "description": "Obtained a miniature crown for 10 or more monsters in the Hunting Log.",
+    "displayName": "Miniature Crown Collector",
+    "hidden": 0,
+    "icon": "images/c3b6b63d98ed79d376c8533a090477e763674c56.jpg",
+    "icongray": "images/c3b6b63d98ed79d376c8533a090477e763674c56.jpg",
+    "name": "ach45"
+  },
+  {
+    "description": "Viewed 30 different Hunter Profiles.",
+    "displayName": "Gossip Hunter",
+    "hidden": 0,
+    "icon": "images/6ea636fdce68821645862756f6917bd3099a7233.jpg",
+    "icongray": "images/6ea636fdce68821645862756f6917bd3099a7233.jpg",
+    "name": "ach46"
+  },
+  {
+    "description": "Reeled in 30 whoppers while fishing.",
+    "displayName": "A-fish-ionado",
+    "hidden": 0,
+    "icon": "images/bce9d2d9ec6ab11405634a04ecd0d2a0f6147466.jpg",
+    "icongray": "images/bce9d2d9ec6ab11405634a04ecd0d2a0f6147466.jpg",
+    "name": "ach47"
+  },
+  {
+    "description": "Obtained a gold crown for many monsters in the Hunting Log.",
+    "displayName": "Giant Crown Master",
+    "hidden": 0,
+    "icon": "images/1e9e0612ec6b1e5d5bc155a30c99cb6a578cef5e.jpg",
+    "icongray": "images/1e9e0612ec6b1e5d5bc155a30c99cb6a578cef5e.jpg",
+    "name": "ach48"
+  },
+  {
+    "description": "Obtained a miniature crown for many monsters in the Hunting Log.",
+    "displayName": "Miniature Crown Master",
+    "hidden": 0,
+    "icon": "images/e7da4f45efb6e089c2c4da9219d2029c16fa9fd2.jpg",
+    "icongray": "images/e7da4f45efb6e089c2c4da9219d2029c16fa9fd2.jpg",
+    "name": "ach49"
+  },
+  {
+    "description": "Obtained all other awards.",
+    "displayName": "Eastward Wings",
+    "hidden": 0,
+    "icon": "images/57afb97b918edcbbc6827d844e5da32c6c94b95b.jpg",
+    "icongray": "images/57afb97b918edcbbc6827d844e5da32c6c94b95b.jpg",
+    "name": "ach50"
+  }
+]

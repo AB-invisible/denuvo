@@ -1,0 +1,7 @@
+{
+  "APK/Binaries/Win64/coldloader.dll": "coldloader.b80e5f55504c.dll",
+  "APK/Binaries/Win64/GameOverlayRenderer64.dll": "GameOverlayRenderer64.cda0ac0f3ed2.dll",
+  "APK/Binaries/Win64/steamclient64.dll": "steamclient64.2d455fcdcc5a.dll",
+  "APK/Binaries/Win64/steam_api64.dll": "steam_api64.4df999c0c8cb.dll",
+  "APK/Binaries/Win64/xinput1_3.dll": "xinput1_3.2da9374dbe70.dll"
+}
