@@ -12,7 +12,7 @@ import { refreshAllPanels } from './utils/panelManager';
 import { verifyScreenshot } from './utils/groq';
 import { initFileWatcher, syncGamesFromFile } from './utils/syncManager';
 import { generateToken, generateTestToken } from './utils/tokenGenerator';
-import { uploadToLitterbox } from './utils/fileHost';
+import { uploadFile } from './utils/fileHost';
 import { updateTicketWaitTimes, checkWeeklyStaffStats, checkDutyStatusReset, checkStaleTickets, cleanupExpiredCooldowns } from './utils/scheduler';
 import { toggleDuty } from './utils/dutyManager';
 import { addSubscription, getUserSubscriptions } from './utils/subscriptionManager';
@@ -420,7 +420,7 @@ async function handleChatCommand(interaction: any) {
               .setTimestamp();
             await interaction.editReply({ embeds: [successEmbed], files: [zipFile] });
           } else {
-            // Too big — upload to litterbox and post a link
+            // Too big — upload to file host and post a link
             console.log(`[TestToken] Zip ${sizeMB.toFixed(1)} MB > ${limitMB} MB limit — uploading to file host`);
             await interaction.editReply({ embeds: [
               new EmbedBuilder()
@@ -429,13 +429,18 @@ async function handleChatCommand(interaction: any) {
                 .setColor(0xFEE75C)
                 .setTimestamp()
             ]});
-            const hostedUrl = await uploadToLitterbox(zipPath, '24h');
+            const upload = await uploadFile(zipPath, '24h');
+            const filenameNote = upload.provider === 'gofile'
+              ? `The link opens a download page — click **Download** there to save \`TEST [${safeGameName}].zip\` (filename preserved).`
+              : `Direct download. File will arrive named with a random hash.`;
             const hostedEmbed = new EmbedBuilder()
               .setTitle('🧪 TEST Token Generated (External)')
               .setDescription(
-                `**${game.name}** template built successfully — too big to attach (${sizeMB.toFixed(1)} MB), uploaded to file host.\n\n` +
-                `**[⬇️ Download TEST Zip](${hostedUrl})** *(expires in 24h)*\n\n` +
-                `⚠️ Fake ticket inside — DO NOT use against a real game.`
+                `**${game.name}** template built successfully — too big to attach (${sizeMB.toFixed(1)} MB), uploaded via ${upload.provider}.\n\n` +
+                `**[⬇️ Download TEST Zip](${upload.url})**\n\n` +
+                filenameNote + `\n\n` +
+                `⚠️ Fake ticket inside — DO NOT use against a real game.\n` +
+                `⏱️ ${upload.expiryText}.`
               )
               .setColor(0x57F287)
               .addFields(
@@ -711,10 +716,10 @@ client.on(Events.MessageCreate, async (message) => {
                 .setTimestamp();
               await genMsg.edit({ embeds: [uploadingEmbed] });
 
-              let hostedUrl: string | null = null;
+              let upload: Awaited<ReturnType<typeof uploadFile>> | null = null;
               try {
-                hostedUrl = await uploadToLitterbox(zipPath, '72h');
-                console.log(`[TokenGen] Uploaded to litterbox: ${hostedUrl}`);
+                upload = await uploadFile(zipPath, '72h');
+                console.log(`[TokenGen] Uploaded via ${upload.provider}: ${upload.url}`);
               } catch (uploadErr) {
                 const ue = uploadErr as Error;
                 console.error('[TokenGen] Litterbox upload failed:', ue);
@@ -737,20 +742,25 @@ client.on(Events.MessageCreate, async (message) => {
               }
 
               // Success: post the link instead of attaching the file
+              const filenameNote = upload.provider === 'gofile'
+                ? `The link opens a download page — click the **Download** button on that page to save **\`Token [${safeGameName}].zip\`** (filename is preserved).`
+                : `The link is a direct download. The file will arrive named with a random hash — **rename it to \`Token [${safeGameName}].zip\`** before extracting if you want it organized (the zip contents are correct either way).`;
+
               const linkEmbed = new EmbedBuilder()
                 .setTitle(`📦 ${CONFIG.NAME} • Token Delivery (External)`)
                 .setDescription(
                   `<@${ticket.userId}>, your activation token for **${ticket.game.name}** is ready!\n\n` +
-                  `The zip was too large for Discord (${zipMB.toFixed(1)} MB), so it's been uploaded to a temporary file host.\n\n` +
-                  `**[⬇️ Download Token Zip](${hostedUrl})** *(\`Token [${safeGameName}].zip\`, ${zipMB.toFixed(1)} MB)*\n\n` +
+                  `The zip was too large for Discord (${zipMB.toFixed(1)} MB), so it's been uploaded to a file host.\n\n` +
+                  `**[⬇️ Download Token Zip](${upload.url})** *(${zipMB.toFixed(1)} MB)*\n\n` +
+                  filenameNote + `\n\n` +
                   `━━━━━━━━━━━━━━━━━━━━━━\n` +
                   `⚠️ **CRITICAL INSTRUCTIONS**\n` +
-                  `1. Click the link above to download the zip.\n` +
+                  `1. Download the zip from the link above.\n` +
                   `2. Extract it into your game folder.\n` +
                   `3. **NEVER** launch the game from Steam.\n` +
                   `4. Always use the **.exe** located in your game folder.\n` +
                   `━━━━━━━━━━━━━━━━━━━━━━\n` +
-                  `⏱️ **Link expires in 72 hours.** Download soon.`
+                  `⏱️ ${upload.expiryText}.`
                 )
                 .addFields(
                   { name: '👤 Requester', value: `<@${ticket.userId}>`, inline: true },
@@ -779,7 +789,7 @@ client.on(Events.MessageCreate, async (message) => {
               await deliveryMsg.react('❤️').catch(() => {});
 
               if (guild) {
-                await logAction(guild, '🤖 Auto-Token Delivered (External Host)', `Bot auto-generated and delivered token for **${ticket.game.name}** (${zipMB.toFixed(1)} MB) via file host link in <#${message.channelId}>. Link: ${hostedUrl}`, 0x57F287);
+                await logAction(guild, '🤖 Auto-Token Delivered (External Host)', `Bot auto-generated and delivered token for **${ticket.game.name}** (${zipMB.toFixed(1)} MB) via ${upload.provider} in <#${message.channelId}>. Link: ${upload.url}`, 0x57F287);
               }
 
               // Clean up local zip — we have the hosted copy
