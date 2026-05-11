@@ -12,6 +12,7 @@ import { refreshAllPanels } from './utils/panelManager';
 import { verifyScreenshot } from './utils/groq';
 import { initFileWatcher, syncGamesFromFile } from './utils/syncManager';
 import { generateToken, generateTestToken } from './utils/tokenGenerator';
+import { uploadToLitterbox } from './utils/fileHost';
 import { updateTicketWaitTimes, checkWeeklyStaffStats, checkDutyStatusReset, checkStaleTickets, cleanupExpiredCooldowns } from './utils/scheduler';
 import { toggleDuty } from './utils/dutyManager';
 import { addSubscription, getUserSubscriptions } from './utils/subscriptionManager';
@@ -396,34 +397,63 @@ async function handleChatCommand(interaction: any) {
 
       if (zipPath) {
         const safeGameName = game.name.replace(/[<>:"/\\|?*]/g, '').trim();
-        const zipFile = new AttachmentBuilder(zipPath, { name: `TEST [${safeGameName}].zip` });
-
         const fs = await import('fs');
-        const sizeMB = (fs.statSync(zipPath).size / (1024 * 1024)).toFixed(1);
-
-        const successEmbed = new EmbedBuilder()
-          .setTitle('🧪 TEST Token Generated')
-          .setDescription(`**${game.name}** template built successfully.\n\n⚠️ **This is a TEST zip** — the ticket inside is a placeholder string \`FAKE_TEST_TICKET_DO_NOT_USE...\`. The DLLs, configs, and structure are real. Use this to verify the template ships correctly.`)
-          .setColor(0x57F287)
-          .addFields(
-            { name: 'AppID', value: `\`${game.appId}\``, inline: true },
-            { name: 'Steam ID', value: `\`76561199000000001\``, inline: true },
-            { name: 'Zip Size', value: `\`${sizeMB} MB\``, inline: true }
-          )
-          .setTimestamp();
+        const sizeBytes = fs.statSync(zipPath).size;
+        const sizeMB = sizeBytes / (1024 * 1024);
+        const guild = interaction.guild;
+        const tier = guild?.premiumTier ?? 0;
+        const limitMB = tier >= 3 ? 100 : tier >= 2 ? 50 : 10;
 
         try {
-          await interaction.editReply({ embeds: [successEmbed], files: [zipFile] });
+          if (sizeMB <= limitMB) {
+            // Fits — attach directly
+            const zipFile = new AttachmentBuilder(zipPath, { name: `TEST [${safeGameName}].zip` });
+            const successEmbed = new EmbedBuilder()
+              .setTitle('🧪 TEST Token Generated')
+              .setDescription(`**${game.name}** template built successfully.\n\n⚠️ **This is a TEST zip** — the ticket inside is a placeholder string \`FAKE_TEST_TICKET_DO_NOT_USE...\`. The DLLs, configs, and structure are real. Use this to verify the template ships correctly.`)
+              .setColor(0x57F287)
+              .addFields(
+                { name: 'AppID', value: `\`${game.appId}\``, inline: true },
+                { name: 'Steam ID', value: `\`76561199000000001\``, inline: true },
+                { name: 'Zip Size', value: `\`${sizeMB.toFixed(1)} MB\``, inline: true }
+              )
+              .setTimestamp();
+            await interaction.editReply({ embeds: [successEmbed], files: [zipFile] });
+          } else {
+            // Too big — upload to litterbox and post a link
+            console.log(`[TestToken] Zip ${sizeMB.toFixed(1)} MB > ${limitMB} MB limit — uploading to file host`);
+            await interaction.editReply({ embeds: [
+              new EmbedBuilder()
+                .setTitle('📤 Uploading TEST Token')
+                .setDescription(`Zip is **${sizeMB.toFixed(1)} MB** (Discord limit here is ${limitMB} MB). Uploading to external host...`)
+                .setColor(0xFEE75C)
+                .setTimestamp()
+            ]});
+            const hostedUrl = await uploadToLitterbox(zipPath, '24h');
+            const hostedEmbed = new EmbedBuilder()
+              .setTitle('🧪 TEST Token Generated (External)')
+              .setDescription(
+                `**${game.name}** template built successfully — too big to attach (${sizeMB.toFixed(1)} MB), uploaded to file host.\n\n` +
+                `**[⬇️ Download TEST Zip](${hostedUrl})** *(expires in 24h)*\n\n` +
+                `⚠️ Fake ticket inside — DO NOT use against a real game.`
+              )
+              .setColor(0x57F287)
+              .addFields(
+                { name: 'AppID', value: `\`${game.appId}\``, inline: true },
+                { name: 'Size', value: `\`${sizeMB.toFixed(1)} MB\``, inline: true }
+              )
+              .setTimestamp();
+            await interaction.editReply({ embeds: [hostedEmbed] });
+          }
         } catch (sendErr) {
           const se = sendErr as Error;
-          // Most likely file too big for the server's upload limit
-          await interaction.editReply({
-            embeds: [successEmbed.setDescription(
-              `⚠️ Built successfully but failed to upload (likely too large for this server's ${sizeMB} MB attachment limit).\n\n**Error:** ${se.message}`
-            ).setColor(0xFEE75C)]
-          }).catch(() => {});
+          await interaction.editReply({ embeds: [
+            new EmbedBuilder()
+              .setTitle('🧪 TEST Token — Upload Failed')
+              .setDescription(`Built successfully but failed to deliver.\n\n\`\`\`\n${(se?.message || String(se)).slice(0, 400)}\n\`\`\``)
+              .setColor(0xED4245)
+          ]}).catch(() => {});
         } finally {
-          // Clean up the test zip from disk
           try { fs.unlinkSync(zipPath); } catch {}
         }
       } else {
@@ -669,23 +699,90 @@ client.on(Events.MessageCreate, async (message) => {
             const zipMB = zipBytes / (1024 * 1024);
 
             if (zipMB > limitMB) {
-              console.error(`[TokenGen] Zip too large for this server: ${zipMB.toFixed(1)} MB > ${limitMB} MB (boost tier ${tier})`);
-              const tooBigEmbed = new EmbedBuilder()
-                .setTitle('⚠️ Token Too Large for Discord')
+              console.log(`[TokenGen] Zip ${zipMB.toFixed(1)} MB > ${limitMB} MB Discord limit (boost tier ${tier}) — uploading to file host instead`);
+
+              const uploadingEmbed = new EmbedBuilder()
+                .setTitle('📤 Uploading Token to External Host')
                 .setDescription(
-                  `Generated token zip is **${zipMB.toFixed(1)} MB**, but this server's Discord upload limit is **${limitMB} MB** (boost tier ${tier}).\n\n` +
-                  `**Options to fix this:**\n` +
-                  `1. Boost this server to Level 2 (${limitMB === 10 ? '50 MB upload' : 'already at this tier'}) or Level 3 (100 MB upload)\n` +
-                  `2. Staff can deliver manually via a file-sharing service\n` +
-                  `3. Trim the template (Pragmata-style games with ~200 artwork images)`
+                  `The zip is **${zipMB.toFixed(1)} MB** — too large for this server's Discord upload limit (${limitMB} MB).\n\n` +
+                  `Uploading to a file host so you can download it directly. This takes up to a minute for large files.`
                 )
-                .setColor(0xED4245)
+                .setColor(0xFEE75C)
                 .setTimestamp();
-              await genMsg.edit({ embeds: [tooBigEmbed] });
-              await (message.channel as TextChannel).send({ content: `<@&${CONFIG.STAFF_ROLE_ID}> Auto-generated zip too large (${zipMB.toFixed(1)} MB > ${limitMB} MB). Manual delivery needed.` });
-              if (guild) {
-                await logAction(guild, '⚠️ Zip Too Large', `Auto-generated zip for **${ticket.game.name}** is ${zipMB.toFixed(1)} MB, exceeds server upload limit of ${limitMB} MB (boost tier ${tier}).`, 0xED4245);
+              await genMsg.edit({ embeds: [uploadingEmbed] });
+
+              let hostedUrl: string | null = null;
+              try {
+                hostedUrl = await uploadToLitterbox(zipPath, '72h');
+                console.log(`[TokenGen] Uploaded to litterbox: ${hostedUrl}`);
+              } catch (uploadErr) {
+                const ue = uploadErr as Error;
+                console.error('[TokenGen] Litterbox upload failed:', ue);
+                const failEmbed = new EmbedBuilder()
+                  .setTitle('⚠️ External Upload Failed')
+                  .setDescription(
+                    `Zip is too large for Discord (${zipMB.toFixed(1)} MB > ${limitMB} MB) and the backup file host upload failed.\n\n` +
+                    `\`\`\`\n${(ue?.message || String(ue)).slice(0, 300)}\n\`\`\`\n` +
+                    `Staff has been notified for manual delivery.`
+                  )
+                  .setColor(0xED4245)
+                  .setTimestamp();
+                await genMsg.edit({ embeds: [failEmbed] });
+                await (message.channel as TextChannel).send({ content: `<@&${CONFIG.STAFF_ROLE_ID}> Auto-gen worked but the zip is ${zipMB.toFixed(1)} MB and won't fit Discord (${limitMB} MB). External upload also failed. Manual delivery needed.` });
+                if (guild) {
+                  await logAction(guild, '⚠️ Token Upload Failed', `**${ticket.game.name}** — zip ${zipMB.toFixed(1)} MB > Discord limit ${limitMB} MB. Litterbox upload error:\n\`\`\`\n${(ue?.message || String(ue)).slice(0, 500)}\n\`\`\``, 0xED4245);
+                }
+                try { fsMod.unlinkSync(zipPath); } catch {}
+                return;
               }
+
+              // Success: post the link instead of attaching the file
+              const linkEmbed = new EmbedBuilder()
+                .setTitle(`📦 ${CONFIG.NAME} • Token Delivery (External)`)
+                .setDescription(
+                  `<@${ticket.userId}>, your activation token for **${ticket.game.name}** is ready!\n\n` +
+                  `The zip was too large for Discord (${zipMB.toFixed(1)} MB), so it's been uploaded to a temporary file host.\n\n` +
+                  `**[⬇️ Download Token Zip](${hostedUrl})** *(\`Token [${safeGameName}].zip\`, ${zipMB.toFixed(1)} MB)*\n\n` +
+                  `━━━━━━━━━━━━━━━━━━━━━━\n` +
+                  `⚠️ **CRITICAL INSTRUCTIONS**\n` +
+                  `1. Click the link above to download the zip.\n` +
+                  `2. Extract it into your game folder.\n` +
+                  `3. **NEVER** launch the game from Steam.\n` +
+                  `4. Always use the **.exe** located in your game folder.\n` +
+                  `━━━━━━━━━━━━━━━━━━━━━━\n` +
+                  `⏱️ **Link expires in 72 hours.** Download soon.`
+                )
+                .addFields(
+                  { name: '👤 Requester', value: `<@${ticket.userId}>`, inline: true },
+                  { name: '🛠️ Activator', value: `${client.user}`, inline: true },
+                  { name: '📋 Next Step', value: 'Confirm using the buttons below once installed.', inline: false }
+                )
+                .setColor(0x5865F2)
+                .setTimestamp();
+
+              const worksRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+                new ButtonBuilder().setCustomId('works_yes').setLabel('Yes, it works!').setStyle(ButtonStyle.Success),
+                new ButtonBuilder().setCustomId('works_no').setLabel('No, it doesn\'t work').setStyle(ButtonStyle.Danger)
+              );
+
+              const deliveryMsg = await (message.channel as TextChannel).send({
+                embeds: [linkEmbed],
+                components: [worksRow]
+              });
+
+              await prisma.ticket.update({
+                where: { id: ticket.id },
+                data: { deliveryMessageId: deliveryMsg.id, staffId: client.user!.id }
+              });
+
+              await genMsg.delete().catch(() => {});
+              await deliveryMsg.react('❤️').catch(() => {});
+
+              if (guild) {
+                await logAction(guild, '🤖 Auto-Token Delivered (External Host)', `Bot auto-generated and delivered token for **${ticket.game.name}** (${zipMB.toFixed(1)} MB) via file host link in <#${message.channelId}>. Link: ${hostedUrl}`, 0x57F287);
+              }
+
+              // Clean up local zip — we have the hosted copy
               try { fsMod.unlinkSync(zipPath); } catch {}
               return;
             }
