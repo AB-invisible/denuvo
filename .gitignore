@@ -10,3 +10,6 @@ __pycache__/
 
 # Generated test/token zips (created at runtime)
 /Generated_Tokens/
+
+# Auto-sync log (rotates locally, no value in versioning)
+/tools/sync_and_push.log
