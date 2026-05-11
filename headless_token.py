@@ -473,6 +473,20 @@ def main(app_id, game_name, steampass_uuid):
         if missing:
             log(f"  WARNING: missing variants/dlls: {sorted(set(missing))}")
 
+        # If the template ships MKTL's coldloader, it needs a mktl.ini config file
+        # next to it. Auto-generate one based on this game's appId, replacing any
+        # stale or appid-mismatched mktl.ini that was bundled.
+        # MKTL coldloader is identified by being significantly larger than the
+        # custom one (~219 KB vs ~199 KB), but the safest signal is just: write
+        # mktl.ini whenever a coldloader.dll exists in the output.
+        for cl in out.rglob("coldloader.dll"):
+            mktl_ini = cl.parent / "mktl.ini"
+            mktl_ini.write_text(
+                f"[settings]\nappid = {app_id}\ncleanup_delay = 10\n",
+                encoding="utf-8"
+            )
+            log(f"  Wrote mktl.ini next to {cl.relative_to(out)} (appid={app_id})")
+
         # Find steam_settings dir (may be nested in exe subfolder)
         ss_dirs = list(out.rglob("steam_settings"))
         if ss_dirs:
