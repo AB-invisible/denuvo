@@ -11,20 +11,30 @@ export async function logGlobal(title: string, description: string, color: numbe
 export async function logAction(guild: Guild, title: string, description: string, color: number, fields: { name: string, value: string, inline?: boolean }[] = []) {
   // Try to find a log channel. Priority: LOG_CHANNEL_ID from config -> 'gen-logs' name
   let logChannel = guild.channels.cache.get(CONFIG.LOG_CHANNEL_ID) as TextChannel;
-  
+
   if (!logChannel) {
     logChannel = guild.channels.cache.find(
       c => (c.name === 'gen-logs' || c.name === 'logs') && c.isTextBased()
     ) as TextChannel;
   }
-  
+
   if (!logChannel) return;
 
+  // Truncate to stay within Discord's embed limits:
+  //   title <=256 chars, description <=4096, field name <=256, field value <=1024
+  const safeTitle = (title || '').slice(0, 256);
+  const safeDescription = (description || '').slice(0, 4000); // 4000 not 4096, leaves headroom
+  const safeFields = fields.slice(0, 25).map(f => ({
+    name: (f.name || '').slice(0, 256),
+    value: (f.value || '').slice(0, 1024),
+    inline: f.inline ?? false,
+  }));
+
   const embed = new EmbedBuilder()
-    .setTitle(title)
-    .setDescription(description)
+    .setTitle(safeTitle)
+    .setDescription(safeDescription)
     .setColor(color)
-    .addFields(fields)
+    .addFields(safeFields)
     .setTimestamp();
 
   try {

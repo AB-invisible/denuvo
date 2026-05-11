@@ -7,13 +7,30 @@ import { CONFIG } from '../config';
  * as roles change or new membership tiers are added.
  */
 
+let warnedStaffEmpty = false;
+let warnedDonatorEmpty = false;
+
 export function isStaff(member: GuildMember): boolean {
   if (!member || !member.roles) return false;
+  if (!CONFIG.STAFF_ROLE_ID) {
+    if (!warnedStaffEmpty) {
+      console.warn('[permissions] STAFF_ROLE_ID is empty — isStaff() will always return false. Set the env var to enable staff features.');
+      warnedStaffEmpty = true;
+    }
+    return false;
+  }
   return member.roles.cache.has(CONFIG.STAFF_ROLE_ID);
 }
 
 export function isDonator(member: GuildMember): boolean {
   if (!member || !member.roles) return false;
+  if (!CONFIG.DONATOR_ROLE_ID) {
+    if (!warnedDonatorEmpty) {
+      console.warn('[permissions] DONATOR_ROLE_ID is empty — isDonator() will always return false.');
+      warnedDonatorEmpty = true;
+    }
+    return false;
+  }
   return member.roles.cache.has(CONFIG.DONATOR_ROLE_ID);
 }
 

@@ -51,7 +51,9 @@ ANSWER: [YES or NO]`,
           ],
         },
       ],
-      model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+      // Model can be overridden via env var if Groq deprecates the default.
+      // List of models: https://console.groq.com/docs/models
+      model: process.env.GROQ_MODEL || 'meta-llama/llama-4-scout-17b-16e-instruct',
       temperature: 0.1, // Low temperature for higher consistency
     });
 

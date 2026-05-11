@@ -119,14 +119,43 @@ export async function createTicket(interaction: StringSelectMenuInteraction, gam
     const { game } = result;
     const channelName = `${gameName.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${interaction.user.username.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
 
+    // ─── DEFENSIVE CONFIG VALIDATION ───
+    // Verify the configured category exists in this guild. If not (e.g. placeholder ID
+    // or wrong server), fall back to creating the channel at root level instead of crashing.
+    let parentId: string | null = null;
+    if (CONFIG.TICKET_CATEGORY_ID) {
+      const cat = await guild.channels.fetch(CONFIG.TICKET_CATEGORY_ID).catch(() => null);
+      if (cat && cat.type === 4 /* GuildCategory */) {
+        parentId = CONFIG.TICKET_CATEGORY_ID;
+      } else {
+        console.warn(`[createTicket] TICKET_CATEGORY_ID="${CONFIG.TICKET_CATEGORY_ID}" not a valid category in this guild — creating channel at root.`);
+      }
+    }
+
+    // Verify staff role exists. If not, skip its permission override (won't crash) and
+    // skip the @staff mention later.
+    const staffRole = CONFIG.STAFF_ROLE_ID
+      ? await guild.roles.fetch(CONFIG.STAFF_ROLE_ID).catch(() => null)
+      : null;
+    if (CONFIG.STAFF_ROLE_ID && !staffRole) {
+      console.warn(`[createTicket] STAFF_ROLE_ID="${CONFIG.STAFF_ROLE_ID}" not found in this guild — staff permissions on the ticket channel will be skipped.`);
+    }
+
+    const permissionOverwrites: any[] = [
+      { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+      { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+    ];
+    if (staffRole) {
+      permissionOverwrites.push({
+        id: staffRole.id,
+        allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages]
+      });
+    }
+
     const channel = await guild.channels.create({
       name: channelName,
-      parent: CONFIG.TICKET_CATEGORY_ID || null,
-      permissionOverwrites: [
-        { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-        { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
-        { id: CONFIG.STAFF_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
-      ],
+      parent: parentId,
+      permissionOverwrites,
     });
 
     const ticket = await prisma.ticket.create({
@@ -159,7 +188,8 @@ export async function createTicket(interaction: StringSelectMenuInteraction, gam
       new ButtonBuilder().setCustomId('close_ticket').setLabel('Close Ticket').setStyle(ButtonStyle.Danger)
     );
 
-    const controlMsg = await channel.send({ content: `<@&${CONFIG.STAFF_ROLE_ID}> New session requested!`, embeds: [embed], components: [row] });
+    const staffMention = staffRole ? `<@&${staffRole.id}> ` : '';
+    const controlMsg = await channel.send({ content: `${staffMention}New session requested!`, embeds: [embed], components: [row] });
 
     await prisma.ticket.update({
       where: { id: ticket.id },
@@ -196,8 +226,33 @@ export async function createTicket(interaction: StringSelectMenuInteraction, gam
     await refreshAllPanels();
 
   } catch (error) {
-    console.error('Error in createTicket:', error);
-    await interaction.editReply({ content: `❌ **Denuvo Check Error:** Failed to initialize session.` }).catch(() => {});
+    const err = error as Error;
+    console.error('Error in createTicket:', err);
+
+    // Build a useful error message instead of a generic one — helps staff debug
+    // config issues without digging through Railway logs.
+    const detail = err?.message || String(err);
+    let hint = '';
+    if (detail.includes('Missing Permissions')) {
+      hint = '\n\n*The bot is missing **Manage Channels** or **Manage Roles** permission in this server.*';
+    } else if (detail.includes('Unknown Channel') || detail.includes('Invalid Form Body') && detail.includes('parent')) {
+      hint = '\n\n*The `TICKET_CATEGORY_ID` env var points at a category that doesn\'t exist in this server.*';
+    } else if (detail.includes('Unknown Role')) {
+      hint = '\n\n*The `STAFF_ROLE_ID` env var points at a role that doesn\'t exist in this server.*';
+    } else if (detail.includes('Maximum number of channels')) {
+      hint = '\n\n*This server has reached Discord\'s channel limit (500).*';
+    }
+
+    await interaction.editReply({
+      content: `❌ **Denuvo Check Error:** Failed to initialize session.\n\`\`\`\n${detail.slice(0, 500)}\n\`\`\`${hint}`
+    }).catch(() => {});
+
+    // Also try to log it to the log channel for staff visibility
+    try {
+      if (interaction.guild) {
+        await logAction(interaction.guild, '🚨 Ticket Creation Failed', `User <@${interaction.user.id}> tried to open a ticket for **${gameName}** but it failed:\n\`\`\`\n${detail.slice(0, 800)}\n\`\`\`${hint}`, 0xED4245);
+      }
+    } catch {}
   }
 }
 

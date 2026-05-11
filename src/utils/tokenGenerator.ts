@@ -91,7 +91,7 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
     const proc = execFile(
       PYTHON_EXE,
       [HEADLESS_SCRIPT, String(appId), gameName, steampassUuid],
-      { timeout: 90000, maxBuffer: 1024 * 1024, env },
+      { timeout: 120_000, maxBuffer: 20 * 1024 * 1024, env },
       (error, stdout, stderr) => {
         const logs = stdout + (stderr ? `\n${stderr}` : '');
 
@@ -126,7 +126,7 @@ function generateLegacy(appId: number, gameName: string): Promise<{ zipPath: str
     const proc = execFile(
       PYTHON_EXE,
       [LEGACY_SCRIPT, String(appId), gameName],
-      { timeout: 60000, maxBuffer: 1024 * 1024, env: buildPythonEnv() },
+      { timeout: 120_000, maxBuffer: 20 * 1024 * 1024, env: buildPythonEnv() },
       (error, stdout, stderr) => {
         const logs = stdout + (stderr ? `\n${stderr}` : '');
 

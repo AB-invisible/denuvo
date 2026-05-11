@@ -959,9 +959,11 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
     if (ticket) {
       const assistsStaff = ticket.staffId === user.id;
       const isSystemConfirm = user.id === client.user?.id;
-      const isUserConfirm = user.id === ticket.userId;
 
-      if (assistsStaff || isSystemConfirm || isUserConfirm) {
+      // Security: a user reacting to their OWN vouch must not be enough to close
+      // the ticket — that defeats the purpose of vouching. Only the assigned staff
+      // who delivered the token, or the bot itself, can confirm via reaction.
+      if (assistsStaff || isSystemConfirm) {
         const vTimer = vouchTimers.get(ticket.userId);
         if (vTimer) {
            clearTimeout(vTimer);
@@ -1064,4 +1066,32 @@ setInterval(() => checkDutyStatusReset(), 30 * 60 * 1000); // Duty Reset (Every 
 setInterval(() => checkStaleTickets(client), 10 * 60 * 1000); // Stale Tickets (Every 10m)
 setInterval(() => cleanupExpiredCooldowns(), 6 * 60 * 60 * 1000); // Bug #15: Cooldown Cleanup (Every 6h)
 
-client.login(CONFIG.TOKEN);
+// --- Process-level error handlers (prevents silent crashes) ---
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[Process] Unhandled Promise Rejection:', reason);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('[Process] Uncaught Exception:', err);
+  // Don't exit — let Discord.js reconnect on transient errors.
+  // Real fatal errors (out-of-memory) will exit on their own.
+});
+
+// --- Login with graceful failure logging ---
+(async () => {
+  if (!CONFIG.TOKEN) {
+    console.error('[Boot] DISCORD_TOKEN is not set. Cannot start the bot.');
+    process.exit(1);
+  }
+  try {
+    await client.login(CONFIG.TOKEN);
+  } catch (err) {
+    const e = err as Error;
+    console.error('[Boot] Failed to log in to Discord:', e.message);
+    if (e.message.includes('TokenInvalid') || e.message.includes('invalid token')) {
+      console.error('[Boot] → The DISCORD_TOKEN environment variable is invalid or has been reset.');
+      console.error('[Boot] → Reset it in the Discord Developer Portal and update Railway Variables.');
+    }
+    process.exit(1);
+  }
+})();
