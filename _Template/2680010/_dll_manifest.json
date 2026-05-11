@@ -1,6 +1,6 @@
 {
   "BBQ/Binaries/Win64/coldloader.dll": "coldloader.b80e5f55504c.dll",
-  "BBQ/Binaries/Win64/GameOverlayRenderer64.dll": "GameOverlayRenderer64.f20d9a87ca0f.dll",
+  "BBQ/Binaries/Win64/GameOverlayRenderer64.dll": "GameOverlayRenderer64.cda0ac0f3ed2.dll",
   "BBQ/Binaries/Win64/steamclient64.dll": "steamclient64.d95e0f4ef8fa.dll",
-  "BBQ/Binaries/Win64/winmm.dll": "version.52c74d2f8a5f.dll"
+  "BBQ/Binaries/Win64/winmm.dll": "version.39d4c1175550.dll"
 }

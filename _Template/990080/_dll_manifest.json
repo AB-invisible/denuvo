@@ -1,8 +1,8 @@
 {
-  "Engine/Binaries/ThirdParty/Steamworks/Steamv154/Win64/steam_api64.dll": "steam_api64.d48938046d6a.dll",
+  "Engine/Binaries/ThirdParty/Steamworks/Steamv154/Win64/steam_api64.dll": "steam_api64.7f780ac9ecda.dll",
   "Engine/Binaries/ThirdParty/Steamworks/Steamv154/Win64/steam_settings/steam_api64.dll": "steam_api64.d48938046d6a.dll",
   "Phoenix/Binaries/Win64/coldloader.dll": "coldloader.b80e5f55504c.dll",
   "Phoenix/Binaries/Win64/GameOverlayRenderer64.dll": "GameOverlayRenderer64.f20d9a87ca0f.dll",
-  "Phoenix/Binaries/Win64/steamclient64.dll": "steamclient64.bb26df893b66.dll",
+  "Phoenix/Binaries/Win64/steamclient64.dll": "steamclient64.4bada12541b1.dll",
   "Phoenix/Binaries/Win64/version.dll": "version.52c74d2f8a5f.dll"
 }

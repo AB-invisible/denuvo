@@ -1,7 +1,8 @@
 {
   "coldloader.dll": "coldloader.b80e5f55504c.dll",
   "dinput8.dll": "dinput8.d278709e8f2a.dll",
-  "GameOverlayRenderer64.dll": "GameOverlayRenderer64.f20d9a87ca0f.dll",
-  "steamclient64.dll": "steamclient64.2d455fcdcc5a.dll",
-  "version.dll": "winmm.f1491284b4bf.dll"
+  "GameOverlayRenderer64.dll": "GameOverlayRenderer64.cda0ac0f3ed2.dll",
+  "steamclient64.dll": "steamclient64.4bada12541b1.dll",
+  "version.dll": "winmm.f1491284b4bf.dll",
+  "steam_api64.dll": "steam_api64.7f780ac9ecda.dll"
 }
