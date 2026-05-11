@@ -541,12 +541,13 @@ def main(app_id, game_name, steampass_uuid):
             copy_goldberg_dlls(exe_dir, exe_dir)
             log("Generated steam_settings + DLLs")
 
-    # Write both coldloader.ini (for the custom 199 KB coldloader) and
-    # mktl.ini (for MKTL's 219 KB coldloader) next to every coldloader.dll
-    # in the output, with the correct appid. Both files are tiny and harmless
-    # if the other-version coldloader is in use. This runs for BOTH the
-    # template path and the auto-gen path, fixing the "appid not found" error
-    # on auto-generated games like Hello Kitty Island Adventure (2495100).
+    # Write coldloader.ini next to every coldloader.dll in the output, with
+    # the correct appid. The custom 199 KB coldloader.dll (the only one we
+    # use) reads this file — without it, the loader errors with "appid not
+    # found". Runs for BOTH the template path and auto-gen path.
+    #
+    # We deliberately do NOT write mktl.ini: only MKTL's own (different)
+    # coldloader.dll reads that, and we don't ship MKTL's coldloader.
     cl_count = 0
     for cl in out.rglob("coldloader.dll"):
         (cl.parent / "coldloader.ini").write_text(
@@ -557,13 +558,14 @@ def main(app_id, game_name, steampass_uuid):
             "cleanup_delay = 10\n",
             encoding="utf-8"
         )
-        (cl.parent / "mktl.ini").write_text(
-            f"[settings]\nappid = {app_id}\ncleanup_delay = 10\n",
-            encoding="utf-8"
-        )
+        # Also delete any stale mktl.ini that may have been bundled in a
+        # template from earlier versions of this codebase.
+        stale = cl.parent / "mktl.ini"
+        if stale.exists():
+            stale.unlink()
         cl_count += 1
     if cl_count:
-        log(f"Wrote coldloader.ini + mktl.ini next to {cl_count} coldloader.dll location(s) (appid={app_id})")
+        log(f"Wrote coldloader.ini next to {cl_count} coldloader.dll location(s) (appid={app_id})")
 
     # Inject ticket into configs.user.ini (always — template or not)
     inject_ticket(ss_dir / "configs.user.ini", token_b64, steam_id)
