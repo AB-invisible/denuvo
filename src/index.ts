@@ -70,6 +70,12 @@ const commands = [
     .setDescription('Generate a TEST token (fake credentials) to verify a game\'s template')
     .addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true))
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+  new SlashCommandBuilder()
+    .setName('tokengen')
+    .setDescription('Generate a REAL token (staff bypass, posted publicly, no screenshot needed)')
+    .addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true))
+    .addBooleanOption(o => o.setName('deduct').setDescription('Deduct one token from stock? (default: true)').setRequired(false))
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
 ].map(command => command.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(CONFIG.TOKEN);
@@ -249,7 +255,7 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 async function handleAutocomplete(interaction: any) {
-  if (interaction.commandName === 'stock' || interaction.commandName === 'exclude-auto' || interaction.commandName === 'test') {
+  if (interaction.commandName === 'stock' || interaction.commandName === 'exclude-auto' || interaction.commandName === 'test' || interaction.commandName === 'tokengen') {
     const focusedValue = interaction.options.getFocused();
     const games = await prisma.game.findMany({
       where: { name: { contains: focusedValue, mode: 'insensitive' } },
@@ -262,7 +268,9 @@ async function handleAutocomplete(interaction: any) {
 async function handleChatCommand(interaction: any) {
   const channel = interaction.channel;
   const isStaffStats = interaction.commandName === 'staffstats';
-  await interaction.deferReply({ flags: isStaffStats ? [] : [MessageFlags.Ephemeral] });
+  // /tokengen is public (other members can see the result), like staffstats.
+  const isPublic = isStaffStats || interaction.commandName === 'tokengen';
+  await interaction.deferReply({ flags: isPublic ? [] : [MessageFlags.Ephemeral] });
   
   if (interaction.commandName === 'postpanel') {
     if (channel?.isTextBased() && 'send' in channel) {
@@ -473,6 +481,129 @@ async function handleChatCommand(interaction: any) {
       const e = err as Error;
       console.error('[TestToken] Error:', e);
       await interaction.editReply({ content: `❌ **Test Token Error:** ${e.message}` });
+    }
+  } else if (interaction.commandName === 'tokengen') {
+    // /tokengen — staff-only command that generates a REAL token, posts publicly,
+    // skips screenshot verification, and optionally deducts stock. Independent
+    // of the ticket flow — does not touch tickets, cooldowns, or vouches.
+    const gameName = interaction.options.getString('game')!;
+    const deduct = interaction.options.getBoolean('deduct') ?? true;
+
+    if (!isStaff(interaction.member as GuildMember)) {
+      return interaction.editReply({ content: '❌ **Unauthorized:** Staff clearance required.' });
+    }
+
+    const game = await prisma.game.findUnique({ where: { name: gameName } });
+    if (!game) return interaction.editReply({ content: `❌ **Not Found:** Game **${gameName}** does not exist.` });
+    if (!game.appId) return interaction.editReply({ content: `❌ **No AppID:** Game **${gameName}** has no AppID configured.` });
+
+    const startEmbed = new EmbedBuilder()
+      .setTitle('⚙️ Generating Token (Staff Bypass)')
+      .setDescription(`Generating a real token for **${game.name}** (AppID: \`${game.appId}\`).\n*Requested by ${interaction.user}.*\nDeduct stock: \`${deduct ? 'YES' : 'NO'}\``)
+      .setColor(0x5865F2)
+      .setTimestamp();
+    await interaction.editReply({ embeds: [startEmbed] });
+
+    try {
+      const { zipPath, logs } = await generateToken(game.appId, game.name);
+      console.log(`[TokenGen-Cmd] Logs for ${game.name}:\n${logs}`);
+
+      if (!zipPath) {
+        const failEmbed = new EmbedBuilder()
+          .setTitle('⚠️ Token Generation Failed')
+          .setDescription(`Could not generate token for **${game.name}**.\n\n\`\`\`\n${logs.slice(-500)}\n\`\`\``)
+          .setColor(0xED4245)
+          .setTimestamp();
+        await interaction.editReply({ embeds: [failEmbed] });
+        if (interaction.guild) {
+          await logAction(interaction.guild, '⚠️ /tokengen Failed', `Staff ${interaction.user} ran /tokengen for **${game.name}** — generation failed.\n\`\`\`\n${logs.slice(-500)}\n\`\`\``, 0xED4245);
+        }
+        return;
+      }
+
+      // Deduct stock first (so the deduction is recorded even if Discord upload fails)
+      if (deduct) {
+        await consumeStock(game.id).catch(e => console.error('[TokenGen-Cmd] consumeStock failed:', e));
+      }
+
+      const safeGameName = game.name.replace(/[<>:"/\\|?*]/g, '').trim();
+      const fsMod = await import('fs');
+      const zipBytes = fsMod.statSync(zipPath).size;
+      const zipMB = zipBytes / (1024 * 1024);
+      const tier = interaction.guild?.premiumTier ?? 0;
+      const limitMB = tier >= 3 ? 100 : tier >= 2 ? 50 : 10;
+
+      const successFields = [
+        { name: '🎮 Game', value: `\`${game.name}\``, inline: true },
+        { name: '🆔 AppID', value: `\`${game.appId}\``, inline: true },
+        { name: '📦 Size', value: `\`${zipMB.toFixed(1)} MB\``, inline: true },
+        { name: '🛠️ Generated by', value: `${interaction.user}`, inline: true },
+        { name: '💰 Stock Deducted', value: `\`${deduct ? 'YES' : 'NO'}\``, inline: true },
+        { name: '📋 Method', value: '`/tokengen` (staff bypass)', inline: true },
+      ];
+
+      try {
+        if (zipMB <= limitMB) {
+          // Attach directly to the channel
+          const zipFile = new AttachmentBuilder(zipPath, { name: `Token [${safeGameName}].zip` });
+          const successEmbed = new EmbedBuilder()
+            .setTitle(`📦 ${CONFIG.NAME} • Token Delivery`)
+            .setDescription(`Token for **${game.name}** generated by ${interaction.user}.\n\n⚠️ **CRITICAL INSTRUCTIONS**\n1. Extract the zip into your game folder.\n2. **NEVER** launch the game from Steam.\n3. Always use the **.exe** located in your game folder.`)
+            .setColor(0x57F287)
+            .addFields(successFields)
+            .setTimestamp();
+          await interaction.editReply({ embeds: [successEmbed], files: [zipFile] });
+        } else {
+          // Upload to file host
+          await interaction.editReply({ embeds: [
+            new EmbedBuilder()
+              .setTitle('📤 Uploading Token')
+              .setDescription(`Zip is **${zipMB.toFixed(1)} MB** (Discord limit here is ${limitMB} MB). Uploading to file host...`)
+              .setColor(0xFEE75C)
+              .setTimestamp()
+          ] });
+          const upload = await uploadFile(zipPath, '72h');
+          const filenameNote = upload.provider === 'gofile'
+            ? `Click the link → click **Download** on the gofile page → file saves as \`Token [${safeGameName}].zip\`.`
+            : `Direct download link. File will arrive with a random filename — rename to \`Token [${safeGameName}].zip\` if you want it organized.`;
+          const hostedEmbed = new EmbedBuilder()
+            .setTitle(`📦 ${CONFIG.NAME} • Token Delivery (External)`)
+            .setDescription(
+              `Token for **${game.name}** generated by ${interaction.user}.\n\n` +
+              `**[⬇️ Download Token Zip](${upload.url})**\n\n${filenameNote}\n\n` +
+              `⚠️ **CRITICAL INSTRUCTIONS**\n` +
+              `1. Download the zip from the link above.\n` +
+              `2. Extract it into your game folder.\n` +
+              `3. **NEVER** launch the game from Steam.\n` +
+              `4. Always use the **.exe** located in your game folder.\n\n` +
+              `⏱️ ${upload.expiryText}.`
+            )
+            .setColor(0x57F287)
+            .addFields(successFields)
+            .setTimestamp();
+          await interaction.editReply({ embeds: [hostedEmbed] });
+        }
+
+        if (interaction.guild) {
+          await logAction(interaction.guild, '🛠️ /tokengen Delivered', `Staff ${interaction.user} generated a token via **/tokengen** for **${game.name}** (AppID \`${game.appId}\`, ${zipMB.toFixed(1)} MB).\n**Stock Deducted:** \`${deduct ? 'YES' : 'NO'}\``, 0x57F287);
+        }
+      } catch (sendErr) {
+        const se = sendErr as Error;
+        console.error('[TokenGen-Cmd] Delivery failed:', se);
+        await interaction.editReply({ embeds: [
+          new EmbedBuilder()
+            .setTitle('⚠️ Token Built But Failed to Send')
+            .setDescription(`Token generation succeeded but delivery failed:\n\`\`\`\n${(se?.message || String(se)).slice(0, 400)}\n\`\`\``)
+            .setColor(0xED4245)
+        ] }).catch(() => {});
+      } finally {
+        // Clean up the zip from disk; gofile/discord has its own copy
+        try { fsMod.unlinkSync(zipPath); } catch {}
+      }
+    } catch (err) {
+      const e = err as Error;
+      console.error('[TokenGen-Cmd] Error:', e);
+      await interaction.editReply({ content: `❌ **/tokengen Error:** ${e.message}` });
     }
   } else if (interaction.commandName === 'exclude-auto') {
     const gameName = interaction.options.getString('game')!;
