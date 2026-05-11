@@ -81,7 +81,10 @@ class SteampassClient:
             params={"account_platform": 1},
             timeout=15,
         )
-        resp.raise_for_status()
+        if not resp.ok:
+            # Surface the actual API error message (credits exhausted, etc.)
+            log(f"Steampass credentials API {resp.status_code} for UUID {product_uuid}: {resp.text[:500]}")
+            resp.raise_for_status()
         data = resp.json().get("data", {})
         steam = data.get("steam", data)  # Handle both nested and flat responses
         login = steam.get("login")
@@ -99,7 +102,11 @@ class SteampassClient:
             json={"uuid": product_uuid},
             timeout=15,
         )
-        resp.raise_for_status()
+        if not resp.ok:
+            # 422 here usually means: credits exhausted, UUID expired,
+            # account currently in use by another session, or rate-limited.
+            log(f"Steampass guard-code API {resp.status_code} for UUID {product_uuid}: {resp.text[:500]}")
+            resp.raise_for_status()
         data = resp.json().get("data", {})
         code = data.get("code")
         valid_until = data.get("valid_until")
