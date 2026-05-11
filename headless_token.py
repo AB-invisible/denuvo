@@ -198,7 +198,11 @@ def generate_steam_settings(output_dir, app_id, steam_id=None):
     ss = output_dir / "steam_settings"
     ss.mkdir(parents=True, exist_ok=True)
 
+    # Write steam_appid.txt to BOTH:
+    #   - output_dir (where coldloader.dll lives, for coldloader to find)
+    #   - output_dir/steam_settings/ (Goldberg's standard location)
     (output_dir / "steam_appid.txt").write_text(str(app_id))
+    (ss / "steam_appid.txt").write_text(str(app_id))
 
     lines = ["[user::general]", "account_name=Game_Gen", "language=english"]
     if steam_id:
@@ -480,20 +484,6 @@ def main(app_id, game_name, steampass_uuid):
         if missing:
             log(f"  WARNING: missing variants/dlls: {sorted(set(missing))}")
 
-        # If the template ships MKTL's coldloader, it needs a mktl.ini config file
-        # next to it. Auto-generate one based on this game's appId, replacing any
-        # stale or appid-mismatched mktl.ini that was bundled.
-        # MKTL coldloader is identified by being significantly larger than the
-        # custom one (~219 KB vs ~199 KB), but the safest signal is just: write
-        # mktl.ini whenever a coldloader.dll exists in the output.
-        for cl in out.rglob("coldloader.dll"):
-            mktl_ini = cl.parent / "mktl.ini"
-            mktl_ini.write_text(
-                f"[settings]\nappid = {app_id}\ncleanup_delay = 10\n",
-                encoding="utf-8"
-            )
-            log(f"  Wrote mktl.ini next to {cl.relative_to(out)} (appid={app_id})")
-
         # Find steam_settings dir (may be nested in exe subfolder)
         ss_dirs = list(out.rglob("steam_settings"))
         if ss_dirs:
@@ -550,6 +540,30 @@ def main(app_id, game_name, steampass_uuid):
             copy_coldloader_files(exe_dir)
             copy_goldberg_dlls(exe_dir, exe_dir)
             log("Generated steam_settings + DLLs")
+
+    # Write both coldloader.ini (for the custom 199 KB coldloader) and
+    # mktl.ini (for MKTL's 219 KB coldloader) next to every coldloader.dll
+    # in the output, with the correct appid. Both files are tiny and harmless
+    # if the other-version coldloader is in use. This runs for BOTH the
+    # template path and the auto-gen path, fixing the "appid not found" error
+    # on auto-generated games like Hello Kitty Island Adventure (2495100).
+    cl_count = 0
+    for cl in out.rglob("coldloader.dll"):
+        (cl.parent / "coldloader.ini").write_text(
+            "[settings]\n"
+            f"appid = {app_id}\n"
+            "steamclient64 = steamclient64.dll\n"
+            "steamclient = steamclient.dll\n"
+            "cleanup_delay = 10\n",
+            encoding="utf-8"
+        )
+        (cl.parent / "mktl.ini").write_text(
+            f"[settings]\nappid = {app_id}\ncleanup_delay = 10\n",
+            encoding="utf-8"
+        )
+        cl_count += 1
+    if cl_count:
+        log(f"Wrote coldloader.ini + mktl.ini next to {cl_count} coldloader.dll location(s) (appid={app_id})")
 
     # Inject ticket into configs.user.ini (always — template or not)
     inject_ticket(ss_dir / "configs.user.ini", token_b64, steam_id)
