@@ -658,6 +658,38 @@ client.on(Events.MessageCreate, async (message) => {
 
           if (zipPath) {
             const safeGameName = ticket.game.name.replace(/[<>:"/\\|?*]/g, '').trim();
+
+            // Pre-flight: check zip size against Discord's upload limit before attempting.
+            // Default tier = 10 MiB, boost level 2 = 50 MiB, boost level 3 = 100 MiB.
+            // discord.js v14: `guild.premiumTier` gives 0/1/2/3.
+            const fsMod = await import('fs');
+            const zipBytes = fsMod.statSync(zipPath).size;
+            const tier = guild?.premiumTier ?? 0;
+            const limitMB = tier >= 3 ? 100 : tier >= 2 ? 50 : 10;
+            const zipMB = zipBytes / (1024 * 1024);
+
+            if (zipMB > limitMB) {
+              console.error(`[TokenGen] Zip too large for this server: ${zipMB.toFixed(1)} MB > ${limitMB} MB (boost tier ${tier})`);
+              const tooBigEmbed = new EmbedBuilder()
+                .setTitle('⚠️ Token Too Large for Discord')
+                .setDescription(
+                  `Generated token zip is **${zipMB.toFixed(1)} MB**, but this server's Discord upload limit is **${limitMB} MB** (boost tier ${tier}).\n\n` +
+                  `**Options to fix this:**\n` +
+                  `1. Boost this server to Level 2 (${limitMB === 10 ? '50 MB upload' : 'already at this tier'}) or Level 3 (100 MB upload)\n` +
+                  `2. Staff can deliver manually via a file-sharing service\n` +
+                  `3. Trim the template (Pragmata-style games with ~200 artwork images)`
+                )
+                .setColor(0xED4245)
+                .setTimestamp();
+              await genMsg.edit({ embeds: [tooBigEmbed] });
+              await (message.channel as TextChannel).send({ content: `<@&${CONFIG.STAFF_ROLE_ID}> Auto-generated zip too large (${zipMB.toFixed(1)} MB > ${limitMB} MB). Manual delivery needed.` });
+              if (guild) {
+                await logAction(guild, '⚠️ Zip Too Large', `Auto-generated zip for **${ticket.game.name}** is ${zipMB.toFixed(1)} MB, exceeds server upload limit of ${limitMB} MB (boost tier ${tier}).`, 0xED4245);
+              }
+              try { fsMod.unlinkSync(zipPath); } catch {}
+              return;
+            }
+
             const zipFile = new AttachmentBuilder(zipPath, { name: `Token [${safeGameName}].zip` });
             const deliveryEmbed = createTokenDeliveryEmbed(ticket.game.name, ticket.userId, client.user!);
 
@@ -695,13 +727,32 @@ client.on(Events.MessageCreate, async (message) => {
             await (message.channel as TextChannel).send({ content: `<@&${CONFIG.STAFF_ROLE_ID}> Auto-generation failed. Manual token delivery needed.` });
           }
         } catch (genError) {
-          console.error('[TokenGen] Error:', genError);
+          const ge = genError as Error;
+          console.error('[TokenGen] Error:', ge);
+
+          const detail = ge?.message || String(ge);
+          let hint = '';
+          if (detail.includes('Request entity too large') || detail.includes('Payload Too Large') || detail.includes('25 MB') || detail.includes('413')) {
+            hint = '\n\n*The zip exceeds this server\'s Discord upload limit. Server needs to be boosted, or the template needs to be slimmed down.*';
+          } else if (detail.includes('ENOENT') || detail.includes('no such file')) {
+            hint = '\n\n*The Python script reported success but the zip path it returned doesn\'t exist on disk.*';
+          } else if (detail.includes('timed out') || detail.includes('timeout')) {
+            hint = '\n\n*Python script ran past the 120-second timeout.*';
+          }
+
           const errEmbed = new EmbedBuilder()
             .setTitle('⚠️ Generation Error')
-            .setDescription(`Token generation encountered an error. Staff has been notified.`)
+            .setDescription(`Token generation encountered an error. Staff has been notified.\n\`\`\`\n${detail.slice(0, 500)}\n\`\`\`${hint}`)
             .setColor(0xED4245);
           await genMsg.edit({ embeds: [errEmbed] });
           await (message.channel as TextChannel).send({ content: `<@&${CONFIG.STAFF_ROLE_ID}> Auto-generation error. Please handle manually.` });
+
+          // Also log to staff log channel
+          try {
+            if (guild) {
+              await logAction(guild, '🚨 Token Generation Error', `User <@${ticket.userId}> hit a token-gen error for **${ticket.game.name}** (AppID \`${ticket.game.appId}\`):\n\`\`\`\n${detail.slice(0, 800)}\n\`\`\`${hint}`, 0xED4245);
+            }
+          } catch {}
         }
       } else {
         const newRetryCount = ticket.verification.retryCount + 1;
