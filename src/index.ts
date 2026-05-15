@@ -96,7 +96,20 @@ const commands = [
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
     .setName('game')
-    .setDescription('Manage a game on the panel (add/remove, set demand tier, set access)')
+    .setDescription('Manage a game on the panel (add new, show/hide, set demand tier)')
+    .addSubcommand(sub => sub
+      .setName('add')
+      .setDescription('Add a brand-new game to the catalog (persisted in DB)')
+      .addStringOption(o => o.setName('name').setDescription('Game name as it appears on Steam').setRequired(true))
+      .addIntegerOption(o => o.setName('appid').setDescription('Steam AppID (numeric)').setRequired(true))
+      .addStringOption(o => o.setName('steampass').setDescription('steampass.gg product UUID (optional, needed for token gen)').setRequired(false))
+      .addStringOption(o => o.setName('tier').setDescription('Initial tier (default: normal)').setRequired(false).addChoices(
+        { name: '🟢 Normal', value: 'normal' },
+        { name: '🔥 High Demand', value: 'high' },
+        { name: '💎 Donor Only', value: 'donor' },
+        { name: '✨ Booster Only', value: 'booster' },
+      ))
+      .addIntegerOption(o => o.setName('stock').setDescription('Initial stock (default: 5)').setRequired(false)))
     .addSubcommand(sub => sub
       .setName('state')
       .setDescription('Show or hide a game on the panel')
@@ -115,6 +128,10 @@ const commands = [
         { name: '💎 Donor Only (2h cooldown, donors only)', value: 'donor' },
         { name: '✨ Booster Only (24h cooldown, boosters + donors)', value: 'booster' },
       )))
+    .addSubcommand(sub => sub
+      .setName('delete')
+      .setDescription('Permanently delete a manually-added game from the DB (cannot delete JSON-synced games)')
+      .addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true)))
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
 ].map(command => command.toJSON());
 
@@ -691,6 +708,101 @@ async function handleChatCommand(interaction: any) {
     }
   } else if (interaction.commandName === 'game') {
     const sub = interaction.options.getSubcommand();
+
+    // ── add: create a new game in the DB (skips the gameName autocomplete path) ──
+    if (sub === 'add') {
+      const name = interaction.options.getString('name')!.trim();
+      const appId = interaction.options.getInteger('appid')!;
+      const steampass = interaction.options.getString('steampass') || null;
+      const tier = interaction.options.getString('tier') || 'normal';
+      const stock = interaction.options.getInteger('stock') ?? 5;
+
+      const existing = await prisma.game.findUnique({ where: { name } });
+      if (existing) {
+        return interaction.editReply({
+          content: `❌ **Already Exists:** A game named **${name}** is already in the catalog.\n*Use \`/game state\` to toggle visibility, or \`/game tier\` to change its category.*`
+        });
+      }
+
+      const tierFlags: any = { highDemand: false, donatorOnly: false, boosterOnly: false };
+      if (tier === 'high') tierFlags.highDemand = true;
+      else if (tier === 'donor') tierFlags.donatorOnly = true;
+      else if (tier === 'booster') tierFlags.boosterOnly = true;
+
+      const created = await prisma.game.create({
+        data: {
+          name,
+          appId,
+          stock,
+          steampassUuid: steampass,
+          manuallyAdded: true,    // protects from syncManager auto-disable
+          disabled: false,
+          generationMode: 'gbe',
+          ...tierFlags,
+        } as any,
+      });
+
+      await refreshAllPanels();
+
+      const tierEmoji: Record<string, string> = { normal: '🟢', high: '🔥', donor: '💎', booster: '✨' };
+      await interaction.editReply({
+        content: `✅ **Added:** ${tierEmoji[tier]} **${name}** (AppID \`${appId}\`)\n` +
+          `• Stock: \`${stock}\`\n` +
+          `• Tier: \`${tier}\`\n` +
+          `• Token generation: ${steampass ? `enabled (steampass UUID set)` : `**disabled** — no steampass UUID provided. Set one later via DB or re-add.`}\n` +
+          `• Mode: \`gbe\` (default)\n\n` +
+          `Manually-added games are protected from the denuvo.json sync (won't be auto-disabled).`
+      });
+
+      if (interaction.guild) {
+        await logAction(interaction.guild, '🆕 Game Added',
+          `Staff ${interaction.user} added **${name}** (AppID \`${appId}\`, tier \`${tier}\`, stock \`${stock}\`).`,
+          0x57F287);
+      }
+      return;
+    }
+
+    // ── delete: remove a manually-added game ──
+    if (sub === 'delete') {
+      const gameName = interaction.options.getString('game')!;
+      const game = await prisma.game.findUnique({ where: { name: gameName } });
+      if (!game) return interaction.editReply({ content: `❌ **Not Found:** **${gameName}** doesn't exist.` });
+
+      if (!(game as any).manuallyAdded) {
+        return interaction.editReply({
+          content: `❌ **Cannot Delete:** **${gameName}** comes from \`denuvo.json\` — it's not safe to delete here because the next sync would re-create it.\n` +
+            `*To remove it permanently, edit \`denuvo.json\` and remove its entry. Or use \`/game state game:${gameName} state:off\` to just hide it.*`
+        });
+      }
+
+      // Block delete if there are active tickets
+      const activeTickets = await prisma.ticket.count({
+        where: { gameId: game.id, status: { in: ['OPEN', 'CLAIMED'] } }
+      });
+      if (activeTickets > 0) {
+        return interaction.editReply({
+          content: `❌ **Cannot Delete:** **${gameName}** has ${activeTickets} active ticket(s). Close them first.`
+        });
+      }
+
+      // Clean up related records first to satisfy foreign-key constraints
+      await prisma.restock.deleteMany({ where: { gameId: game.id } });
+      await prisma.subscription.deleteMany({ where: { gameId: game.id } });
+      // Closed tickets keep gameId — leave them for audit history
+      await prisma.game.delete({ where: { id: game.id } });
+
+      await refreshAllPanels();
+      await interaction.editReply({ content: `🗑️ **Deleted:** **${gameName}** removed from catalog.` });
+
+      if (interaction.guild) {
+        await logAction(interaction.guild, '🗑️ Game Deleted',
+          `Staff ${interaction.user} permanently deleted manually-added game **${gameName}** (AppID \`${game.appId}\`).`,
+          0xED4245);
+      }
+      return;
+    }
+
+    // ── state / tier: same as before, requires existing game ──
     const gameName = interaction.options.getString('game')!;
     const game = await prisma.game.findUnique({ where: { name: gameName } });
     if (!game) return interaction.editReply({ content: `❌ **Not Found:** Game **${gameName}** does not exist.` });

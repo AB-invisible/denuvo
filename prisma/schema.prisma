@@ -23,6 +23,10 @@ model Game {
   //   "coldloader"        -> V2 DLL hijack (coldloader.dll + version/dinput8/winmm proxy)
   //   "coldclientloader"  -> V1 launcher (START_<game>.exe + ColdClientLoader.ini)
   generationMode  String   @default("gbe")
+  // True for games created via /game add slash command (not from denuvo.json).
+  // syncManager.ts skips the auto-disable pass for these so the next JSON
+  // sync doesn't hide manually-added games.
+  manuallyAdded   Boolean  @default(false)
   updatedAt       DateTime @default(now()) @updatedAt
   tickets         Ticket[]
   restocks        Restock[]

@@ -80,17 +80,18 @@ export async function syncGamesFromFile() {
 
     await Promise.all(syncPromises);
 
-    // Handle game removals (disable games in DB if missing from JSON)
+    // Handle game removals (disable games in DB if missing from JSON).
+    // BUT — leave manuallyAdded games alone; they live entirely in the DB.
     const gamesInJson = new Set(denuvoData.games.map((g: { name: string }) => g.name));
     for (const game of currentGames) {
-      if (!gamesInJson.has(game.name) && !game.disabled) {
+      if (!gamesInJson.has(game.name) && !game.disabled && !(game as any).manuallyAdded) {
         await prisma.game.update({
           where: { id: game.id },
           data: { disabled: true }
         });
         changesDetected = true;
         console.log(`[Sync] Game "${game.name}" missing from JSON. Marking as disabled.`);
-        
+
         const guild = client.guilds.cache.get(CONFIG.GUILD_ID);
         if (guild) {
           await logAction(guild, '🚫 Game Disabled (Missing)', `**${game.name}** was missing from the configuration file and has been automatically disabled.`, 0xED4245);
