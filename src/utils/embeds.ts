@@ -76,14 +76,18 @@ export async function createMainPanel() {
             description = `ID: ${game.appId || 'N/A'} • ⏳ Out of stock (${reserved} reserved)`;
           }
 
+          // Tier overrides — order matters: donor > booster > high > stock-based
+          // (donor games are the most restrictive)
           if (game.donatorOnly) {
             emoji = '💎';
-            description = `💎 Donator Only • ${description}`;
-          }
-
-          if (game.boosterOnly) {
+            description = `💎 Donator Only (2h cd) • ${description}`;
+          } else if (game.boosterOnly) {
             emoji = '✨';
             description = `✨ Booster Only • ${description}`;
+          } else if (game.highDemand) {
+            // Don't override emoji if game is out of stock (keep the red)
+            if (availableStock > 0) emoji = '🔥';
+            description = `🔥 High Demand (48h cd) • ${description}`;
           }
 
 

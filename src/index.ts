@@ -94,6 +94,28 @@ const commands = [
       { name: 'Off — staff must deliver tokens manually', value: 'off' },
     ))
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+  new SlashCommandBuilder()
+    .setName('game')
+    .setDescription('Manage a game on the panel (add/remove, set demand tier, set access)')
+    .addSubcommand(sub => sub
+      .setName('state')
+      .setDescription('Show or hide a game on the panel')
+      .addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true))
+      .addStringOption(o => o.setName('state').setDescription('on = visible, off = hidden').setRequired(true).addChoices(
+        { name: 'On (visible on panel)', value: 'on' },
+        { name: 'Off (hidden from panel)', value: 'off' },
+      )))
+    .addSubcommand(sub => sub
+      .setName('tier')
+      .setDescription('Set demand level / access tier for a game')
+      .addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true))
+      .addStringOption(o => o.setName('tier').setDescription('Demand/access category').setRequired(true).addChoices(
+        { name: '🟢 Normal (24h cooldown, anyone)', value: 'normal' },
+        { name: '🔥 High Demand (48h cooldown, anyone)', value: 'high' },
+        { name: '💎 Donor Only (2h cooldown, donors only)', value: 'donor' },
+        { name: '✨ Booster Only (24h cooldown, boosters + donors)', value: 'booster' },
+      )))
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
 ].map(command => command.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(CONFIG.TOKEN);
@@ -273,7 +295,7 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 async function handleAutocomplete(interaction: any) {
-  if (interaction.commandName === 'stock' || interaction.commandName === 'exclude-auto' || interaction.commandName === 'test' || interaction.commandName === 'tokengen' || interaction.commandName === 'setmode') {
+  if (interaction.commandName === 'stock' || interaction.commandName === 'exclude-auto' || interaction.commandName === 'test' || interaction.commandName === 'tokengen' || interaction.commandName === 'setmode' || interaction.commandName === 'game') {
     const focusedValue = interaction.options.getFocused();
     const games = await prisma.game.findMany({
       where: { name: { contains: focusedValue, mode: 'insensitive' } },
@@ -666,6 +688,58 @@ async function handleChatCommand(interaction: any) {
         `Staff ${interaction.user} ${enable ? 'enabled' : 'paused'} automatic token generation.`,
         enable ? 0x57F287 : 0xED4245
       );
+    }
+  } else if (interaction.commandName === 'game') {
+    const sub = interaction.options.getSubcommand();
+    const gameName = interaction.options.getString('game')!;
+    const game = await prisma.game.findUnique({ where: { name: gameName } });
+    if (!game) return interaction.editReply({ content: `❌ **Not Found:** Game **${gameName}** does not exist.` });
+
+    if (sub === 'state') {
+      const state = interaction.options.getString('state')!;
+      const disabled = state === 'off';
+      await prisma.game.update({ where: { id: game.id }, data: { disabled } });
+      await refreshAllPanels();
+
+      const msg = disabled
+        ? `🔒 **${gameName}** is now **hidden** from the panel. Existing tickets are unaffected.`
+        : `🔓 **${gameName}** is now **visible** on the panel.`;
+      await interaction.editReply({ content: msg });
+
+      if (interaction.guild) {
+        await logAction(interaction.guild, disabled ? '🔒 Game Hidden' : '🔓 Game Shown',
+          `Staff ${interaction.user} set **${gameName}** to \`${state}\`.`,
+          disabled ? 0xED4245 : 0x57F287);
+      }
+    } else if (sub === 'tier') {
+      const tier = interaction.options.getString('tier')!;
+      // Mutually exclusive flags — clear all, then set the chosen one
+      const data: any = { highDemand: false, donatorOnly: false, boosterOnly: false };
+      if (tier === 'high') data.highDemand = true;
+      else if (tier === 'donor') data.donatorOnly = true;
+      else if (tier === 'booster') data.boosterOnly = true;
+      // 'normal' = all flags false (already set above)
+
+      await prisma.game.update({ where: { id: game.id }, data });
+      await refreshAllPanels();
+
+      const tierInfo: Record<string, { emoji: string; label: string; cooldown: string; access: string }> = {
+        normal: { emoji: '🟢', label: 'Normal', cooldown: '24h', access: 'anyone' },
+        high: { emoji: '🔥', label: 'High Demand', cooldown: '48h', access: 'anyone' },
+        donor: { emoji: '💎', label: 'Donor Only', cooldown: '2h', access: 'donors only' },
+        booster: { emoji: '✨', label: 'Booster Only', cooldown: '24h', access: 'boosters + donors' },
+      };
+      const info = tierInfo[tier];
+
+      await interaction.editReply({
+        content: `${info.emoji} **${gameName}** set to **${info.label}**.\n• Access: **${info.access}**\n• Cooldown after delivery: **${info.cooldown}**`
+      });
+
+      if (interaction.guild) {
+        await logAction(interaction.guild, `${info.emoji} Tier Changed`,
+          `Staff ${interaction.user} set **${gameName}** to **${info.label}** (cooldown \`${info.cooldown}\`, access \`${info.access}\`).`,
+          0x5865F2);
+      }
     }
   } else if (interaction.commandName === 'setmode') {
     const gameName = interaction.options.getString('game')!;
@@ -1261,7 +1335,7 @@ client.on(Events.MessageCreate, async (message) => {
 
       // ─── FAST-PATH AUTO-CLOSE ───
       // If the user pings the bot AND attaches a screenshot, finalize immediately:
-      //   • 24h cooldown
+      //   • cooldown based on game's tier (2h donor, 48h high, 24h normal/booster)
       //   • token deducted
       //   • ticket closed and channel deleted
 
@@ -1274,8 +1348,13 @@ client.on(Events.MessageCreate, async (message) => {
             vouchTimers.delete(ticket.userId);
           }
 
-          // 24h cooldown
-          const until = new Date(Date.now() + 24 * 60 * 60 * 1000);
+          // Cooldown based on game's tier (set via /game tier)
+          // Donor games:  2h  — donors get a fast reset as a perk
+          // High demand:  48h — slow down repeat requests on popular games
+          // Booster/Normal: 24h — standard
+          const g = ticket.game as any;
+          const cooldownHours = g.donatorOnly ? 2 : g.highDemand ? 48 : 24;
+          const until = new Date(Date.now() + cooldownHours * 60 * 60 * 1000);
           await prisma.cooldown.upsert({
             where: { userId: ticket.userId },
             update: { until },
@@ -1301,7 +1380,7 @@ client.on(Events.MessageCreate, async (message) => {
           if (ticketChannel) {
             const closeEmbed = new EmbedBuilder()
               .setTitle('✅ Vouch Auto-Verified')
-              .setDescription(`Vouch + screenshot detected. Session closed.\n\n**Cooldown:** \`24h\`\n**Token Deducted:** \`YES\``)
+              .setDescription(`Vouch + screenshot detected. Session closed.\n\n**Cooldown:** \`${cooldownHours}h\`\n**Token Deducted:** \`YES\``)
               .setColor(0x57F287)
               .setTimestamp();
             await ticketChannel.send({ embeds: [closeEmbed] }).catch(() => {});
@@ -1313,7 +1392,7 @@ client.on(Events.MessageCreate, async (message) => {
             await logAction(
               message.guild,
               '🤖 Vouch Auto-Closed',
-              `Bot auto-closed session for <@${ticket.userId}> after vouch (ping + screenshot) in <#${CONFIG.VOUCHER_CHANNEL_ID}>.\n\n**Game:** ${ticket.game.name}\n**Cooldown:** \`24h\`\n**Token Deducted:** \`YES\``,
+              `Bot auto-closed session for <@${ticket.userId}> after vouch (ping + screenshot) in <#${CONFIG.VOUCHER_CHANNEL_ID}>.\n\n**Game:** ${ticket.game.name}\n**Cooldown:** \`${cooldownHours}h\`\n**Token Deducted:** \`YES\``,
               0x57F287
             );
           }
