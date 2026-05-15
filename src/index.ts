@@ -86,6 +86,14 @@ const commands = [
       { name: 'ColdClientLoader V1 (launcher .exe)', value: 'coldclientloader' },
     ))
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+  new SlashCommandBuilder()
+    .setName('autogen')
+    .setDescription('Pause or resume auto-generation of tokens after screenshot verification (admin only)')
+    .addStringOption(o => o.setName('state').setDescription('Toggle (omit to view current state)').setRequired(false).addChoices(
+      { name: 'On — bot auto-generates after screenshot verifies', value: 'on' },
+      { name: 'Off — staff must deliver tokens manually', value: 'off' },
+    ))
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
 ].map(command => command.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(CONFIG.TOKEN);
@@ -615,6 +623,50 @@ async function handleChatCommand(interaction: any) {
       console.error('[TokenGen-Cmd] Error:', e);
       await interaction.editReply({ content: `❌ **/tokengen Error:** ${e.message}` });
     }
+  } else if (interaction.commandName === 'autogen') {
+    const state = interaction.options.getString('state');
+    const setting = await prisma.metadata.findUnique({ where: { key: 'autoGenEnabled' } });
+    const currentlyEnabled = setting?.value !== 'false';
+
+    if (!state) {
+      // Status check
+      await interaction.editReply({
+        content: `🤖 **Auto-Generation Status:** ${currentlyEnabled ? '🟢 **ENABLED**' : '🔴 **PAUSED**'}\n\n` +
+          `• **When enabled:** bot auto-generates tokens after AI screenshot verification\n` +
+          `• **When paused:** screenshots still get verified, but staff must deliver tokens manually\n\n` +
+          `Use \`/autogen state:off\` to pause, \`/autogen state:on\` to resume.`
+      });
+      return;
+    }
+
+    const enable = state === 'on';
+    if (enable === currentlyEnabled) {
+      await interaction.editReply({
+        content: `ℹ️ Auto-generation is already ${enable ? '🟢 enabled' : '🔴 paused'}. No change.`
+      });
+      return;
+    }
+
+    await prisma.metadata.upsert({
+      where: { key: 'autoGenEnabled' },
+      update: { value: enable ? 'true' : 'false' },
+      create: { key: 'autoGenEnabled', value: enable ? 'true' : 'false' }
+    });
+
+    await interaction.editReply({
+      content: enable
+        ? `🟢 **Auto-Generation Resumed.** Bot will now auto-generate tokens after screenshot verification.`
+        : `🔴 **Auto-Generation Paused.** New tickets will still verify screenshots, but staff must deliver tokens manually (via \`/tokengen\` or by uploading a zip in the ticket channel).`
+    });
+
+    if (interaction.guild) {
+      await logAction(
+        interaction.guild,
+        enable ? '🟢 Auto-Gen Resumed' : '🔴 Auto-Gen Paused',
+        `Staff ${interaction.user} ${enable ? 'enabled' : 'paused'} automatic token generation.`,
+        enable ? 0x57F287 : 0xED4245
+      );
+    }
   } else if (interaction.commandName === 'setmode') {
     const gameName = interaction.options.getString('game')!;
     const mode = interaction.options.getString('mode')!;
@@ -840,7 +892,24 @@ client.on(Events.MessageCreate, async (message) => {
           await logAction(guild, '✅ Screenshot Verified', `User ${message.author} has posted a valid screenshot for **${ticket.game.name}** in <#${message.channelId}>.`, 0x57F287);
         }
 
-        // ─── AUTO-GENERATE TOKEN ───
+        // ─── AUTO-GENERATE TOKEN (skipped if /autogen is paused) ───
+        const autoGenSetting = await prisma.metadata.findUnique({ where: { key: 'autoGenEnabled' } });
+        const autoGenEnabled = autoGenSetting?.value !== 'false';
+
+        if (!autoGenEnabled) {
+          const pausedEmbed = new EmbedBuilder()
+            .setTitle('⏸️ Auto-Generation Paused')
+            .setDescription(`Screenshot verified successfully for **${ticket.game.name}**.\n\nAuto-generation is currently paused by staff. A team member will deliver your token manually.`)
+            .setColor(0xFEE75C)
+            .setTimestamp();
+          await (message.channel as TextChannel).send({ embeds: [pausedEmbed] });
+          await (message.channel as TextChannel).send({ content: `<@&${CONFIG.STAFF_ROLE_ID}> Auto-gen is paused — manual delivery needed for **${ticket.game.name}** (AppID \`${ticket.game.appId}\`).` });
+          if (guild) {
+            await logAction(guild, '⏸️ Auto-Gen Skipped (Paused)', `Screenshot verified for **${ticket.game.name}** in <#${message.channelId}>. Auto-gen is paused — staff needs to deliver manually.`, 0xFEE75C);
+          }
+          return; // Skip the rest of the auto-gen block
+        }
+
         const genEmbed = new EmbedBuilder()
           .setTitle('⚙️ Generating Token...')
           .setDescription(`Denuvo token is being generated for **${ticket.game.name}** (AppID: \`${ticket.game.appId}\`).\nPlease wait, this may take up to 30 seconds.`)
