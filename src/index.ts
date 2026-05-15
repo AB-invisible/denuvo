@@ -43,17 +43,20 @@ const commands = [
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
     .setName('mycooldown')
-    .setDescription('Check your current security cooldown status'),
+    .setDescription('Check your current security cooldown status')
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
     .setName('staffstats')
     .setDescription('View weekly staff performance statistics')
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
     .setName('onduty')
-    .setDescription('Toggle your staff on-duty status'),
+    .setDescription('Toggle your staff on-duty status')
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
     .setName('profile')
-    .setDescription('View your user security profile and active cooldowns'),
+    .setDescription('View your user security profile and active cooldowns')
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
     .setName('lookup')
     .setDescription('Look up a user\'s activation history and risk profile')
@@ -151,12 +154,22 @@ async function registerCommands() {
 client.once(Events.ClientReady, async () => {
   console.log(`${CONFIG.NAME} is online!`);
   await registerCommands();
-  
+
   client.user?.setActivity('Denuvo Activations', { type: ActivityType.Watching });
-  
+
+  // ─── SERVER LOCK ENFORCEMENT ───
+  // Leave any guild that isn't CONFIG.GUILD_ID. This catches stale invites
+  // from other servers if the bot was ever added elsewhere.
+  for (const [gid, g] of client.guilds.cache) {
+    if (gid !== CONFIG.GUILD_ID) {
+      console.warn(`[ServerLock] Leaving non-target guild: ${g.name} (${gid})`);
+      await g.leave().catch(err => console.error(`[ServerLock] Failed to leave ${gid}:`, err));
+    }
+  }
+
   await syncGamesFromFile();
   initFileWatcher();
-  
+
   // New: Check for persisted states on startup
   await checkActiveMaintenance();
   await rehydrateVerificationTimers();
@@ -164,6 +177,16 @@ client.once(Events.ClientReady, async () => {
   const guild = client.guilds.cache.get(CONFIG.GUILD_ID);
   if (guild) {
     await logAction(guild, '🚀 Bot Online', `**${CONFIG.NAME}** has been successfully initialized and is now active.`, 0x57F287);
+  }
+});
+
+// ─── GUILD-CREATE GUARD ───
+// If the bot is added to any server other than CONFIG.GUILD_ID, leave it
+// immediately. Prevents anyone with an invite link from using this bot.
+client.on(Events.GuildCreate, async (guild) => {
+  if (guild.id !== CONFIG.GUILD_ID) {
+    console.warn(`[ServerLock] Joined non-target guild ${guild.name} (${guild.id}) — leaving immediately.`);
+    await guild.leave().catch(err => console.error(`[ServerLock] Failed to leave ${guild.id}:`, err));
   }
 });
 
@@ -278,6 +301,22 @@ async function rehydrateVerificationTimers() {
 
 client.on('interactionCreate', async (interaction) => {
   try {
+    // ─── GLOBAL SERVER LOCK ───
+    // Bot only operates in CONFIG.GUILD_ID. Reject all interactions from
+    // any other guild. Autocomplete is silently ignored (no reply API);
+    // others get a polite ephemeral rejection.
+    if (interaction.guildId && interaction.guildId !== CONFIG.GUILD_ID) {
+      if (interaction.isAutocomplete()) {
+        await interaction.respond([]).catch(() => {});
+      } else if (interaction.isRepliable()) {
+        await interaction.reply({
+          content: '❌ This bot only operates in its designated server.',
+          flags: [MessageFlags.Ephemeral],
+        }).catch(() => {});
+      }
+      return;
+    }
+
     if (interaction.isAutocomplete()) {
       await handleAutocomplete(interaction);
       return;
@@ -323,6 +362,27 @@ async function handleAutocomplete(interaction: any) {
 }
 
 async function handleChatCommand(interaction: any) {
+  // ─── SERVER LOCK ───
+  // Bot only serves CONFIG.GUILD_ID. Reject any command from any other guild.
+  if (interaction.guildId !== CONFIG.GUILD_ID) {
+    return interaction.reply({
+      content: '❌ This bot only operates in its designated server.',
+      flags: [MessageFlags.Ephemeral],
+    }).catch(() => {});
+  }
+
+  // ─── ADMIN-ONLY GATE ───
+  // Every slash command requires Administrator permission. Backstops the
+  // setDefaultMemberPermissions ACL in case Discord-side roles drift.
+  const m = interaction.member as GuildMember | null;
+  const hasAdmin = m?.permissions?.has?.(PermissionsBitField.Flags.Administrator);
+  if (!hasAdmin) {
+    return interaction.reply({
+      content: '❌ **Unauthorized:** This command requires Administrator permission.',
+      flags: [MessageFlags.Ephemeral],
+    }).catch(() => {});
+  }
+
   const channel = interaction.channel;
   const isStaffStats = interaction.commandName === 'staffstats';
   // /tokengen is public (other members can see the result), like staffstats.
