@@ -43,20 +43,17 @@ const commands = [
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
     .setName('mycooldown')
-    .setDescription('Check your current security cooldown status')
-    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+    .setDescription('Check your current security cooldown status'),
   new SlashCommandBuilder()
     .setName('staffstats')
     .setDescription('View weekly staff performance statistics')
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
     .setName('onduty')
-    .setDescription('Toggle your staff on-duty status')
-    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+    .setDescription('Toggle your staff on-duty status'),
   new SlashCommandBuilder()
     .setName('profile')
-    .setDescription('View your user security profile and active cooldowns')
-    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+    .setDescription('View your user security profile and active cooldowns'),
   new SlashCommandBuilder()
     .setName('lookup')
     .setDescription('Look up a user\'s activation history and risk profile')
@@ -372,15 +369,19 @@ async function handleChatCommand(interaction: any) {
   }
 
   // ─── ADMIN-ONLY GATE ───
-  // Every slash command requires Administrator permission. Backstops the
-  // setDefaultMemberPermissions ACL in case Discord-side roles drift.
-  const m = interaction.member as GuildMember | null;
-  const hasAdmin = m?.permissions?.has?.(PermissionsBitField.Flags.Administrator);
-  if (!hasAdmin) {
-    return interaction.reply({
-      content: '❌ **Unauthorized:** This command requires Administrator permission.',
-      flags: [MessageFlags.Ephemeral],
-    }).catch(() => {});
+  // Every slash command requires Administrator permission, EXCEPT these
+  // three user-facing commands. /onduty already has its own isStaff check
+  // inside its handler, so non-staff get a polite rejection there.
+  const USER_FACING_COMMANDS = new Set(['mycooldown', 'profile', 'onduty']);
+  if (!USER_FACING_COMMANDS.has(interaction.commandName)) {
+    const m = interaction.member as GuildMember | null;
+    const hasAdmin = m?.permissions?.has?.(PermissionsBitField.Flags.Administrator);
+    if (!hasAdmin) {
+      return interaction.reply({
+        content: '❌ **Unauthorized:** This command requires Administrator permission.',
+        flags: [MessageFlags.Ephemeral],
+      }).catch(() => {});
+    }
   }
 
   const channel = interaction.channel;
