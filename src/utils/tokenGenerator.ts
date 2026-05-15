@@ -50,15 +50,14 @@ function buildPythonEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
  * Returns the absolute path to the generated zip file, or null on failure.
  */
 export async function generateToken(appId: number, gameName: string): Promise<{ zipPath: string | null; logs: string }> {
-  // Look up steampass UUID from the database
+  // Look up steampass UUID + generation mode from the database
   const game = await prisma.game.findFirst({ where: { appId } });
   const steampassUuid = game?.steampassUuid;
+  const generationMode = (game as any)?.generationMode || 'gbe';
 
   if (steampassUuid) {
-    // Use headless generation (no Steam client needed)
-    return generateHeadless(appId, gameName, steampassUuid);
+    return generateHeadless(appId, gameName, steampassUuid, generationMode);
   } else {
-    // Fallback to legacy local generation (requires Steam client)
     console.log(`[TokenGen] No steampass UUID for AppID ${appId}, falling back to legacy generator`);
     return generateLegacy(appId, gameName);
   }
@@ -74,14 +73,23 @@ export async function generateToken(appId: number, gameName: string): Promise<{ 
  * is identical to a real token zip — only the ticket value is fake.
  */
 export async function generateTestToken(appId: number, gameName: string): Promise<{ zipPath: string | null; logs: string }> {
-  return generateHeadless(appId, gameName, 'FAKE');
+  // Use the same generationMode as a real run so the test zip layout
+  // matches what users would get.
+  const game = await prisma.game.findFirst({ where: { appId } });
+  const generationMode = (game as any)?.generationMode || 'gbe';
+  return generateHeadless(appId, gameName, 'FAKE', generationMode);
 }
 
 /**
  * Headless token generation via steampass.gg + ValvePython steam library.
  * No Steam client needed — connects directly to Steam CM servers.
+ *
+ * generationMode controls the output layout:
+ *   - "gbe" (default): flat GBE Normal — steam_api64.dll + steamclient64.dll + steam_settings/
+ *   - "coldloader": V2 DLL hijack with coldloader.dll + proxy DLLs
+ *   - "coldclientloader": V1 launcher with START_<game>.exe
  */
-function generateHeadless(appId: number, gameName: string, steampassUuid: string): Promise<{ zipPath: string | null; logs: string }> {
+function generateHeadless(appId: number, gameName: string, steampassUuid: string, generationMode: string = 'gbe'): Promise<{ zipPath: string | null; logs: string }> {
   return new Promise((resolve) => {
     const env = buildPythonEnv({
       STEAMPASS_LOGIN: process.env.STEAMPASS_LOGIN || '',
@@ -90,7 +98,7 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
 
     const proc = execFile(
       PYTHON_EXE,
-      [HEADLESS_SCRIPT, String(appId), gameName, steampassUuid],
+      [HEADLESS_SCRIPT, String(appId), gameName, steampassUuid, generationMode],
       { timeout: 120_000, maxBuffer: 20 * 1024 * 1024, env },
       (error, stdout, stderr) => {
         const logs = stdout + (stderr ? `\n${stderr}` : '');

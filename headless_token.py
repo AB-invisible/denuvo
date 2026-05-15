@@ -381,9 +381,15 @@ def inject_ticket(cfg_path, token_b64, steam_id):
 
 
 # ─── MAIN ─────────────────────────────────────────
-def main(app_id, game_name, steampass_uuid):
+def main(app_id, game_name, steampass_uuid, generation_mode="gbe"):
     app_id = str(app_id)
     fake_mode = (steampass_uuid == "FAKE")
+
+    # Valid modes: "gbe", "coldloader", "coldclientloader"
+    if generation_mode not in ("gbe", "coldloader", "coldclientloader"):
+        log(f"WARNING: unknown generation_mode '{generation_mode}', defaulting to 'gbe'")
+        generation_mode = "gbe"
+    log(f"Generation mode: {generation_mode}")
 
     # Prepare output directory
     out = TICKETS_DIR / app_id
@@ -433,7 +439,59 @@ def main(app_id, game_name, steampass_uuid):
         token_b64 = base64.b64encode(ticket_bytes).decode()
         log(f"Token generated (SteamID: {steam_id})")
 
-    # ── Step 4: Build output structure (template-first) ──
+    # ── Step 4: Build output structure ──
+    # In "gbe" mode (default), produce a flat layout:
+    #   steam_api64.dll, steamclient64.dll, steam_settings/ at root.
+    # Achievements/images come from the bundled template (if exists),
+    # otherwise basic steam_settings is generated from Steam API.
+    if generation_mode == "gbe":
+        log("Building GBE Normal (flat) output...")
+        ss_dir = out / "steam_settings"
+        ss_dir.mkdir(parents=True, exist_ok=True)
+
+        # Use bundled template's steam_settings if it exists (preserves
+        # per-game achievements, images, depots, configs).
+        tpl_dir = TEMPLATE_DIR / app_id
+        tpl_ss = None
+        if tpl_dir.exists():
+            # Find any steam_settings folder anywhere inside the template
+            candidates = list(tpl_dir.rglob("steam_settings"))
+            tpl_ss = candidates[0] if candidates else None
+        if tpl_ss and tpl_ss.is_dir():
+            log(f"Using steam_settings from _Template/{app_id}/{tpl_ss.relative_to(tpl_dir)}")
+            shutil.copytree(tpl_ss, ss_dir, dirs_exist_ok=True)
+        else:
+            log("No bundled template — generating basic steam_settings from Steam API")
+            generate_steam_settings(out, app_id, steam_id)
+
+        # Always write steam_appid.txt at both root and steam_settings/
+        (out / "steam_appid.txt").write_text(str(app_id))
+        (ss_dir / "steam_appid.txt").write_text(str(app_id))
+
+        # Copy GBE's universal DLLs from _Core to root
+        for dll in ["steam_api64.dll", "steamclient64.dll"]:
+            src = CORE_DIR / dll
+            if not src.exists():
+                log(f"ERROR: missing _Core/{dll}")
+                sys.exit(1)
+            shutil.copy2(src, out / dll)
+            log(f"  Added {dll} ({src.stat().st_size} bytes)")
+
+        log("GBE Normal output ready")
+        # Inject ticket and skip to zipping
+        inject_ticket(ss_dir / "configs.user.ini", token_b64, steam_id)
+        log("Injected ticket into configs.user.ini")
+
+        safe_name = re.sub(r'[<>:"/\\|?*]', '', game_name).strip()
+        prefix = "TEST" if fake_mode else "Token"
+        zip_base = str(TICKETS_DIR / f"{prefix} [{safe_name}]")
+        zip_path = shutil.make_archive(zip_base, 'zip', root_dir=str(out))
+        log(f"Zipped: {zip_path}")
+        shutil.rmtree(out, ignore_errors=True)
+        print(zip_path)
+        return
+
+    # ── Modes coldloader / coldclientloader: original template-first flow ──
     tpl_status = get_template_status(app_id)
     use_template = (tpl_status == "ok")
 
@@ -588,8 +646,10 @@ def main(app_id, game_name, steampass_uuid):
 if __name__ == "__main__":
     if len(sys.argv) < 4:
         print(
-            "Usage: python headless_token.py <appId> <gameName> <steampassUuid>",
+            "Usage: python headless_token.py <appId> <gameName> <steampassUuid> [generationMode]\n"
+            "  generationMode: gbe (default) | coldloader | coldclientloader",
             file=sys.stderr,
         )
         sys.exit(1)
-    main(sys.argv[1], sys.argv[2], sys.argv[3])
+    mode = sys.argv[4] if len(sys.argv) >= 5 else "gbe"
+    main(sys.argv[1], sys.argv[2], sys.argv[3], generation_mode=mode)

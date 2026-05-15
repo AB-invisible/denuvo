@@ -76,6 +76,16 @@ const commands = [
     .addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true))
     .addBooleanOption(o => o.setName('deduct').setDescription('Deduct one token from stock? (default: true)').setRequired(false))
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+  new SlashCommandBuilder()
+    .setName('setmode')
+    .setDescription('Set the token-generation mode for a game (gbe / coldloader / coldclientloader)')
+    .addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true))
+    .addStringOption(o => o.setName('mode').setDescription('Output layout').setRequired(true).addChoices(
+      { name: 'GBE Normal (flat: steam_api64 + steamclient64 + steam_settings)', value: 'gbe' },
+      { name: 'ColdLoader V2 (DLL hijack via version/dinput8/winmm)', value: 'coldloader' },
+      { name: 'ColdClientLoader V1 (launcher .exe)', value: 'coldclientloader' },
+    ))
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
 ].map(command => command.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(CONFIG.TOKEN);
@@ -255,7 +265,7 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 async function handleAutocomplete(interaction: any) {
-  if (interaction.commandName === 'stock' || interaction.commandName === 'exclude-auto' || interaction.commandName === 'test' || interaction.commandName === 'tokengen') {
+  if (interaction.commandName === 'stock' || interaction.commandName === 'exclude-auto' || interaction.commandName === 'test' || interaction.commandName === 'tokengen' || interaction.commandName === 'setmode') {
     const focusedValue = interaction.options.getFocused();
     const games = await prisma.game.findMany({
       where: { name: { contains: focusedValue, mode: 'insensitive' } },
@@ -604,6 +614,29 @@ async function handleChatCommand(interaction: any) {
       const e = err as Error;
       console.error('[TokenGen-Cmd] Error:', e);
       await interaction.editReply({ content: `❌ **/tokengen Error:** ${e.message}` });
+    }
+  } else if (interaction.commandName === 'setmode') {
+    const gameName = interaction.options.getString('game')!;
+    const mode = interaction.options.getString('mode')!;
+
+    const game = await prisma.game.findUnique({ where: { name: gameName } });
+    if (!game) return interaction.editReply({ content: `❌ **Not Found:** Game **${gameName}** does not exist.` });
+
+    const oldMode = (game as any).generationMode || 'gbe';
+    await prisma.game.update({ where: { id: game.id }, data: { generationMode: mode } as any });
+
+    const modeLabel: Record<string, string> = {
+      'gbe': 'GBE Normal (flat: steam_api64 + steamclient64 + steam_settings)',
+      'coldloader': 'ColdLoader V2 (DLL hijack)',
+      'coldclientloader': 'ColdClientLoader V1 (launcher .exe)',
+    };
+
+    await interaction.editReply({
+      content: `✅ **Mode Updated:** **${gameName}** will now generate tokens using **${modeLabel[mode] || mode}**.\n*(Previously: \`${oldMode}\`)*\n\nNext ticket opened for this game will use the new mode.`
+    });
+
+    if (interaction.guild) {
+      await logAction(interaction.guild, '⚙️ Generation Mode Changed', `Staff ${interaction.user} switched **${gameName}** from \`${oldMode}\` to \`${mode}\`.`, 0x5865F2);
     }
   } else if (interaction.commandName === 'exclude-auto') {
     const gameName = interaction.options.getString('game')!;

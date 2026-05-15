@@ -18,6 +18,11 @@ model Game {
   boosterOnly     Boolean  @default(false)
   excludeRegen    Boolean  @default(false)
   steampassUuid   String?  // steampass.gg product UUID for headless token generation
+  // Generation mode for token zips. Valid values:
+  //   "gbe"               -> flat GBE Normal (steam_api64.dll + steamclient64.dll + steam_settings)
+  //   "coldloader"        -> V2 DLL hijack (coldloader.dll + version/dinput8/winmm proxy)
+  //   "coldclientloader"  -> V1 launcher (START_<game>.exe + ColdClientLoader.ini)
+  generationMode  String   @default("gbe")
   updatedAt       DateTime @default(now()) @updatedAt
   tickets         Ticket[]
   restocks        Restock[]

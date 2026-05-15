@@ -35,6 +35,12 @@ export async function syncGamesFromFile() {
          changesDetected = true;
       }
 
+      // generationMode: only set if the JSON specifies it (preserves
+      // staff overrides made via /setmode that aren't reflected in JSON).
+      const modeUpdate = gameData.generationMode
+        ? { generationMode: gameData.generationMode }
+        : {};
+
       await prisma.game.upsert({
         where: { name: gameData.name },
         update: {
@@ -44,6 +50,7 @@ export async function syncGamesFromFile() {
           donatorOnly: gameData.donatoronly || gameData.donatorOnly || false,
           boosterOnly: gameData.boosterOnly || false,
           steampassUuid: gameData.steampassUuid || undefined,
+          ...modeUpdate,
         },
         create: {
           name: gameData.name,
@@ -53,6 +60,7 @@ export async function syncGamesFromFile() {
           donatorOnly: gameData.donatoronly || gameData.donatorOnly || false,
           boosterOnly: gameData.boosterOnly || false,
           steampassUuid: gameData.steampassUuid || null,
+          generationMode: gameData.generationMode || 'gbe',
           stock: 5,
         },
       });

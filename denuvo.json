@@ -53,7 +53,8 @@
       "disabled": false,
       "donatorOnly": false,
       "boosterOnly": false,
-      "steampassUuid": "41e21856-5552-44fe-936f-9c11398bff18"
+      "steampassUuid": "41e21856-5552-44fe-936f-9c11398bff18",
+      "generationMode": "coldloader"
     },
     {
       "name": "Dead Space",
