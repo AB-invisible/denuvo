@@ -1,1 +1,325 @@
-[]
+[
+  {
+    "name": "NEW_ACHIEVEMENT_229_0",
+    "defaultvalue": 0,
+    "displayName": "Unparalleled Strength",
+    "hidden": 0,
+    "description": "Unlock all achievements.",
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/438f18102e092f436b5ed58720f5af1a73170317.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/da8d7a9c4eadb24356c027a56b9bb82a58c78470.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_229_1",
+    "defaultvalue": 0,
+    "displayName": "The Path We Tread",
+    "hidden": 1,
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/44a62fe606c94b38f4548afeb0c577e0ae620106.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/d7e275363527aab65a47869011cf87b6ead8204b.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_229_2",
+    "defaultvalue": 0,
+    "displayName": "Infiltrating the Entertainment District",
+    "hidden": 1,
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/f7d6486244fcd28bd1a844c2ca16b8595b0599b3.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/8168bcb1b5c6a930bd3c31cd7d0fd25a4a398572.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_229_3",
+    "defaultvalue": 0,
+    "displayName": "The Demon of the Entertainment District",
+    "hidden": 1,
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/419f67fb5bbdfd8f5f2e022d869885bef9568a59.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/addfc0ef339428b35fb782b6b0d123de786f087e.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_229_4",
+    "defaultvalue": 0,
+    "displayName": "Never Give Up",
+    "hidden": 1,
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/e96f3e92c4fd454555d4bf560a8f8eb2793c2653.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/a3682bfff5c16bb184e6ef8514de53589a7753a5.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_229_5",
+    "defaultvalue": 0,
+    "displayName": "Tanjiro's Recovery",
+    "hidden": 1,
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/bc1152ac2411fe8a22555be08d5a1f537f0920f8.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/13a724e7a68db07a053cc879aa6be63907f23ef9.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_229_6",
+    "defaultvalue": 0,
+    "displayName": "The Swordsmith Village",
+    "hidden": 1,
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/15ce92bf9b91f45054af1c24f1750b158623cbdf.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/d83d0197a903978a20be25ecfafa7602b680f8b3.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_229_7",
+    "defaultvalue": 0,
+    "displayName": "Infinity",
+    "hidden": 1,
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/f856022fe0d738155ed0fa2dd698b19ef9bf9e90.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/b5fe92ab4471d597a254dc733a00b474119ade01.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_229_8",
+    "defaultvalue": 0,
+    "displayName": "The Four Emotions",
+    "hidden": 1,
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/e745cd1088e99d49c7d722ff89f1aca2405d5a11.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/d9407a85e3245d242dcad5d1a4449470cf2bffcd.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_229_9",
+    "defaultvalue": 0,
+    "displayName": "Beneath the Sunlight",
+    "hidden": 1,
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/9cd72bd438cb231bca826e89f66d89aed41e1704.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/a444e8acc53bdb18fa06c333151b6adbd5d7d2c1.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_229_10",
+    "defaultvalue": 0,
+    "displayName": "A Visit from Zenitsu",
+    "hidden": 1,
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/31d9453c835698e212a42678668df1e04c95ec3a.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/b7d24c4443499fd0a0ebd858a8f343d10f52be19.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_229_11",
+    "defaultvalue": 0,
+    "displayName": "Battle at the Abandoned Castle",
+    "hidden": 1,
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/9c31604dfb13b2376ef873aa0e7c9f995e5c2530.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/7cedb4cb89ecfc5ca451349c8904e5492330a683.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_229_12",
+    "defaultvalue": 0,
+    "displayName": "Hashira Training",
+    "hidden": 1,
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/e87aaeb4bf4aaeefabb626a8055183d1266657a9.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/ebec1d0721148466b1ea1e0438dad0b9eb7ac412.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_229_13",
+    "defaultvalue": 0,
+    "displayName": "All Chapters Rank S",
+    "hidden": 1,
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/f1ac7c41895b7c8e939bc71e9b086b6c2032c608.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/4ef83041f716ea7d3c525831f5a3ffc75a5d3099.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_229_14",
+    "defaultvalue": 0,
+    "displayName": "Never Forgotten",
+    "hidden": 1,
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/34c5793792c12ec25d755bda25456e28b4c61770.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/39000fc5fb81d5f435e447532852632b797ea830.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_229_15",
+    "defaultvalue": 0,
+    "displayName": "A Helpful Hand",
+    "hidden": 1,
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/ed28c521e7ac97f31305fef1412ffe4b32ae6250.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/4a157a21f6bd622ea31f44dc887536404e294ba7.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_229_16",
+    "defaultvalue": 0,
+    "displayName": "Hinokami Recordkeeper",
+    "hidden": 1,
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/8623e2d2b0c5c4a11ead685b8d8737273a54d419.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/dedee8640b5d7a0cd07d1ab74f73ac28c66635d2.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_229_17",
+    "defaultvalue": 0,
+    "displayName": "Almighty Strings",
+    "hidden": 1,
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/230062fcbcda752d20f0788bb84c597224cf131b.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/09e21a3def70ac9e13dc8d55e2a530297409c1ea.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_229_18",
+    "defaultvalue": 0,
+    "displayName": "Catlike Reflexes",
+    "hidden": 1,
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/7a206617cd58c93d183ae945c3a86f9dd3929210.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/14f32c45713f94f1d818d4d23f124b850efa03a2.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_229_19",
+    "defaultvalue": 0,
+    "displayName": "A Strong Core",
+    "hidden": 1,
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/30905d6a1ad9bfd1ea344a765214ecb5a7f48230.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/13846d8fe2a9984beba9f002c40b1da0f202b2ad.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_229_20",
+    "defaultvalue": 0,
+    "displayName": "Face Off",
+    "hidden": 0,
+    "description": "Play VS Mode for the first time.",
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/2af9e2395ce08fee32794b4ee8b1e3a5a48bb96c.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/13f6964ffb89fc99b53db6842e75f8370b3c55a6.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_229_21",
+    "defaultvalue": 0,
+    "displayName": "Test Your Mettle",
+    "hidden": 0,
+    "description": "Play Endurance Match for the first time.",
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/9f20f26a26af284d4b56284f941ddd887b63f7a0.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/080c27fe2722e15fd17fafff642b7b5437f6f98a.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_229_22",
+    "defaultvalue": 0,
+    "displayName": "To the Death",
+    "hidden": 0,
+    "description": "Defeat 100 opponents in Survival.",
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/8d99e2ce7319445240765877f48fa7f57a3ff906.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/6f065dc2054cd0ddebcdec373954ba05b6cffe88.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_229_23",
+    "defaultvalue": 0,
+    "displayName": "Battles Recounted",
+    "hidden": 0,
+    "description": "Clear The Path of a Demon Slayer on intermediate difficulty.",
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/e3404f33275551e00c514f637c9147da5da17b2b.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/add55579f5583fd668e16a90ed4aac207201f465.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_229_24",
+    "defaultvalue": 0,
+    "displayName": "Trials Prevailed",
+    "hidden": 0,
+    "description": "Achieve an S rank for every battle in The Path of a Demon Slayer on advanced difficulty.",
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/6aad2ec0e165d7166bd2fc054225c0540989e422.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/66e00c1b6e4634cdaac3a69b15d22e2bd543faaa.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_229_25",
+    "defaultvalue": 0,
+    "displayName": "The First Step",
+    "hidden": 0,
+    "description": "Clear Training Paths for the first time.",
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/33f9d2f76286ea971ab9e4059c8f4515e33b9392.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/89304f7cf42ec2c946e7ec1386b084d1ba893fc9.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_229_26",
+    "defaultvalue": 0,
+    "displayName": "All Paths Taken",
+    "hidden": 0,
+    "description": "Clear all routes of Training Paths on every difficulty.",
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/124801d7b3c9e4b6f6f76d2b42be96964cf22067.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/d18d2f6b203280c363cf2984180baae6df766aca.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_229_27",
+    "defaultvalue": 0,
+    "displayName": "A Discovered Affinity",
+    "hidden": 0,
+    "description": "Improve mastery of 5 characters to at least 5.",
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/b3c50daeee85d7ea207240da6e134389ef896521.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/04dbde460ab6e3d7beef2d8d5137b0fd2a96373d.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_229_28",
+    "defaultvalue": 0,
+    "displayName": "Crows of a Feather",
+    "hidden": 0,
+    "description": "Improve mastery of 35 characters to at least 5.",
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/7561a62c76829bb247d93f15f9b22cd084415626.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/db9b500a4c25fedd028002d38645129582ec3fa0.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_229_29",
+    "defaultvalue": 0,
+    "displayName": "First-Time Shopper",
+    "hidden": 0,
+    "description": "Make a purchase at the Kimetsu Points Shop for the first time.",
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/2289503cf31539b65a8a4a9be000d975eb8dc328.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/a3f8f7c99c865c0ad9856bf98a8835d7109018f6.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_229_30",
+    "defaultvalue": 0,
+    "displayName": "Grinding for Gear",
+    "hidden": 0,
+    "description": "Collect 40 pieces of gear.",
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/e2d19e8f139ca7ea3c76e7bb7d6733123ab2934e.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/dbd6136b87b8f073afb4873122bcfb25f6d40e08.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_229_31",
+    "defaultvalue": 0,
+    "displayName": "Gift of Gab",
+    "hidden": 0,
+    "description": "Collect 21 system voice banks (excluding downloadable content).",
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/dd38a503cb6d3dc14b7ab20eb2754954e623b323.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/87bdb49071733bb586013c4dcf4d1fae076b7863.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_230_0",
+    "defaultvalue": 0,
+    "displayName": "Tell Me More",
+    "hidden": 0,
+    "description": "Collect 300 quotes (excluding downloadable content).",
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/d04132063f866e47176781d45e1d0b2889158b30.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/543a42d2166b6ccb356e6181d6ed1b9573ae80cd.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_230_1",
+    "defaultvalue": 0,
+    "displayName": "In Sync",
+    "hidden": 0,
+    "description": "Collect 55 music tracks (excluding downloadable content).",
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/fd31a80c63cc5a2a0e254d3b8f91721742ec94d4.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/617a6c197860ce9bbc9beee612b7376c543f9459.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_230_2",
+    "defaultvalue": 0,
+    "displayName": "Stamp of Approval",
+    "hidden": 0,
+    "description": "Collect 94 stamps.",
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/534807a4f4b236cbc90ccf223143a2714a62174e.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/3463a4a85e2922978a89be563a678520908eb34b.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_230_3",
+    "defaultvalue": 0,
+    "displayName": "Set Your Heart A-Frame!",
+    "hidden": 0,
+    "description": "Collect 30 Slayer ID Frames.",
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/24de51334dc8ea2d38af2f123873c89a13cc7031.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/ad8b08a037dac99de9290d9cbd57a8103ff9e8a5.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_230_4",
+    "defaultvalue": 0,
+    "displayName": "Picture Perfect",
+    "hidden": 0,
+    "description": "Collect 300 profile photos (excluding downloadable content).",
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/6cc04c20dd56930b6c6d80d5c0f030744889775f.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/5ccdec7a2c94782773d6c491edd64587a1c2b569.jpg"
+  },
+  {
+    "name": "NEW_ACHIEVEMENT_230_5",
+    "defaultvalue": 0,
+    "displayName": "Perfect, Beautiful Decorations",
+    "hidden": 0,
+    "description": "Collect 133 decorations (excluding downloadable content).",
+    "icon": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/5684dd5c7938b946135d07f32a548d935e754f6e.jpg",
+    "icongray": "https://steamcdn-a.akamaihd.net/steamcommunity/public/images/apps/2928600/b773c552f3b94ff7c2a544aa774e71fd1a48997b.jpg"
+  }
+]

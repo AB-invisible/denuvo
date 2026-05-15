@@ -1,0 +1,16 @@
+english
+german
+french
+italian
+spanish
+schinese
+russian
+japanese
+portuguese
+polish
+dutch
+finnish
+hungarian
+turkish
+arabic
+brazilian

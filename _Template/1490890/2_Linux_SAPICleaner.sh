@@ -1,1 +1,0 @@
-#!/bin/shrm -rfv "${PWD}/Engine/Binaries/ThirdParty/Steamworks/Steamv147/Win64/*"echo "Removed useless steam_api64.dll and it's sub-folders."exit 0
