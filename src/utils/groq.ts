@@ -5,10 +5,21 @@ const groq = new Groq({
   apiKey: CONFIG.GROQ_API_KEY,
 });
 
+/**
+ * Special reasoning string returned when verification was skipped because
+ * GROQ_API_KEY isn't set. The auto-gen flow in index.ts detects this exact
+ * string and routes the ticket to manual staff delivery instead of
+ * auto-generating a token off an unverified screenshot.
+ */
+export const VERIFY_BYPASS_REASON = '__GROQ_NOT_CONFIGURED__';
+
 export async function verifyScreenshot(imageUrl: string, gameName: string): Promise<{ isValid: boolean, reasoning: string }> {
   if (!CONFIG.GROQ_API_KEY) {
-    console.warn('GROQ_API_KEY NOT CONFIGURED. Verification protocol bypassed.');
-    return { isValid: true, reasoning: 'Denuvo Protocol Bypass: Key not configured.' };
+    console.warn('[Groq] GROQ_API_KEY NOT CONFIGURED — screenshot bypassed for verification, manual staff delivery required.');
+    // isValid=true so the UI shows "received" (we don't want to falsely fail
+    // the user), but reasoning carries a sentinel that index.ts uses to skip
+    // auto-generation and require manual staff delivery instead.
+    return { isValid: true, reasoning: VERIFY_BYPASS_REASON };
   }
 
   try {
