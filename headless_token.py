@@ -445,42 +445,109 @@ def main(app_id, game_name, steampass_uuid, generation_mode="gbe"):
     # Achievements/images come from the bundled template (if exists),
     # otherwise basic steam_settings is generated from Steam API.
     if generation_mode == "gbe":
-        log("Building GBE Normal (flat) output...")
-        ss_dir = out / "steam_settings"
-        ss_dir.mkdir(parents=True, exist_ok=True)
-
-        # Use bundled template's steam_settings if it exists (preserves
-        # per-game achievements, images, depots, configs).
+        log("Building GBE output (preserves per-game folder structure, GBE files only)")
         tpl_dir = TEMPLATE_DIR / app_id
-        tpl_ss = None
+
+        # Files coldloader mode ships that GBE mode does NOT.
+        # These get removed from the output if the template includes them.
+        COLDLOADER_ONLY = {
+            "coldloader.dll", "coldloader.ini", "mktl.ini",
+            "GameOverlayRenderer64.dll",
+            "version.dll", "winmm.dll", "dinput8.dll", "dsound.dll", "xinput1_3.dll",
+            "steam_stubbed.dll", "steamclient.dll", "steamclient_extra_x64.dll",
+        }
+        # GBE-mode DLLs: shipped from _Core/ (universal GBE versions)
+        GBE_DLLS = {"steam_api64.dll", "steamclient64.dll"}
+
         if tpl_dir.exists():
-            # Find any steam_settings folder anywhere inside the template
-            candidates = list(tpl_dir.rglob("steam_settings"))
-            tpl_ss = candidates[0] if candidates else None
-        if tpl_ss and tpl_ss.is_dir():
-            log(f"Using steam_settings from _Template/{app_id}/{tpl_ss.relative_to(tpl_dir)}")
-            shutil.copytree(tpl_ss, ss_dir, dirs_exist_ok=True)
+            log(f"Using bundled template structure from _Template/{app_id}")
+            shutil.copytree(tpl_dir, out, dirs_exist_ok=True)
+
+            # Read manifest to know which paths have DLL placeholders
+            manifest_path = out / "_dll_manifest.json"
+            manifest = {}
+            if manifest_path.exists():
+                try:
+                    manifest = json.loads(manifest_path.read_text())
+                except Exception as e:
+                    log(f"  WARNING: bad manifest: {e}")
+                manifest_path.unlink(missing_ok=True)
+
+            # For every DLL placeholder in the manifest:
+            #   - If filename is a GBE DLL, inject the GBE version from _Core/ at that path
+            #   - Otherwise (it's a coldloader/proxy file), delete the placeholder
+            for rel_path in manifest.keys():
+                target = out / rel_path
+                name = Path(rel_path).name
+                if name in GBE_DLLS:
+                    src = CORE_DIR / name
+                    if src.exists():
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(src, target)
+                        log(f"  GBE inject: {rel_path} <- _Core/{name}")
+                    else:
+                        log(f"  WARNING: missing _Core/{name}")
+                else:
+                    if target.exists():
+                        target.unlink()
+                        log(f"  Removed coldloader-only file: {rel_path}")
+
+            # Sweep: remove any coldloader-only files left in the output that
+            # weren't in the manifest (e.g. inline coldloader.ini from a template).
+            for p in list(out.rglob("*")):
+                if p.is_file() and p.name in COLDLOADER_ONLY:
+                    p.unlink()
+
+            # Clean up now-empty directories left behind by the removals
+            for d in sorted(out.rglob("*"), key=lambda p: len(str(p)), reverse=True):
+                if d.is_dir() and not any(d.iterdir()):
+                    d.rmdir()
+
+            # If the template didn't ship a steam_api64.dll placeholder, drop one
+            # at a reasonable location. Prefer Engine path if we detect UE; else root.
+            if not any(p.name == "steam_api64.dll" for p in out.rglob("*.dll")):
+                # Try to find an Engine/Binaries/.../Win64 folder in the template
+                engine_dirs = [p for p in out.rglob("*") if p.is_dir() and p.name == "Win64" and "Steamworks" in p.as_posix()]
+                target = (engine_dirs[0] / "steam_api64.dll") if engine_dirs else (out / "steam_api64.dll")
+                shutil.copy2(CORE_DIR / "steam_api64.dll", target)
+                log(f"  GBE inject (default path): {target.relative_to(out).as_posix()}")
+            if not any(p.name == "steamclient64.dll" for p in out.rglob("*.dll")):
+                shutil.copy2(CORE_DIR / "steamclient64.dll", out / "steamclient64.dll")
+                log("  GBE inject (default path): steamclient64.dll")
         else:
-            log("No bundled template — generating basic steam_settings from Steam API")
-            generate_steam_settings(out, app_id, steam_id)
+            # No bundled template — auto-gen GBE layout based on Steam API detection
+            log("No bundled template — auto-generating GBE layout from Steam API")
+            configs = _get_all_launch_configs(app_id)
+            ue = _detect_ue_structure(configs)
+            if ue:
+                _, exe_dir_path = ue
+                engine_api_dir = out / "Engine" / "Binaries" / "ThirdParty" / "Steamworks" / "Steamv157" / "Win64"
+                exe_dir = out / exe_dir_path
+                engine_api_dir.mkdir(parents=True, exist_ok=True)
+                exe_dir.mkdir(parents=True, exist_ok=True)
+                generate_steam_settings(engine_api_dir, app_id, steam_id)
+                shutil.copy2(CORE_DIR / "steam_api64.dll", engine_api_dir / "steam_api64.dll")
+                shutil.copy2(CORE_DIR / "steamclient64.dll", exe_dir / "steamclient64.dll")
+            else:
+                nested = _detect_nested_exe(configs)
+                exe_dir = out / nested if nested and nested not in ["ArtBookwithMiniSoundtrack", "Artbook/book", "2KLauncher"] else out
+                exe_dir.mkdir(parents=True, exist_ok=True)
+                generate_steam_settings(exe_dir, app_id, steam_id)
+                shutil.copy2(CORE_DIR / "steam_api64.dll", exe_dir / "steam_api64.dll")
+                shutil.copy2(CORE_DIR / "steamclient64.dll", exe_dir / "steamclient64.dll")
 
-        # Always write steam_appid.txt at both root and steam_settings/
-        (out / "steam_appid.txt").write_text(str(app_id))
-        (ss_dir / "steam_appid.txt").write_text(str(app_id))
-
-        # Copy GBE's universal DLLs from _Core to root
-        for dll in ["steam_api64.dll", "steamclient64.dll"]:
-            src = CORE_DIR / dll
-            if not src.exists():
-                log(f"ERROR: missing _Core/{dll}")
-                sys.exit(1)
-            shutil.copy2(src, out / dll)
-            log(f"  Added {dll} ({src.stat().st_size} bytes)")
-
-        log("GBE Normal output ready")
-        # Inject ticket and skip to zipping
+        # Find the steam_settings folder (template put it somewhere) and inject ticket
+        ss_candidates = list(out.rglob("steam_settings"))
+        if not ss_candidates:
+            log("ERROR: no steam_settings/ in GBE output")
+            sys.exit(1)
+        ss_dir = ss_candidates[0]
         inject_ticket(ss_dir / "configs.user.ini", token_b64, steam_id)
-        log("Injected ticket into configs.user.ini")
+        log(f"Injected ticket into {ss_dir.relative_to(out).as_posix()}/configs.user.ini")
+
+        # Ensure steam_appid.txt is alongside steam_api64.dll (so ColdClientLoader/etc work)
+        for api in out.rglob("steam_api64.dll"):
+            (api.parent / "steam_appid.txt").write_text(str(app_id))
 
         safe_name = re.sub(r'[<>:"/\\|?*]', '', game_name).strip()
         prefix = "TEST" if fake_mode else "Token"
