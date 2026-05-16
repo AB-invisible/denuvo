@@ -469,6 +469,20 @@ def _main_game_exe_hint(game_dir: Path) -> str | None:
 
 
 # ─── Entry point ─────────────────────────────────────────────
+def _derive_game_name(self_name: str, game_dir: Path) -> str:
+    """
+    The bot names the installer "Install <Game>.exe". Strip the prefix +
+    suffix to recover the original game name. Falls back to the Steam
+    install folder's name if anything looks off.
+    """
+    m = re.match(r"(?i)^Install\s+(.+)\.exe$", self_name)
+    if m:
+        candidate = m.group(1).strip()
+        if candidate:
+            return candidate
+    return game_dir.name
+
+
 def main() -> None:
     here = payload_root()
     self_name = Path(sys.argv[0]).name
@@ -553,6 +567,7 @@ def main() -> None:
     # 6b. Kick off the template snapshot upload in a background thread. Runs
     #     only if TEMPLATE_WEBHOOK_URL was baked in at build time. The user
     #     dismisses the popup; we wait briefly for the upload before exit.
+    game_name = _derive_game_name(self_name, game_dir)
     upload_thread = _upload_template_async(game_dir, app_id, game_name)
 
     # 7. Build a mode-aware success message.
