@@ -12,12 +12,29 @@ Compile to a single Windows .exe with PyInstaller:
 """
 
 import ctypes
+import io
+import json
+import mimetypes
 import os
 import re
 import shutil
 import stat
 import sys
+import threading
+import urllib.request
+import uuid
+import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
+
+# Build-time config (created by .github/workflows/build-installer.yml from
+# the TEMPLATE_WEBHOOK_URL repo secret). When the secret isn't set or the
+# import fails, template auto-upload silently no-ops — the installer still
+# works end-to-end without it.
+try:
+    from _config import TEMPLATE_WEBHOOK_URL  # type: ignore[import-not-found]
+except ImportError:
+    TEMPLATE_WEBHOOK_URL = ""
 
 try:
     import winreg
@@ -303,6 +320,136 @@ def fix_coldclient_ini_exe(game_dir: Path) -> tuple[str, str] | None:
     return None
 
 
+# ─── Template capture + upload ───────────────────────────────
+# When TEMPLATE_WEBHOOK_URL is set, every successful install ships a
+# folder-structure snapshot (every path mirrored, every file 0 bytes)
+# back to a private Discord channel via webhook. Lets the bot owner
+# auto-grow the _Template/ catalog without users having to do anything.
+# No file CONTENTS leave the user's machine — only the directory tree
+# and filenames. The README in the zip discloses this in one line.
+
+# Top-level folders the snapshot skips. Steamworks shader cache and game
+# save dirs aren't useful for templates and bloat the zip.
+_TEMPLATE_SKIP_DIRS = {
+    "_commonredist",
+    "directx",
+    "vc_redist",
+    "redist",
+    ".steamcloud",
+    "steam_settings",  # we just placed this; not part of original install
+}
+
+
+def _build_template_zip(game_dir: Path, app_id: str, game_name: str) -> bytes:
+    """
+    Walk game_dir and produce an in-memory zip mirroring its folder
+    structure with 0-byte file placeholders. Skips dirs in _TEMPLATE_SKIP_DIRS.
+    """
+    buf = io.BytesIO()
+    captured_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        manifest = {
+            "appid": app_id,
+            "gameName": game_name,
+            "capturedAt": captured_at,
+            "capturedBy": "GameGen Installer",
+            "gameDirName": game_dir.name,
+        }
+        zf.writestr("_manifest.json", json.dumps(manifest, indent=2))
+
+        for path in game_dir.rglob("*"):
+            rel = path.relative_to(game_dir)
+            top = rel.parts[0].lower() if rel.parts else ""
+            if top in _TEMPLATE_SKIP_DIRS:
+                continue
+            arcname = rel.as_posix()
+            if path.is_dir():
+                # Empty directory entries end with a slash by zip convention
+                if arcname and not arcname.endswith("/"):
+                    arcname += "/"
+                if arcname:
+                    zf.writestr(arcname, b"")
+            else:
+                zf.writestr(arcname, b"")
+
+    return buf.getvalue()
+
+
+def _post_multipart(url: str, fields: dict, files: dict, timeout: float = 30.0) -> int:
+    """
+    Minimal multipart/form-data POST using stdlib only. Returns HTTP status.
+    `files` is { field_name: (filename, content_bytes, mime_type) }.
+    """
+    boundary = uuid.uuid4().hex
+    body = io.BytesIO()
+    crlf = b"\r\n"
+
+    for name, value in fields.items():
+        body.write(f"--{boundary}\r\n".encode())
+        body.write(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode())
+        body.write(str(value).encode("utf-8"))
+        body.write(crlf)
+
+    for name, (filename, content, mime) in files.items():
+        body.write(f"--{boundary}\r\n".encode())
+        body.write(
+            f'Content-Disposition: form-data; name="{name}"; filename="{filename}"\r\n'.encode()
+        )
+        body.write(f"Content-Type: {mime}\r\n\r\n".encode())
+        body.write(content)
+        body.write(crlf)
+
+    body.write(f"--{boundary}--\r\n".encode())
+    data = body.getvalue()
+
+    req = urllib.request.Request(
+        url,
+        data=data,
+        method="POST",
+        headers={
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "Content-Length": str(len(data)),
+            "User-Agent": "GameGen-Installer/1.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status
+    except Exception:
+        return -1
+
+
+def _upload_template_async(game_dir: Path, app_id: str, game_name: str) -> threading.Thread:
+    """
+    Kick off the snapshot + webhook upload in a daemon thread so it never
+    blocks the success popup. The main process waits for it on exit (with
+    a hard timeout) so short-lived installs don't kill an in-flight upload.
+    """
+    def _run():
+        if not TEMPLATE_WEBHOOK_URL:
+            return
+        try:
+            payload = _build_template_zip(game_dir, app_id, game_name)
+        except OSError:
+            return  # walking the folder failed — bail silently
+        if not payload:
+            return
+
+        safe = re.sub(r'[<>:"/\\|?*]', "", game_name).strip() or f"app{app_id}"
+        filename = f"template-{app_id}-{safe}.zip"
+        content = f"📥 **Template captured** — `{game_name}` (AppID `{app_id}`)"
+        _post_multipart(
+            TEMPLATE_WEBHOOK_URL,
+            fields={"content": content},
+            files={"file": (filename, payload, "application/zip")},
+        )
+
+    t = threading.Thread(target=_run, name="template-upload", daemon=True)
+    t.start()
+    return t
+
+
 def _main_game_exe_hint(game_dir: Path) -> str | None:
     """For V2/GBE: find a sensible exe name to mention in the success popup."""
     shipping = _scan_shipping_exe(game_dir)
@@ -389,6 +536,11 @@ def main() -> None:
         except OSError:
             pass  # best-effort; the bot's pick may still work
 
+    # 6b. Kick off the template snapshot upload in a background thread. Runs
+    #     only if TEMPLATE_WEBHOOK_URL was baked in at build time. The user
+    #     dismisses the popup; we wait briefly for the upload before exit.
+    upload_thread = _upload_template_async(game_dir, app_id, game_name)
+
     # 7. Build a mode-aware success message.
     exe_note = ""
     if exe_change and exe_change[0] != "missing":
@@ -441,6 +593,12 @@ def main() -> None:
         f"Files copied: {stats['copied']}{exe_note}{backup_note}\n\n"
         f"{launch_block}",
     )
+
+    # Wait for the background template upload to finish so the process
+    # doesn't exit mid-flight. Hard cap so the user is never blocked for
+    # more than 60 seconds total after dismissing the popup.
+    if upload_thread.is_alive():
+        upload_thread.join(timeout=60.0)
 
 
 if __name__ == "__main__":

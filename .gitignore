@@ -13,3 +13,9 @@ __pycache__/
 
 # Auto-sync log (rotates locally, no value in versioning)
 /tools/sync_and_push.log
+
+# Build-time secret injection for installer.exe (webhook URL etc.).
+# Generated fresh each CI run from repo secrets — never commit.
+/installer/_config.py
+/installer/build/
+/installer/dist/
