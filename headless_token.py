@@ -718,7 +718,34 @@ def main(app_id, game_name, steampass_uuid, generation_mode="gbe"):
         inject_ticket(ss_dir / "configs.user.ini", token_b64, steam_id)
         log("Injected ticket into steam_settings/configs.user.ini")
 
-        # 6. Zip
+        # 6. Bundle the auto-installer (installer.exe) so the user never has
+        # to paste a path. The installer reads steam_settings/steam_appid.txt
+        # for the appid, looks the game up via Steam's libraryfolders.vdf +
+        # appmanifest_<appid>.acf, and copies this whole folder INTO the
+        # game's install root. Built via .github/workflows/build-installer.yml.
+        installer_src = CORE_DIR / "installer.exe"
+        safe_loader_basename = safe_loader_name  # set in step 1 above
+        installer_out_name = f"Install {safe_loader_basename}.exe"
+        if installer_src.exists():
+            shutil.copy2(installer_src, out / installer_out_name)
+            (out / "README - Read Me First.txt").write_text(
+                "GameGen — How to play\n"
+                "─────────────────────\n\n"
+                f"1. Make sure {game_name} is installed via Steam.\n"
+                f"2. Double-click \"{installer_out_name}\".\n"
+                "   The installer finds your game folder automatically and\n"
+                "   copies everything where it belongs. Approve the UAC\n"
+                "   prompt if Windows asks.\n"
+                f"3. Open your game folder and double-click\n"
+                f"   \"{loader_out_name}\" to play.\n"
+                "   (Don't launch the game from Steam — always use the loader.)\n",
+                encoding="utf-8",
+            )
+            log(f"Bundled installer: {installer_out_name}")
+        else:
+            log("WARN: _Core/installer.exe not built — shipping zip without auto-installer")
+
+        # 7. Zip
         safe_name = re.sub(r'[<>:"/\\|?*]', '', game_name).strip()
         prefix = "TEST" if fake_mode else "Token"
         zip_base = str(TICKETS_DIR / f"{prefix} [{safe_name}]")
