@@ -575,10 +575,18 @@ def main(app_id, game_name, steampass_uuid, generation_mode="gbe"):
             log(f"ERROR: missing {cc_src}. Cannot build coldclientloader output.")
             sys.exit(1)
 
-        # 1. Copy V1 base files (loader + steamclient + overlay) into output root
+        # 1. Copy V1 base files (loader + steamclient + overlay) into output root.
+        # 32-bit loader intentionally NOT shipped — all our supported games are x64.
+        # The loader gets renamed to "start-<game>.exe" so the user sees a clear
+        # entry point instead of the generic "steamclient_loader_x64.exe".
+        safe_loader_name = re.sub(r'[<>:"/\\|?*]', '', game_name).strip()
+        if not safe_loader_name:
+            safe_loader_name = f"app{app_id}"
+        loader_out_name = f"start-{safe_loader_name}.exe"
+        loader_src = cc_src / "steamclient_loader_x64.exe"
+        if loader_src.exists():
+            shutil.copy2(loader_src, out / loader_out_name)
         for fname in [
-            "steamclient_loader_x64.exe",
-            "steamclient_loader_x32.exe",
             "steamclient.dll",
             "steamclient64.dll",
             "GameOverlayRenderer.dll",
@@ -608,23 +616,48 @@ def main(app_id, game_name, steampass_uuid, generation_mode="gbe"):
         # from there when AppId= is left empty in the ini)
         (ss_dir / "steam_appid.txt").write_text(str(app_id))
 
-        # 3. Detect the game's main exe path (relative) from Steam launch configs
+        # 3. Detect the game's main exe path (relative) from Steam launch configs.
+        # Priority order:
+        #   Pass 1: anything containing "-shipping" (e.g. APK2-Win64-Shipping.exe)
+        #           — UE/Unity shipping binary, the real entry point
+        #   Pass 2: anything containing "win64" / "win32" path segment but not
+        #           a known junk binary (launcher/artbook/etc)
+        #   Pass 3: first usable config that isn't junk
+        #   Pass 4: literally the first config if everything got filtered
         configs = _get_all_launch_configs(app_id)
         game_exe = "game.exe"  # fallback if Steam API has nothing
-        skip = {"artbook", "launcher", "2klauncher", "book"}
+        skip = {"artbook", "launcher", "2klauncher", "book", "crashreport", "redist", "vc_redist"}
+
+        def _is_junk(p: str) -> bool:
+            return any(s in p.lower() for s in skip)
+
         chosen = None
+        # Pass 1: prefer -Shipping binaries (UE/Unity real game exe)
         for c in configs:
-            low = c.lower()
-            if any(s in low for s in skip):
-                continue
-            chosen = c
-            break
+            if "-shipping" in c.lower() and not _is_junk(c):
+                chosen = c
+                break
+        # Pass 2: prefer binaries under Win64/Win32 path
+        if not chosen:
+            for c in configs:
+                low = c.lower()
+                if ("/win64/" in low.replace("\\", "/") or "/win32/" in low.replace("\\", "/")) and not _is_junk(c):
+                    chosen = c
+                    break
+        # Pass 3: first non-junk config
+        if not chosen:
+            for c in configs:
+                if not _is_junk(c):
+                    chosen = c
+                    break
+        # Pass 4: absolute fallback
         if not chosen and configs:
             chosen = configs[0]
         if chosen:
             # Normalize backslashes; relative path from loader (which sits
             # at the game folder root) directly to the exe
             game_exe = chosen.replace("\\", "/")
+            log(f"Picked Exe= from {len(configs)} Steam launch config(s): {game_exe}")
 
         # 4. Write a fresh ColdClientLoader.ini with this game's specifics
         ini = (
