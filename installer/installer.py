@@ -154,6 +154,93 @@ def deploy(src_root: Path, dst_root: Path, self_name: str) -> int:
     return copied
 
 
+# ─── Exe= fix-up ─────────────────────────────────────────────
+# Folders the shipping-exe scan should skip — engine tools, prereq
+# installers, and crash reporters that aren't the game entry point.
+_EXE_JUNK_FRAGMENTS = (
+    "crashreport",
+    "redist",
+    "vc_redist",
+    "directx",
+    "_commonredist",
+    "easyanticheat",
+    "battleye",
+    "epicgames",
+    "engine\\extras",
+    "engine/extras",
+)
+
+
+def _is_junk_exe(rel_posix: str) -> bool:
+    low = rel_posix.lower()
+    return any(frag in low for frag in _EXE_JUNK_FRAGMENTS)
+
+
+def _scan_shipping_exe(game_dir: Path) -> Path | None:
+    """
+    Walk game_dir for the real shipping binary. Priority:
+      1. *-Shipping.exe under any Binaries/Win64 or Binaries/Win32 path
+      2. *-Shipping.exe anywhere else
+    """
+    best_shipping: Path | None = None
+    fallback_shipping: Path | None = None
+    for path in game_dir.rglob("*-[Ss]hipping.exe"):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(game_dir).as_posix()
+        if _is_junk_exe(rel):
+            continue
+        low = rel.lower()
+        if "/binaries/win64/" in low or "/binaries/win32/" in low:
+            best_shipping = path
+            break
+        if fallback_shipping is None:
+            fallback_shipping = path
+    return best_shipping or fallback_shipping
+
+
+def _exe_exists_in_game(game_dir: Path, rel: str) -> bool:
+    candidate = (game_dir / rel.replace("\\", "/")).resolve()
+    try:
+        return candidate.is_file() and game_dir in candidate.parents
+    except OSError:
+        return False
+
+
+def fix_coldclient_ini_exe(game_dir: Path) -> tuple[str, str] | None:
+    """
+    Rewrite ColdClientLoader.ini's `Exe=` line to the real shipping binary
+    if one exists. If the bot already picked a working exe (the file exists
+    on disk under the game folder), leave it alone. Returns (old, new) on
+    change, None otherwise.
+    """
+    ini_path = game_dir / "ColdClientLoader.ini"
+    if not ini_path.exists():
+        return None
+
+    text = ini_path.read_text(encoding="utf-8", errors="ignore")
+    m = re.search(r"^(\s*Exe\s*=\s*)([^\r\n]*)", text, re.MULTILINE)
+    if not m:
+        return None
+    current = m.group(2).strip()
+
+    shipping = _scan_shipping_exe(game_dir)
+    if shipping is not None:
+        new_rel = shipping.relative_to(game_dir).as_posix()
+        if new_rel.lower() == current.lower():
+            return None  # already correct
+        new_text = text[: m.start(2)] + new_rel + text[m.end(2):]
+        ini_path.write_text(new_text, encoding="utf-8")
+        return (current, new_rel)
+
+    # No shipping exe on disk — keep the bot's pick if it actually exists,
+    # otherwise the loader will error and the user can report it.
+    if current and not _exe_exists_in_game(game_dir, current):
+        # bot's pick doesn't exist on disk and no shipping binary either — bail
+        return ("missing", current)
+    return None
+
+
 # ─── Entry point ─────────────────────────────────────────────
 def main() -> None:
     here = payload_root()
@@ -212,14 +299,42 @@ def main() -> None:
         )
         sys.exit(1)
 
-    # 5. Find the loader we just placed and report success.
+    # 5. Fix the ColdClientLoader.ini Exe= line. Steam's launch-config API
+    #    sometimes lists a stale/launcher exe (e.g. "APK2.exe") that doesn't
+    #    exist on disk, while the real binary is the UE shipping build at
+    #    "UNION/Binaries/Win64/APK2-Win64-Shipping.exe". The bot can't see
+    #    the user's disk; we can — so we rewrite the .ini using the real
+    #    shipping binary if one exists.
+    exe_change: tuple[str, str] | None = None
+    try:
+        exe_change = fix_coldclient_ini_exe(game_dir)
+    except OSError:
+        pass  # not fatal — loader may still work with the bot's pick
+
+    # 6. Find the loader we just placed and report success.
     loaders = list(game_dir.glob("start-*.exe"))
     loader_name = loaders[0].name if loaders else "the loader .exe"
+
+    exe_note = ""
+    if exe_change and exe_change[0] != "missing":
+        exe_note = (
+            f"\n\nFixed launcher target:\n"
+            f"  was: {exe_change[0]}\n"
+            f"  now: {exe_change[1]}"
+        )
+    elif exe_change and exe_change[0] == "missing":
+        # No shipping exe and the bot's pick doesn't exist on disk.
+        # Don't fail — just warn. User can report and we'll patch the bot.
+        exe_note = (
+            f"\n\nWARNING: ColdClientLoader.ini points to '{exe_change[1]}'\n"
+            f"but that file doesn't exist in the game folder. The loader\n"
+            f"may fail to spawn the game — please report this in Discord."
+        )
 
     msgbox(
         f"Activation complete.\n\n"
         f"Game folder:\n{game_dir}\n\n"
-        f"Files copied: {copied}\n\n"
+        f"Files copied: {copied}{exe_note}\n\n"
         f"To play, open the game folder and double-click:\n  {loader_name}\n\n"
         f"Tip: do NOT launch the game from Steam itself — always use the loader.",
     )
