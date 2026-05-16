@@ -476,19 +476,27 @@ def fix_coldclient_ini_exe(game_dir: Path) -> tuple[str, str] | None:
         return None
     current = m.group(2).strip()
 
-    shipping = _scan_shipping_exe(game_dir)
-    if shipping is not None:
-        new_rel = shipping.relative_to(game_dir).as_posix()
+    # Priority:
+    #   1. UE-style *-Shipping.exe (under Binaries/Win64/Win32 ideally)
+    #   2. Largest non-junk .exe at the game folder root (covers non-UE
+    #      games — Hedgehog Engine 2 Sonic titles, Godot, custom engines)
+    #   3. Bot's current pick, if that file actually exists on disk
+    #   4. Bail with "missing" so the success popup warns the user
+    chosen = _scan_shipping_exe(game_dir)
+    if chosen is None:
+        chosen = _find_launchable_exe(game_dir)
+
+    if chosen is not None:
+        new_rel = chosen.relative_to(game_dir).as_posix()
         if new_rel.lower() == current.lower():
             return None  # already correct
         new_text = text[: m.start(2)] + new_rel + text[m.end(2):]
         ini_path.write_text(new_text, encoding="utf-8")
         return (current, new_rel)
 
-    # No shipping exe on disk — keep the bot's pick if it actually exists,
-    # otherwise the loader will error and the user can report it.
+    # Nothing found on disk. Keep the bot's pick if it points at a real
+    # file, otherwise flag it.
     if current and not _exe_exists_in_game(game_dir, current):
-        # bot's pick doesn't exist on disk and no shipping binary either — bail
         return ("missing", current)
     return None
 
