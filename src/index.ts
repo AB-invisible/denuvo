@@ -78,13 +78,18 @@ const commands = [
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
     .setName('setmode')
-    .setDescription('Set the token-generation mode for a game (gbe / coldloader / coldclientloader)')
-    .addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true))
+    .setDescription('Set the token-generation mode for a game (or ALL games at once)')
+    .addStringOption(o => o.setName('game').setDescription('Game name, or "ALL" to apply to every game').setRequired(true).setAutocomplete(true))
     .addStringOption(o => o.setName('mode').setDescription('Output layout').setRequired(true).addChoices(
       { name: 'GBE Normal (flat: steam_api64 + steamclient64 + steam_settings)', value: 'gbe' },
       { name: 'ColdLoader V2 (DLL hijack via version/dinput8/winmm)', value: 'coldloader' },
-      { name: 'ColdClientLoader V1 (launcher .exe)', value: 'coldclientloader' },
+      { name: 'ColdClientLoader V1 (launcher .exe) — recommended for Denuvo', value: 'coldclientloader' },
     ))
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+  new SlashCommandBuilder()
+    .setName('getmode')
+    .setDescription('Check the generation mode of a game (or all games grouped by mode)')
+    .addStringOption(o => o.setName('game').setDescription('Game name (omit to see grouped summary of all games)').setRequired(false).setAutocomplete(true))
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
     .setName('autogen')
@@ -348,13 +353,26 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 async function handleAutocomplete(interaction: any) {
-  if (interaction.commandName === 'stock' || interaction.commandName === 'exclude-auto' || interaction.commandName === 'test' || interaction.commandName === 'tokengen' || interaction.commandName === 'setmode' || interaction.commandName === 'game') {
+  if (interaction.commandName === 'stock' || interaction.commandName === 'exclude-auto' || interaction.commandName === 'test' || interaction.commandName === 'tokengen' || interaction.commandName === 'setmode' || interaction.commandName === 'getmode' || interaction.commandName === 'game') {
     const focusedValue = interaction.options.getFocused();
     const games = await prisma.game.findMany({
       where: { name: { contains: focusedValue, mode: 'insensitive' } },
-      take: 25
+      take: 24, // leave room for the synthetic "ALL" entry on bulk-capable commands
     });
-    await interaction.respond(games.map((g: { name: string }) => ({ name: g.name, value: g.name })));
+
+    const entries = games.map((g: { name: string }) => ({ name: g.name, value: g.name }));
+
+    // /setmode and /getmode accept "ALL" to act on every game. Surface it as
+    // the first autocomplete suggestion when the input is empty or matches "a".
+    const bulkCapable = interaction.commandName === 'setmode' || interaction.commandName === 'getmode';
+    if (bulkCapable) {
+      const f = focusedValue.toLowerCase();
+      if (f === '' || 'all'.startsWith(f)) {
+        entries.unshift({ name: 'ALL — apply to every game', value: 'ALL' });
+      }
+    }
+
+    await interaction.respond(entries.slice(0, 25));
   }
 }
 
@@ -961,17 +979,46 @@ async function handleChatCommand(interaction: any) {
     const gameName = interaction.options.getString('game')!;
     const mode = interaction.options.getString('mode')!;
 
-    const game = await prisma.game.findUnique({ where: { name: gameName } });
-    if (!game) return interaction.editReply({ content: `❌ **Not Found:** Game **${gameName}** does not exist.` });
-
-    const oldMode = (game as any).generationMode || 'gbe';
-    await prisma.game.update({ where: { id: game.id }, data: { generationMode: mode } as any });
-
     const modeLabel: Record<string, string> = {
       'gbe': 'GBE Normal (flat: steam_api64 + steamclient64 + steam_settings)',
       'coldloader': 'ColdLoader V2 (DLL hijack)',
       'coldclientloader': 'ColdClientLoader V1 (launcher .exe)',
     };
+
+    // ── Bulk path: "ALL" applies to every game in the DB ──
+    if (gameName.toUpperCase() === 'ALL') {
+      const before = await prisma.game.groupBy({
+        by: ['generationMode'] as any,
+        _count: { _all: true },
+      } as any) as Array<{ generationMode: string, _count: { _all: number } }>;
+
+      const result = await prisma.game.updateMany({ data: { generationMode: mode } as any });
+
+      const summary = before
+        .map(b => `\`${b.generationMode || 'gbe'}\` → ${b._count._all}`)
+        .join(', ') || '(no rows)';
+
+      await interaction.editReply({
+        content:
+          `✅ **Bulk Mode Update:** Set **${result.count}** game(s) to **${modeLabel[mode] || mode}**.\n` +
+          `*(Previous distribution: ${summary})*\n\n` +
+          `Next ticket opened for any game will use the new mode.`,
+      });
+
+      if (interaction.guild) {
+        await logAction(interaction.guild, '⚙️ Bulk Mode Change',
+          `Staff ${interaction.user} switched **all ${result.count} game(s)** to \`${mode}\`. Previous distribution: ${summary}.`,
+          0x5865F2);
+      }
+      return;
+    }
+
+    // ── Single-game path ──
+    const game = await prisma.game.findUnique({ where: { name: gameName } });
+    if (!game) return interaction.editReply({ content: `❌ **Not Found:** Game **${gameName}** does not exist. (Use \`ALL\` to bulk-apply to every game.)` });
+
+    const oldMode = (game as any).generationMode || 'gbe';
+    await prisma.game.update({ where: { id: game.id }, data: { generationMode: mode } as any });
 
     await interaction.editReply({
       content: `✅ **Mode Updated:** **${gameName}** will now generate tokens using **${modeLabel[mode] || mode}**.\n*(Previously: \`${oldMode}\`)*\n\nNext ticket opened for this game will use the new mode.`
@@ -980,6 +1027,47 @@ async function handleChatCommand(interaction: any) {
     if (interaction.guild) {
       await logAction(interaction.guild, '⚙️ Generation Mode Changed', `Staff ${interaction.user} switched **${gameName}** from \`${oldMode}\` to \`${mode}\`.`, 0x5865F2);
     }
+  } else if (interaction.commandName === 'getmode') {
+    const gameName = interaction.options.getString('game');
+
+    const modeLabel: Record<string, string> = {
+      'gbe': 'GBE Normal',
+      'coldloader': 'ColdLoader V2',
+      'coldclientloader': 'ColdClientLoader V1',
+    };
+
+    // ── Single-game lookup ──
+    if (gameName && gameName.toUpperCase() !== 'ALL') {
+      const game = await prisma.game.findUnique({ where: { name: gameName } });
+      if (!game) return interaction.editReply({ content: `❌ **Not Found:** Game **${gameName}** does not exist.` });
+      const mode = (game as any).generationMode || 'gbe';
+      return interaction.editReply({
+        content: `🔍 **${gameName}** — generation mode: **${modeLabel[mode] || mode}** (\`${mode}\`)`,
+      });
+    }
+
+    // ── Grouped summary of all games ──
+    const games = await prisma.game.findMany({ orderBy: { name: 'asc' } });
+    const buckets: Record<string, string[]> = { gbe: [], coldloader: [], coldclientloader: [] };
+    for (const g of games) {
+      const m = ((g as any).generationMode || 'gbe') as string;
+      (buckets[m] ||= []).push(g.name);
+    }
+
+    // Build a compact reply; truncate per-bucket list so total stays under
+    // Discord's 2000-char limit. Show count + first ~15 names per bucket.
+    const sections: string[] = [];
+    for (const mode of Object.keys(buckets)) {
+      const names = buckets[mode];
+      if (!names.length) continue;
+      const shown = names.slice(0, 15).join(', ');
+      const more = names.length > 15 ? ` _+${names.length - 15} more_` : '';
+      sections.push(`**${modeLabel[mode] || mode}** (\`${mode}\`) — ${names.length} game(s)\n${shown}${more}`);
+    }
+
+    await interaction.editReply({
+      content: `🔍 **Generation Mode Summary** (${games.length} total game(s))\n\n${sections.join('\n\n')}`,
+    });
   } else if (interaction.commandName === 'exclude-auto') {
     const gameName = interaction.options.getString('game')!;
     const state = interaction.options.getString('state')!;
