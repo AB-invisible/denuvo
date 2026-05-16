@@ -26,9 +26,16 @@
 import http from 'http';
 import fs from 'fs';
 import path from 'path';
-import prisma from './lib/prisma';
 
 const CORE_DIR = path.join(__dirname, '..', '_Core');
+
+// Lazy Prisma loader — same pattern as downloadHost.ts. Keeps a module-
+// load-time failure in @prisma/client from blowing up the HTTP server's
+// import chain before it can even bind a port.
+async function getPrisma() {
+  const mod = await import('./lib/prisma');
+  return mod.default;
+}
 
 // Map URL "mode" segment → sub-directory under _Core/
 const MODE_DIRS: Record<string, string> = {
@@ -86,6 +93,7 @@ export function startPayloadServer(): void {
       if (dm) {
         const token = dm[1];
         try {
+          const prisma = await getPrisma();
           const row = await prisma.tokenDownload.findUnique({ where: { token } });
           if (!row) {
             res.writeHead(404, { 'Content-Type': 'text/plain' });
@@ -105,8 +113,9 @@ export function startPayloadServer(): void {
           const stat = fs.statSync(row.filePath);
           // Mark first claim time for staff stats; don't block on errors.
           if (!row.claimedAt) {
-            prisma.tokenDownload
-              .update({ where: { token }, data: { claimedAt: new Date() } })
+            // Fire-and-forget claim timestamp update.
+            getPrisma()
+              .then(p => p.tokenDownload.update({ where: { token }, data: { claimedAt: new Date() } }))
               .catch(() => {});
           }
           res.writeHead(200, {

@@ -19,7 +19,6 @@ import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
 import FormData from 'form-data';
-import { createDownloadLink } from './downloadHost';
 
 export type LitterboxExpiry = '1h' | '12h' | '24h' | '72h';
 
@@ -138,11 +137,11 @@ export async function uploadFile(filePath: string, litterboxExpiry: LitterboxExp
   }
 
   // Preferred: self-hosted 30-minute link via the bot's /download endpoint.
-  // Prevents users from sharing the zip outside the server — once the
-  // 30 min window closes the URL 404s and re-downloading is impossible.
-  // Falls back to external hosts if PUBLIC_URL isn't configured or the
-  // local copy fails (which would only happen on disk errors).
+  // Lazy-imported so a module-load-time failure in downloadHost (e.g.
+  // Prisma client init explosion) can't cascade up and prevent fileHost
+  // from loading at all. If it throws, we silently fall back to gofile.
   try {
+    const { createDownloadLink } = await import('./downloadHost');
     const link = await createDownloadLink(filePath);
     if (link) {
       return {

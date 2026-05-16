@@ -18,9 +18,17 @@
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import prisma from '../lib/prisma';
 
 const LINK_TTL_MS = 30 * 60 * 1000; // 30 minutes
+
+// Lazy-load Prisma so an import-time failure in @prisma/client doesn't
+// cascade up the import chain and prevent the whole bot from starting.
+// Any caller that doesn't actually use createDownloadLink/cleanup never
+// touches the client at all.
+async function getPrisma() {
+  const mod = await import('../lib/prisma');
+  return mod.default;
+}
 
 export interface SelfHostedLink {
   url: string;
@@ -87,6 +95,7 @@ export async function createDownloadLink(
   const size = (await fs.promises.stat(storedPath)).size;
   const expiresAt = new Date(Date.now() + LINK_TTL_MS);
 
+  const prisma = await getPrisma();
   await prisma.tokenDownload.create({
     data: {
       token,
@@ -111,6 +120,7 @@ export async function createDownloadLink(
  */
 export async function cleanupExpiredDownloads(): Promise<number> {
   const now = new Date();
+  const prisma = await getPrisma();
   const expired = await prisma.tokenDownload.findMany({ where: { expiresAt: { lte: now } } });
   let deleted = 0;
   for (const row of expired) {
