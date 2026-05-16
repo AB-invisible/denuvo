@@ -1078,9 +1078,15 @@ def create_desktop_shortcut(target_exe: Path, shortcut_name: str, icon_path: Pat
         def ps_str(p: Path | str) -> str:
             return "'" + str(p).replace("'", "''") + "'"
 
+        # IconLocation needs ",0" appended to tell Windows which icon
+        # index inside the .exe to use (0 = first icon, which is what
+        # File Explorer shows for the binary itself). Without the
+        # index, some Windows builds silently fall back to the
+        # generic .exe icon.
         icon_line = ""
         if icon_path and Path(icon_path).exists():
-            icon_line = f"$s.IconLocation = {ps_str(icon_path)}"
+            icon_with_index = f"{icon_path},0"
+            icon_line = f"$s.IconLocation = {ps_str(icon_with_index)}"
 
         script = (
             f"$ws = New-Object -ComObject WScript.Shell; "
@@ -1211,31 +1217,85 @@ def _find_and_delete_source_zip(here: Path) -> bool:
 
 def _schedule_self_delete(here: Path, self_path: Path) -> None:
     """
-    Spawn a detached cmd.exe that waits 3 seconds (long enough for us
-    to exit and release the handle on installer.exe), then deletes the
-    installer + the extracted folder. CREATE_NO_WINDOW keeps it invisible
-    to the user.
+    Schedule the installer .exe and its extracted folder to delete a few
+    seconds after the installer process exits.
+
+    Approach: write a stand-alone .bat to %TEMP%, then launch it via
+    cmd.exe with full process-detach flags so it survives even when
+    the parent dies. The previous simpler version (`cmd /C "..."`
+    inline) was getting killed because PyInstaller wraps the installer
+    in a Windows Job Object — by default, every child process of a
+    Job dies when the Job ends. We need CREATE_BREAKAWAY_FROM_JOB to
+    escape it.
+
+    The .bat:
+      1. Waits 6 seconds via ping (long enough for the installer to
+         fully exit and Windows to release the handle on the .exe).
+      2. Force-deletes the installer .exe.
+      3. Recursively rmdirs the extracted folder.
+      4. Self-deletes the .bat.
     """
     try:
-        DETACHED_PROCESS = 0x00000008
-        CREATE_NO_WINDOW = 0x08000000
-        # `ping` is a portable Windows way to sleep without bringing in
-        # a separate dependency. /F = force, /Q = quiet, /S /Q = recursive.
-        script = (
-            f'ping 127.0.0.1 -n 4 > nul & '
-            f'del /F /Q "{self_path}" & '
-            f'rmdir /S /Q "{here}"'
+        import tempfile
+        # Use a .cmd file (same behavior as .bat) in %TEMP% — outlives
+        # the installer's own folder, can't be locked by anything we
+        # control. %~f0 inside the script refers to the script itself
+        # so it can self-delete on its last line.
+        fd, bat_path_str = tempfile.mkstemp(suffix=".cmd", prefix="gamegen-cleanup-")
+        os.close(fd)
+        bat_path = Path(bat_path_str)
+        bat_content = (
+            "@echo off\r\n"
+            "ping -n 7 127.0.0.1 >nul\r\n"
+            f'del /F /Q "{self_path}" >nul 2>&1\r\n'
+            f'rmdir /S /Q "{here}" >nul 2>&1\r\n'
+            '(goto) 2>nul & del "%~f0"\r\n'
         )
+        bat_path.write_text(bat_content, encoding="ascii", errors="ignore")
+
+        # CreateProcess flags — bitwise OR of:
+        #   DETACHED_PROCESS           — no console window inherited
+        #   CREATE_NEW_PROCESS_GROUP   — new process group so Ctrl-C
+        #                                in the parent doesn't kill it
+        #   CREATE_BREAKAWAY_FROM_JOB  — escape PyInstaller's Job
+        #                                Object so we outlive the .exe
+        #   CREATE_NO_WINDOW           — hide the cmd window entirely
+        DETACHED_PROCESS = 0x00000008
+        CREATE_NEW_PROCESS_GROUP = 0x00000200
+        CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+        CREATE_NO_WINDOW = 0x08000000
+        flags = (
+            DETACHED_PROCESS
+            | CREATE_NEW_PROCESS_GROUP
+            | CREATE_BREAKAWAY_FROM_JOB
+            | CREATE_NO_WINDOW
+        )
+
         subprocess.Popen(
-            ["cmd.exe", "/C", script],
-            creationflags=DETACHED_PROCESS | CREATE_NO_WINDOW,
+            ["cmd.exe", "/C", str(bat_path)],
+            creationflags=flags,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             close_fds=True,
+            cwd=str(bat_path.parent),
         )
     except OSError:
-        pass
+        # If CREATE_BREAKAWAY_FROM_JOB itself fails (some restricted
+        # environments don't allow it), retry without that flag. Better
+        # than nothing — at worst the cleanup just doesn't run.
+        try:
+            subprocess.Popen(
+                ["cmd.exe", "/C", str(bat_path)],
+                creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+                cwd=str(bat_path.parent),
+            )
+        except OSError:
+            pass
 
 
 def self_destruct(here: Path, self_path: Path) -> None:
@@ -1477,10 +1537,17 @@ def main() -> None:
 
         shortcut_made = False
         if renamed:
-            # Prefer the game's actual shipping exe as the icon source so the
-            # shortcut looks indistinguishable from a Steam-installed game.
-            shipping_icon = _scan_shipping_exe(game_dir)
-            shortcut_made = create_desktop_shortcut(renamed, game_name, icon_path=shipping_icon)
+            # Icon source priority:
+            #   1. *-Shipping.exe (UE games) — usually has the prettiest icon
+            #   2. Largest non-junk .exe found recursively, excluding our
+            #      own loader so we never pin the generic Goldberg icon
+            # Either way the shortcut shows the game's REAL icon, never
+            # the bot's loader icon. If both fail (no exe at all), the
+            # shortcut falls back to Windows' generic exe icon.
+            icon_source = _scan_shipping_exe(game_dir)
+            if not icon_source or not icon_source.exists():
+                icon_source = _find_launchable_exe(game_dir, exclude=[renamed])
+            shortcut_made = create_desktop_shortcut(renamed, game_name, icon_path=icon_source)
 
         shortcut_block = (
             f"\nDesktop shortcut: created (\"{game_name}\")."
