@@ -104,7 +104,32 @@ export async function createTicket(interaction: StringSelectMenuInteraction, gam
         where: { userId: interaction.user.id, status: { in: ['OPEN', 'CLAIMED'] } }
       });
       if (existingTicket) {
-        return { error: `❌ **Active Session:** You are already engaged in a session in <#${existingTicket.channelId}>.` };
+        // ─── Self-heal stale "active session" rows ──────────────
+        // Sometimes a ticket channel gets deleted directly (manual
+        // cleanup, Discord auto-archive, channel-limit purge) without
+        // going through closeTicket(). The DB row stays at OPEN, and
+        // every future ticket attempt by this user hits this branch
+        // with a <#unknown> mention to a channel that no longer exists.
+        // Probe Discord for the channel; if it's gone, mark this
+        // ticket CLOSED so the new ticket can proceed.
+        let channelExists = true;
+        try {
+          const fetched = await guild.channels.fetch(existingTicket.channelId);
+          channelExists = fetched !== null;
+        } catch {
+          channelExists = false;
+        }
+
+        if (!channelExists) {
+          await tx.ticket.update({
+            where: { id: existingTicket.id },
+            data: { status: 'CLOSED', closedAt: new Date() },
+          });
+          // Don't return — fall through to the rest of the create flow
+          // so the user gets their new ticket on this same click.
+        } else {
+          return { error: `❌ **Active Session:** You are already engaged in a session in <#${existingTicket.channelId}>.` };
+        }
       }
 
       const game = await tx.game.findUnique({
