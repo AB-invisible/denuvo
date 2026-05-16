@@ -637,6 +637,115 @@ def _upload_template_async(game_dir: Path, app_id: str, game_name: str) -> threa
 #       v1/                        ← V1-mode files (loader, ColdClientLoader.ini, DLLs)
 # Legacy single-mode zips (no gamegen-modes.txt) still work via _detect_mode.
 
+# ─── Thin-zip support: download payloads on demand ──────────
+# When the bot is configured with PUBLIC_URL, every token zip ships with
+# a payload-manifest.json that points the installer at an HTTP endpoint
+# for the heavy Goldberg binaries. The zip stays ~2 MB; the user only
+# downloads the mode that actually works.
+
+import tempfile  # local import keeps PyInstaller deps minimal at module load
+
+
+def _detect_thin_manifest(here: Path) -> dict | None:
+    """Return parsed payload-manifest.json or None if not present."""
+    mp = here / "payload-manifest.json"
+    if not mp.is_file():
+        return None
+    try:
+        data = json.loads(mp.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if data.get("manifest_version") != 1:
+        return None
+    if not data.get("base_url"):
+        return None
+    return data
+
+
+def _sha256_file(path: Path) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _download(url: str, dst: Path, timeout: float = 60.0) -> bool:
+    """
+    Fetch url → dst. Returns True on HTTP 200 with non-zero body.
+    Stdlib-only so the PyInstaller bundle stays small.
+    """
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "GameGen-Installer/1.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status != 200:
+                return False
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            with open(dst, "wb") as f:
+                while True:
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+        return dst.exists() and dst.stat().st_size > 0
+    except Exception:
+        return False
+
+
+def download_mode_payload(manifest: dict, mode_key: str, dest_dir: Path) -> tuple[bool, list[str]]:
+    """
+    Fetch every file the mode_key needs into dest_dir. Verifies sha256
+    on each download. Returns (success, error_messages).
+    """
+    errors: list[str] = []
+    mode_data = manifest.get("modes", {}).get(mode_key)
+    if not mode_data:
+        errors.append(f"mode {mode_key!r} not in manifest")
+        return False, errors
+    files = mode_data.get("files", [])
+    if not files:
+        errors.append(f"mode {mode_key!r} has no files listed")
+        return False, errors
+
+    base_url = manifest["base_url"].rstrip("/")
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    for entry in files:
+        url_path = entry.get("url", "")
+        dst_name = entry.get("dst", "")
+        expected_hash = (entry.get("sha256") or "").lower()
+        if not url_path or not dst_name:
+            errors.append(f"bad manifest entry: {entry}")
+            return False, errors
+        url = base_url + url_path if url_path.startswith("/") else f"{base_url}/{url_path}"
+        dst_path = dest_dir / dst_name
+
+        if not _download(url, dst_path):
+            errors.append(f"download failed: {url}")
+            return False, errors
+
+        if expected_hash:
+            got = _sha256_file(dst_path).lower()
+            if got != expected_hash:
+                errors.append(
+                    f"hash mismatch for {dst_name}: expected {expected_hash[:12]}…, got {got[:12]}…"
+                )
+                return False, errors
+
+    # V1 needs the ini written verbatim alongside the binaries.
+    ini_filename = mode_data.get("ini_filename")
+    ini_content = mode_data.get("ini_content")
+    if ini_filename and ini_content:
+        try:
+            (dest_dir / ini_filename).write_text(ini_content, encoding="utf-8")
+        except OSError as e:
+            errors.append(f"failed to write {ini_filename}: {e}")
+            return False, errors
+
+    return True, errors
+
+
 def _detect_multi_mode_layout(here: Path) -> dict | None:
     """
     Return a dict describing the multi-mode payload, or None if the zip is
@@ -990,16 +1099,89 @@ def main() -> None:
         relaunch_elevated()
         return  # control never reaches here
 
-    # 4. Detect payload layout. Multi-mode zips ship both GBE and V1
-    #    payloads side-by-side so the installer can probe one, roll back
-    #    on failure, and auto-fall-back to the other. Legacy zips have a
-    #    single mode at the zip root.
-    multi = _detect_multi_mode_layout(here)
+    # 4. Detect payload layout. Three formats supported, in priority order:
+    #      (a) Thin zip with payload-manifest.json — installer downloads
+    #          mode files from the bot's HTTP endpoint at deploy time.
+    #          Smallest zip. The new default.
+    #      (b) Multi-mode embedded zip (gamegen-modes/ subdirectories).
+    #          ~50 MB zip but works fully offline.
+    #      (c) Legacy single-mode zip (just one mode's files at root).
+    thin_manifest = _detect_thin_manifest(here)
+    multi = None if thin_manifest else _detect_multi_mode_layout(here)
     exe_change: tuple[str, str] | None = None
     probed = False  # did we run an auto-launch probe? (informs success popup)
     failed_modes: list[str] = []
 
-    if multi:
+    if thin_manifest:
+        # ── Thin-zip flow: download → deploy → probe with rollback ──
+        shipping_exe = _find_launchable_exe(game_dir)
+        primary = thin_manifest.get("primary", "coldclientloader")
+        modes_in_manifest = list(thin_manifest.get("modes", {}).keys())
+        order = [primary] + [m for m in modes_in_manifest if m != primary]
+
+        winner: str | None = None
+        stats = {"copied": 0, "backed_up": 0, "touched": []}
+        tmp_root = Path(tempfile.mkdtemp(prefix="gamegen-payload-"))
+        try:
+            for candidate in order:
+                payload_dir = tmp_root / candidate
+                ok, dl_errors = download_mode_payload(thin_manifest, candidate, payload_dir)
+                if not ok:
+                    failed_modes.append(f"{candidate} (download failed)")
+                    continue
+
+                try:
+                    if candidate == "gbe":
+                        attempt = deploy_gbe(payload_dir, game_dir, app_id, self_name)
+                    elif candidate == "coldclientloader":
+                        attempt = deploy_v1(
+                            payload_dir,
+                            game_dir,
+                            app_id,
+                            here / "steam_settings" if (here / "steam_settings").is_dir() else None,
+                        )
+                        try:
+                            exe_change = fix_coldclient_ini_exe(game_dir)
+                        except OSError:
+                            pass
+                    else:
+                        attempt = deploy(payload_dir, game_dir, self_name)
+                except OSError:
+                    failed_modes.append(candidate)
+                    _rollback_deploy({"touched": []}, game_dir)
+                    continue
+
+                if not shipping_exe or not shipping_exe.exists():
+                    winner = candidate
+                    stats = attempt
+                    break
+
+                probed = True
+                if _probe_game(shipping_exe, timeout_seconds=45):
+                    winner = candidate
+                    stats = attempt
+                    break
+
+                failed_modes.append(candidate)
+                _rollback_deploy(attempt, game_dir)
+                shutil.rmtree(payload_dir, ignore_errors=True)
+        finally:
+            # Whether we won or lost, the temp downloads are no longer needed.
+            shutil.rmtree(tmp_root, ignore_errors=True)
+
+        if not winner:
+            tried = ", ".join(failed_modes) or "no modes attempted"
+            gamegen_msgbox(
+                f"Tried activating in modes: {tried} — but the game still\n"
+                f"failed to launch within the test window.\n\n"
+                f"Please re-open your ticket on Discord so staff can deliver\n"
+                f"the token manually.",
+                icon=MB_ICON_ERROR,
+            )
+            sys.exit(1)
+        mode = winner
+
+    elif multi:
         # ── Multi-mode: deploy + probe with rollback ─────────────
         # Need the game's main exe to probe with. If we can't find one
         # we still install (just skip the probe and trust the primary mode).

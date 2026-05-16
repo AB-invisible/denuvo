@@ -17,6 +17,13 @@ import { updateTicketWaitTimes, checkWeeklyStaffStats, checkDutyStatusReset, che
 import { toggleDuty } from './utils/dutyManager';
 import { addSubscription, getUserSubscriptions } from './utils/subscriptionManager';
 import { isStaff } from './utils/permissions';
+import { startPayloadServer } from './payloadServer';
+
+// Spin up the payload HTTP server immediately so Railway's PORT-based
+// healthcheck has something to talk to even before the Discord client
+// finishes connecting. The installer.exe downloads Goldberg binaries
+// from this server on demand.
+startPayloadServer();
 
 const commands = [
   new SlashCommandBuilder()
