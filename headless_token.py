@@ -26,9 +26,12 @@ CORE_DIR     = PROJECT_ROOT / "_Core"
 
 def _public_base_url():
     """Resolve the bot's public base URL for installer downloads.
-    Prefers PUBLIC_URL env var; falls back to RAILWAY_PUBLIC_DOMAIN."""
+    Prefers PUBLIC_URL env var; falls back to RAILWAY_PUBLIC_DOMAIN.
+    Auto-prepends https:// if the user supplied a bare domain."""
     explicit = os.environ.get("PUBLIC_URL", "").strip().rstrip("/")
     if explicit:
+        if not re.match(r"^https?://", explicit, re.IGNORECASE):
+            explicit = "https://" + explicit
         return explicit
     railway = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "").strip()
     if railway:

@@ -709,6 +709,10 @@ def download_mode_payload(manifest: dict, mode_key: str, dest_dir: Path) -> tupl
         return False, errors
 
     base_url = manifest["base_url"].rstrip("/")
+    # Defensive: if the bot was misconfigured with a bare domain (no
+    # scheme), assume https. urllib needs a scheme to fetch.
+    if not re.match(r"^https?://", base_url, re.IGNORECASE):
+        base_url = "https://" + base_url
     dest_dir.mkdir(parents=True, exist_ok=True)
 
     for entry in files:
