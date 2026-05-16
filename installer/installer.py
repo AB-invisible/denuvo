@@ -237,6 +237,150 @@ def deploy(src_root: Path, dst_root: Path, self_name: str) -> dict:
     return stats
 
 
+# ─── Smart placement for GBE mode ─────────────────────────────
+# Folders we skip when scanning the game's own DLL/exe locations — engine
+# tools, redist installers, crash reporters; never the real targets.
+_SCAN_SKIP_DIRS = {
+    "_commonredist",
+    "directx",
+    "vc_redist",
+    "redist",
+    "easyanticheat",
+    "battleye",
+    "epicgamesservices",
+    "crashpad",
+    "crashreportclient",
+}
+
+
+def _is_under_skip_dir(rel_posix: str) -> bool:
+    low = rel_posix.lower()
+    return any(f"/{d}/" in f"/{low}/" for d in _SCAN_SKIP_DIRS)
+
+
+def _find_in_payload(src_root: Path, name: str) -> Path | None:
+    """
+    Locate one of Goldberg's canonical DLLs in the bundled zip. Prefer the
+    flat-at-root copy; fall back to the first match anywhere in the payload.
+    Lets the bot ship either a flat or a nested zip without breaking us.
+    """
+    flat = src_root / name
+    if flat.is_file():
+        return flat
+    for match in src_root.rglob(name):
+        if match.is_file():
+            return match
+    return None
+
+
+def _find_existing_locations(game_dir: Path, name: str) -> list[Path]:
+    """Find every <name> the game itself ships, ignoring junk subfolders."""
+    results: list[Path] = []
+    for match in game_dir.rglob(name):
+        if not match.is_file():
+            continue
+        rel = match.relative_to(game_dir).as_posix()
+        if _is_under_skip_dir(rel):
+            continue
+        results.append(match)
+    return results
+
+
+def _backup_and_overwrite(src: Path, dst: Path, stats: dict) -> None:
+    """Backup dst if present, then overwrite from src. Clears read-only."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists():
+        bak = dst.with_name(dst.name + ".original.bak")
+        if not bak.exists():
+            try:
+                shutil.copy2(dst, bak)
+                stats["backed_up"] += 1
+            except OSError:
+                pass
+        _clear_readonly(dst)
+    shutil.copy2(src, dst)
+    stats["copied"] += 1
+
+
+def _place_steam_settings(src_settings: Path, dst_dir: Path) -> None:
+    """Copy steam_settings/ from src into dst_dir, merging if it exists."""
+    target = dst_dir / "steam_settings"
+    shutil.copytree(src_settings, target, dirs_exist_ok=True)
+
+
+def deploy_gbe(src_root: Path, game_dir: Path, app_id: str, self_name: str) -> dict:
+    """
+    Smart GBE deployment. Goal: don't trust the zip's folder structure;
+    place Goldberg's payload where each game actually looks for it.
+
+    Algorithm:
+      1. Locate Goldberg's flat DLLs anywhere in the bundled zip:
+         steam_api64.dll (the emulator API the game links against) and
+         steamclient64.dll (the emulator client backend).
+      2. Locate the bundled steam_settings/ (achievements, ticket, configs).
+      3. Scan the GAME folder for every existing steam_api64.dll. UE games
+         keep it at Engine/Binaries/ThirdParty/Steamworks/.../Win64/. Flat
+         games keep it at the game root. Either way, the game's own copy
+         tells us where Goldberg's belongs.
+      4. For each location: back up the original DLL, drop Goldberg's,
+         drop steam_appid.txt alongside, copy steam_settings/ alongside.
+      5. Do the same for steamclient64.dll if the game ships one. If it
+         doesn't, drop one next to each steam_api64.dll (some games load
+         it on demand).
+      6. Fallback: if the game has NO steam_api64.dll at all, drop the
+         payload at the game folder root (better than nothing).
+    """
+    stats = {"copied": 0, "backed_up": 0, "api_locations": 0, "client_locations": 0}
+
+    goldberg_api = _find_in_payload(src_root, "steam_api64.dll")
+    goldberg_client = _find_in_payload(src_root, "steamclient64.dll")
+    src_settings_candidates = [
+        src_root / "steam_settings",
+        *(p for p in src_root.rglob("steam_settings") if p.is_dir()),
+    ]
+    src_settings = next((p for p in src_settings_candidates if p.is_dir()), None)
+
+    if not goldberg_api:
+        # Without an API DLL we can't do GBE — fall back to dumb mirror copy
+        # so the user at least sees the bundled files in the game folder.
+        return deploy(src_root, game_dir, self_name)
+
+    api_locations = _find_existing_locations(game_dir, "steam_api64.dll")
+    client_locations = _find_existing_locations(game_dir, "steamclient64.dll")
+
+    if not api_locations:
+        # Game doesn't ship steam_api64.dll at all (rare, or our scan got
+        # confused). Drop everything at the game root as a safe fallback.
+        api_locations = [game_dir / "steam_api64.dll"]
+
+    for api_loc in api_locations:
+        _backup_and_overwrite(goldberg_api, api_loc, stats)
+        stats["api_locations"] += 1
+        # steam_appid.txt right next to the DLL — Goldberg reads this for init.
+        try:
+            (api_loc.parent / "steam_appid.txt").write_text(app_id, encoding="utf-8")
+        except OSError:
+            pass
+        # steam_settings/ next to the DLL — Goldberg reads ticket + configs
+        # from a sibling steam_settings/ folder.
+        if src_settings:
+            try:
+                _place_steam_settings(src_settings, api_loc.parent)
+            except OSError:
+                pass
+
+    if goldberg_client:
+        # Prefer to replace every existing steamclient64.dll the game ships.
+        # If none exist, drop one next to each steam_api64.dll (some games
+        # load it lazily relative to api64.dll).
+        targets = client_locations or [a.parent / "steamclient64.dll" for a in api_locations]
+        for client_loc in targets:
+            _backup_and_overwrite(goldberg_client, client_loc, stats)
+            stats["client_locations"] += 1
+
+    return stats
+
+
 # ─── Exe= fix-up ─────────────────────────────────────────────
 # Folders the shipping-exe scan should skip — engine tools, prereq
 # installers, and crash reporters that aren't the game entry point.
@@ -544,10 +688,22 @@ def main() -> None:
     #    success message and decide what extra post-deploy steps to run.
     mode = _detect_mode(here)
 
-    # 5. Copy the payload into the game folder, backing up any DLLs we're
-    #    about to overwrite. shutil-level OSError is fatal here.
+    # 5. Copy the payload into the game folder. Mode dispatch:
+    #      V1 (coldclientloader) → flat copy to game root; the loader exe
+    #         and ColdClientLoader.ini sit there and reference the game
+    #         exe by relative path.
+    #      GBE → smart placement: scan the game for existing
+    #         steam_api64.dll and steamclient64.dll, replace them in place
+    #         with Goldberg's versions, and drop steam_settings/ +
+    #         steam_appid.txt next to each. Eliminates the need for the
+    #         bot to ship a per-game folder-structure template.
+    #      V2 (coldloader) → mirror copy for now; the bot's V2 zip carries
+    #         the right nested layout from its template. (TODO: smart V2)
     try:
-        stats = deploy(here, game_dir, self_name)
+        if mode == "gbe":
+            stats = deploy_gbe(here, game_dir, app_id, self_name)
+        else:
+            stats = deploy(here, game_dir, self_name)
     except OSError as e:
         msgbox(
             f"Failed while copying files into:\n\n{game_dir}\n\n{e}",
@@ -601,9 +757,16 @@ def main() -> None:
             f"The hijack DLL loads automatically and provides the ticket."
         )
     else:  # gbe
+        loc_summary = ""
+        if "api_locations" in stats:
+            loc_summary = (
+                f"\nReplaced steam_api64.dll in {stats['api_locations']} location(s)."
+            )
+            if stats.get("client_locations"):
+                loc_summary += f"\nReplaced steamclient64.dll in {stats['client_locations']} location(s)."
         launch_block = (
-            "To play, launch the game from Steam as usual. The replaced\n"
-            "DLLs provide the activation ticket transparently."
+            f"To play, launch the game from Steam as usual. The replaced\n"
+            f"DLLs provide the activation ticket transparently.{loc_summary}"
         )
 
     backup_note = ""
