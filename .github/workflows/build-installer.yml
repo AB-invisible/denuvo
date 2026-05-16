@@ -8,11 +8,18 @@ on:
       - '.github/workflows/build-installer.yml'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Default checkout uses a token without push rights once the
+          # workflow needs to push back; this token has contents: write.
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: actions/setup-python@v5
         with:
