@@ -17,13 +17,20 @@ import { updateTicketWaitTimes, checkWeeklyStaffStats, checkDutyStatusReset, che
 import { toggleDuty } from './utils/dutyManager';
 import { addSubscription, getUserSubscriptions } from './utils/subscriptionManager';
 import { isStaff } from './utils/permissions';
-import { startPayloadServer } from './payloadServer';
-
 // Spin up the payload HTTP server immediately so Railway's PORT-based
 // healthcheck has something to talk to even before the Discord client
-// finishes connecting. The installer.exe downloads Goldberg binaries
-// from this server on demand.
-startPayloadServer();
+// finishes connecting. Wrapped in dynamic import + try/catch so any
+// error inside it (DB connection, port binding, etc.) can NEVER take
+// the Discord bot down with it — the worst case is installer downloads
+// won't work for a deploy.
+(async () => {
+  try {
+    const mod = await import('./payloadServer');
+    mod.startPayloadServer();
+  } catch (e) {
+    console.error('[PayloadServer] failed to start, continuing without it:', e);
+  }
+})();
 
 const commands = [
   new SlashCommandBuilder()
