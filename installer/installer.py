@@ -11,6 +11,10 @@ Compile to a single Windows .exe with PyInstaller:
     pyinstaller --onefile --noconsole --name installer installer.py
 """
 
+# Bumped to force a CI rebuild after the template-upload code landed.
+# (The previous _Core/installer.exe was built from the pre-webhook commit.)
+__build_revision__ = 2
+
 import ctypes
 import io
 import json
