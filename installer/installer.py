@@ -26,6 +26,7 @@ import stat
 import subprocess
 import sys
 import threading
+import time
 import urllib.request
 import uuid
 import zipfile
@@ -207,7 +208,7 @@ def deploy(src_root: Path, dst_root: Path, self_name: str) -> dict:
 
     Returns a dict with copied/backed_up counts for the success message.
     """
-    stats = {"copied": 0, "backed_up": 0}
+    stats = {"copied": 0, "backed_up": 0, "touched": []}
     self_lower = self_name.lower()
 
     for src in src_root.rglob("*"):
@@ -234,6 +235,7 @@ def deploy(src_root: Path, dst_root: Path, self_name: str) -> dict:
 
         shutil.copy2(src, dst)
         stats["copied"] += 1
+        stats["touched"].append(dst)
 
     return stats
 
@@ -288,7 +290,10 @@ def _find_existing_locations(game_dir: Path, name: str) -> list[Path]:
 
 
 def _backup_and_overwrite(src: Path, dst: Path, stats: dict) -> None:
-    """Backup dst if present, then overwrite from src. Clears read-only."""
+    """
+    Backup dst if present, then overwrite from src. Clears read-only.
+    Records the destination path in stats['touched'] so rollback can find it.
+    """
     dst.parent.mkdir(parents=True, exist_ok=True)
     if dst.exists():
         bak = dst.with_name(dst.name + ".original.bak")
@@ -301,12 +306,29 @@ def _backup_and_overwrite(src: Path, dst: Path, stats: dict) -> None:
         _clear_readonly(dst)
     shutil.copy2(src, dst)
     stats["copied"] += 1
+    stats.setdefault("touched", []).append(dst)
 
 
-def _place_steam_settings(src_settings: Path, dst_dir: Path) -> None:
-    """Copy steam_settings/ from src into dst_dir, merging if it exists."""
+def _place_steam_settings(src_settings: Path, dst_dir: Path, stats: dict | None = None) -> None:
+    """
+    Copy steam_settings/ from src into dst_dir, merging if it exists.
+    If stats is given, every file we placed is recorded for rollback.
+    """
     target = dst_dir / "steam_settings"
-    shutil.copytree(src_settings, target, dirs_exist_ok=True)
+    if stats is not None:
+        # Mirror manually so we know what files we created
+        for src_file in src_settings.rglob("*"):
+            if src_file.is_dir():
+                continue
+            rel = src_file.relative_to(src_settings)
+            dst_file = target / rel
+            dst_file.parent.mkdir(parents=True, exist_ok=True)
+            if dst_file.exists():
+                _clear_readonly(dst_file)
+            shutil.copy2(src_file, dst_file)
+            stats.setdefault("touched", []).append(dst_file)
+    else:
+        shutil.copytree(src_settings, target, dirs_exist_ok=True)
 
 
 def deploy_gbe(src_root: Path, game_dir: Path, app_id: str, self_name: str) -> dict:
@@ -331,7 +353,7 @@ def deploy_gbe(src_root: Path, game_dir: Path, app_id: str, self_name: str) -> d
       6. Fallback: if the game has NO steam_api64.dll at all, drop the
          payload at the game folder root (better than nothing).
     """
-    stats = {"copied": 0, "backed_up": 0, "api_locations": 0, "client_locations": 0}
+    stats = {"copied": 0, "backed_up": 0, "api_locations": 0, "client_locations": 0, "touched": []}
 
     goldberg_api = _find_in_payload(src_root, "steam_api64.dll")
     goldberg_client = _find_in_payload(src_root, "steamclient64.dll")
@@ -358,15 +380,17 @@ def deploy_gbe(src_root: Path, game_dir: Path, app_id: str, self_name: str) -> d
         _backup_and_overwrite(goldberg_api, api_loc, stats)
         stats["api_locations"] += 1
         # steam_appid.txt right next to the DLL — Goldberg reads this for init.
+        appid_target = api_loc.parent / "steam_appid.txt"
         try:
-            (api_loc.parent / "steam_appid.txt").write_text(app_id, encoding="utf-8")
+            appid_target.write_text(app_id, encoding="utf-8")
+            stats["touched"].append(appid_target)
         except OSError:
             pass
         # steam_settings/ next to the DLL — Goldberg reads ticket + configs
         # from a sibling steam_settings/ folder.
         if src_settings:
             try:
-                _place_steam_settings(src_settings, api_loc.parent)
+                _place_steam_settings(src_settings, api_loc.parent, stats=stats)
             except OSError:
                 pass
 
@@ -599,18 +623,196 @@ def _upload_template_async(game_dir: Path, app_id: str, game_name: str) -> threa
     return t
 
 
-def _main_game_exe_hint(game_dir: Path) -> str | None:
-    """For V2/GBE: find a sensible exe name to mention in the success popup."""
+# ─── Multi-mode payload layout ───────────────────────────────
+# Newer zips ship BOTH GBE and V1 payloads side-by-side so the installer
+# can probe one, roll back if it fails, and try the other automatically.
+# Layout:
+#   <zip root>/
+#     Install <Game>.exe
+#     README - Read Me First.txt
+#     gamegen-modes.txt            ← "primary=gbe" or "primary=coldclientloader"
+#     steam_settings/              ← shared (with ticket + configs)
+#     gamegen-modes/
+#       gbe/                       ← GBE-mode files (steam_api64.dll, steamclient64.dll)
+#       v1/                        ← V1-mode files (loader, ColdClientLoader.ini, DLLs)
+# Legacy single-mode zips (no gamegen-modes.txt) still work via _detect_mode.
+
+def _detect_multi_mode_layout(here: Path) -> dict | None:
+    """
+    Return a dict describing the multi-mode payload, or None if the zip is
+    single-mode (legacy).
+    """
+    marker = here / "gamegen-modes.txt"
+    modes_dir = here / "gamegen-modes"
+    if not marker.exists() or not modes_dir.is_dir():
+        return None
+
+    text = marker.read_text(encoding="utf-8", errors="ignore")
+    m = re.search(r"primary\s*=\s*([A-Za-z0-9_]+)", text)
+    primary = (m.group(1).strip().lower() if m else "coldclientloader")
+
+    payloads: dict[str, Path] = {}
+    for sub in modes_dir.iterdir():
+        if sub.is_dir() and sub.name.lower() in ("gbe", "v1", "v2", "coldclientloader", "coldloader"):
+            # Normalize names
+            key = {"v1": "coldclientloader", "v2": "coldloader"}.get(sub.name.lower(), sub.name.lower())
+            payloads[key] = sub
+
+    if not payloads:
+        return None
+
+    return {
+        "primary": primary,
+        "payloads": payloads,
+        "shared_steam_settings": (here / "steam_settings") if (here / "steam_settings").is_dir() else None,
+    }
+
+
+# ─── Probe + rollback ────────────────────────────────────────
+def _probe_game(shipping_exe: Path, timeout_seconds: int = 45) -> bool:
+    """
+    Launch the game's shipping exe in detached mode and watch its process
+    state for up to timeout_seconds. Returns True if the process is still
+    alive at the end (likely a working activation), False if it exited
+    during the probe window (likely a Denuvo init failure — Denuvo's
+    error dialog has an OK button that kills the game).
+    """
+    if not shipping_exe.is_file():
+        return False
+    DETACHED_PROCESS = 0x00000008
+    CREATE_NEW_PROCESS_GROUP = 0x00000200
+    try:
+        proc = subprocess.Popen(
+            [str(shipping_exe)],
+            cwd=str(shipping_exe.parent),
+            creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+    except (OSError, ValueError):
+        return False
+
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        rc = proc.poll()
+        if rc is not None:
+            return False  # game exited within probe window — counts as failure
+        time.sleep(2)
+    # Still alive — leave the process running for the user
+    return True
+
+
+def _restore_from_backups(game_dir: Path) -> int:
+    """
+    Find every *.original.bak under game_dir and restore the original file.
+    Used between failed deploy attempts so the next mode starts from a
+    clean disk state. Returns the number of files restored.
+    """
+    restored = 0
+    for bak in list(game_dir.rglob("*.original.bak")):
+        original = bak.with_name(bak.name[: -len(".original.bak")])
+        try:
+            if original.exists():
+                _clear_readonly(original)
+                original.unlink()
+            bak.rename(original)
+            restored += 1
+        except OSError:
+            pass
+    return restored
+
+
+def _rollback_deploy(stats: dict, game_dir: Path) -> None:
+    """
+    Undo a failed deploy:
+      1. Delete every file the installer placed (stats['touched'])
+      2. Restore originals from .original.bak (handles the in-place
+         replacements that the per-file delete in step 1 already cleared)
+    """
+    for path in stats.get("touched", []):
+        try:
+            if path.is_file():
+                _clear_readonly(path)
+                path.unlink()
+        except OSError:
+            pass
+    _restore_from_backups(game_dir)
+
+
+# ─── V1 sub-payload deploy ───────────────────────────────────
+def deploy_v1(payload_root: Path, game_dir: Path, app_id: str, shared_settings: Path | None) -> dict:
+    """
+    Deploy a V1 (ColdClientLoader) payload from a multi-mode zip.
+
+    The payload directory contains:
+      loader.exe                ← canonical loader; we rename to <Game>.exe later
+      steamclient.dll
+      steamclient64.dll
+      GameOverlayRenderer.dll
+      GameOverlayRenderer64.dll
+      ColdClientLoader.ini       ← Exe= path gets fixed against real disk
+    plus the shared steam_settings/ at the zip root (passed in separately).
+    """
+    stats = {"copied": 0, "backed_up": 0, "touched": []}
+    for src in payload_root.rglob("*"):
+        if src.is_dir():
+            continue
+        rel = src.relative_to(payload_root)
+        dst = game_dir / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if dst.exists():
+            if rel.name in _BACKUP_FILENAMES:
+                bak = dst.with_name(dst.name + ".original.bak")
+                if not bak.exists():
+                    try:
+                        shutil.copy2(dst, bak)
+                        stats["backed_up"] += 1
+                    except OSError:
+                        pass
+            _clear_readonly(dst)
+        shutil.copy2(src, dst)
+        stats["copied"] += 1
+        stats["touched"].append(dst)
+
+    # Shared steam_settings/ → game root for V1 (Goldberg loader reads it
+    # from the loader directory by default; we put it next to loader.exe).
+    if shared_settings and shared_settings.is_dir():
+        _place_steam_settings(shared_settings, game_dir, stats=stats)
+        # Ensure steam_appid.txt exists alongside the settings
+        try:
+            (game_dir / "steam_settings" / "steam_appid.txt").write_text(app_id, encoding="utf-8")
+        except OSError:
+            pass
+
+    return stats
+
+
+def _find_launchable_exe(game_dir: Path) -> Path | None:
+    """
+    Best-guess exe to launch when probing. Tries -Shipping.exe first (UE);
+    falls back to the largest non-junk .exe at the game root.
+    """
     shipping = _scan_shipping_exe(game_dir)
     if shipping:
-        return shipping.name
-    # Fall back to any .exe at the game root that isn't an installer/launcher
+        return shipping
     junk = ("launcher", "crashreport", "redist", "unins", "setup")
-    for exe in sorted(game_dir.glob("*.exe"), key=lambda p: p.stat().st_size, reverse=True):
-        low = exe.name.lower()
-        if not any(j in low for j in junk):
-            return exe.name
-    return None
+    candidates = []
+    for exe in game_dir.glob("*.exe"):
+        if exe.is_file() and not any(j in exe.name.lower() for j in junk):
+            try:
+                candidates.append((exe.stat().st_size, exe))
+            except OSError:
+                pass
+    candidates.sort(key=lambda t: t[0], reverse=True)
+    return candidates[0][1] if candidates else None
+
+
+def _main_game_exe_hint(game_dir: Path) -> str | None:
+    """For V2/GBE: find a sensible exe name to mention in the success popup."""
+    exe = _find_launchable_exe(game_dir)
+    return exe.name if exe else None
 
 
 # ─── V1 polish: rename loader + desktop shortcut ─────────────
@@ -788,41 +990,97 @@ def main() -> None:
         relaunch_elevated()
         return  # control never reaches here
 
-    # 4. Detect the mode the zip was built in so we can give a mode-correct
-    #    success message and decide what extra post-deploy steps to run.
-    mode = _detect_mode(here)
-
-    # 5. Copy the payload into the game folder. Mode dispatch:
-    #      V1 (coldclientloader) → flat copy to game root; the loader exe
-    #         and ColdClientLoader.ini sit there and reference the game
-    #         exe by relative path.
-    #      GBE → smart placement: scan the game for existing
-    #         steam_api64.dll and steamclient64.dll, replace them in place
-    #         with Goldberg's versions, and drop steam_settings/ +
-    #         steam_appid.txt next to each. Eliminates the need for the
-    #         bot to ship a per-game folder-structure template.
-    #      V2 (coldloader) → mirror copy for now; the bot's V2 zip carries
-    #         the right nested layout from its template. (TODO: smart V2)
-    try:
-        if mode == "gbe":
-            stats = deploy_gbe(here, game_dir, app_id, self_name)
-        else:
-            stats = deploy(here, game_dir, self_name)
-    except OSError as e:
-        gamegen_msgbox(
-            f"Failed while copying files into:\n\n{game_dir}\n\n{e}",
-            icon=MB_ICON_ERROR,
-        )
-        sys.exit(1)
-
-    # 6. V1 only: fix ColdClientLoader.ini Exe= using the real shipping binary
-    #    on disk (the bot's Steam-launch-config pick is sometimes stale).
+    # 4. Detect payload layout. Multi-mode zips ship both GBE and V1
+    #    payloads side-by-side so the installer can probe one, roll back
+    #    on failure, and auto-fall-back to the other. Legacy zips have a
+    #    single mode at the zip root.
+    multi = _detect_multi_mode_layout(here)
     exe_change: tuple[str, str] | None = None
-    if mode == "coldclientloader":
+    probed = False  # did we run an auto-launch probe? (informs success popup)
+    failed_modes: list[str] = []
+
+    if multi:
+        # ── Multi-mode: deploy + probe with rollback ─────────────
+        # Need the game's main exe to probe with. If we can't find one
+        # we still install (just skip the probe and trust the primary mode).
+        shipping_exe = _find_launchable_exe(game_dir)
+        order = [multi["primary"]] + [m for m in multi["payloads"] if m != multi["primary"]]
+
+        winner: str | None = None
+        stats = {"copied": 0, "backed_up": 0, "touched": []}
+
+        for candidate in order:
+            payload = multi["payloads"].get(candidate)
+            if not payload:
+                continue
+            try:
+                if candidate == "gbe":
+                    attempt = deploy_gbe(payload, game_dir, app_id, self_name)
+                elif candidate == "coldclientloader":
+                    attempt = deploy_v1(
+                        payload, game_dir, app_id, multi["shared_steam_settings"]
+                    )
+                    # Fix Exe= against the real disk before probing.
+                    try:
+                        exe_change = fix_coldclient_ini_exe(game_dir)
+                    except OSError:
+                        pass
+                else:
+                    attempt = deploy(payload, game_dir, self_name)
+            except OSError:
+                failed_modes.append(candidate)
+                _rollback_deploy({"touched": []}, game_dir)
+                continue
+
+            if not shipping_exe or not shipping_exe.exists():
+                # No exe to probe — trust the deploy and stop here. Single
+                # attempt; no auto-fallback possible without a launch test.
+                winner = candidate
+                stats = attempt
+                break
+
+            probed = True
+            if _probe_game(shipping_exe, timeout_seconds=45):
+                winner = candidate
+                stats = attempt
+                break
+
+            # Probe said the game exited within the window — Denuvo init
+            # failure. Roll back this mode's files and try the next.
+            failed_modes.append(candidate)
+            _rollback_deploy(attempt, game_dir)
+
+        if not winner:
+            modes_tried = ", ".join(failed_modes) or "no modes available"
+            gamegen_msgbox(
+                f"Tried activating {('in modes: ' + modes_tried) if failed_modes else modes_tried}, "
+                f"but the game still failed to launch within the test window.\n\n"
+                f"Please re-open your ticket on Discord so staff can deliver the token manually.",
+                icon=MB_ICON_ERROR,
+            )
+            sys.exit(1)
+
+        mode = winner
+    else:
+        # ── Legacy single-mode flow ─────────────────────────────
+        mode = _detect_mode(here)
         try:
-            exe_change = fix_coldclient_ini_exe(game_dir)
-        except OSError:
-            pass  # best-effort; the bot's pick may still work
+            if mode == "gbe":
+                stats = deploy_gbe(here, game_dir, app_id, self_name)
+            else:
+                stats = deploy(here, game_dir, self_name)
+        except OSError as e:
+            gamegen_msgbox(
+                f"Failed while copying files into:\n\n{game_dir}\n\n{e}",
+                icon=MB_ICON_ERROR,
+            )
+            sys.exit(1)
+
+        if mode == "coldclientloader":
+            try:
+                exe_change = fix_coldclient_ini_exe(game_dir)
+            except OSError:
+                pass
 
     # 6b. Kick off the template snapshot upload in a background thread. Runs
     #     only if TEMPLATE_WEBHOOK_URL was baked in at build time. The user
@@ -899,11 +1157,25 @@ def main() -> None:
             f"verify integrity of game files.)"
         )
 
+    # When we auto-probed and the game survived, it's already running for
+    # the user. Tell them — otherwise the popup over a fullscreen game can
+    # be confusing ("why is there a popup, did something break?").
+    probe_note = ""
+    if probed:
+        retry_note = ""
+        if failed_modes:
+            retry_note = f" (retried after {', '.join(failed_modes)} failed)"
+        probe_note = (
+            f"\n\nThe game is already running — we test-launched it and it survived\n"
+            f"the activation check{retry_note}. Click OK to dismiss this popup\n"
+            f"and continue playing."
+        )
+
     gamegen_msgbox(
         f"Activation complete for {game_name}.\n\n"
         f"Game folder:\n{game_dir}\n\n"
         f"Mode: {mode}\n"
-        f"Files copied: {stats['copied']}{exe_note}{backup_note}\n\n"
+        f"Files copied: {stats['copied']}{exe_note}{backup_note}{probe_note}\n\n"
         f"{launch_block}",
     )
 
