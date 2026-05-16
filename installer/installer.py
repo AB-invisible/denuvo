@@ -945,27 +945,36 @@ def deploy_v1(payload_root: Path, game_dir: Path, app_id: str, shared_settings: 
 
 def _find_launchable_exe(game_dir: Path, exclude: list[Path] | None = None) -> Path | None:
     """
-    Best-guess exe to launch when probing the real game. Tries
-    -Shipping.exe first (UE convention); falls back to the largest
-    non-junk .exe at the game root.
+    Best-guess exe to launch — i.e. the game's real binary. Tries
+    -Shipping.exe first (UE convention); otherwise scans the WHOLE
+    game folder recursively for the largest non-junk .exe.
 
-    Junk prefixes/substrings we always skip:
-      - launcher / crashreport / redist / unins / setup — standard noise
+    Rule of thumb: the real game exe is always large (hundreds of MB
+    to multiple GB), while launchers / loaders / redists / crash
+    reporters are typically a few hundred KB to a few MB. Picking by
+    size + filtering out known noise reliably lands on the right one.
+
+    Junk we skip (name-level):
+      - launcher / crashreport / redist / unins / setup — generic noise
       - start- — OUR V1 loader (steamclient_loader_x64.exe gets renamed
-        to "start-<Game>.exe" by the bot at deploy time). Without this,
-        on flat-layout games where the real exe is smaller than our
-        loader (e.g. Fernbus 230 KB vs loader 351 KB), the scan picks
-        OUR loader as the target → ColdClientLoader.ini's Exe= points
-        the loader at itself → infinite spawn or fast crash.
+        to "start-<Game>.exe" by the bot at deploy time). Without this
+        the loader can win the size race against a small launcher and
+        the .ini ends up pointing at the loader → it spawns itself.
 
-    `exclude`: optional explicit paths to skip (e.g. the post-rename
+    Junk we skip (path-level, via _is_junk_exe):
+      - _commonredist / directx / vc_redist / redist — installers
+      - easyanticheat / battleye / epicgames — third-party services
+      - engine/extras — UE editor leftovers
+      - crashreport / crashpad — crash reporters
+
+    `exclude`: explicit paths to never pick (e.g. the post-rename
     loader). Resolved-path equality, not name match.
     """
     shipping = _scan_shipping_exe(game_dir)
     if shipping:
         return shipping
 
-    junk = ("launcher", "crashreport", "redist", "unins", "setup", "start-")
+    junk_names = ("launcher", "crashreport", "redist", "unins", "setup", "start-")
     exclude_resolved = set()
     for p in (exclude or []):
         try:
@@ -973,12 +982,19 @@ def _find_launchable_exe(game_dir: Path, exclude: list[Path] | None = None) -> P
         except OSError:
             pass
 
-    candidates = []
-    for exe in game_dir.glob("*.exe"):
+    candidates: list[tuple[int, Path]] = []
+    for exe in game_dir.rglob("*.exe"):
         if not exe.is_file():
             continue
-        if any(j in exe.name.lower() for j in junk):
+        rel = exe.relative_to(game_dir).as_posix()
+        # Path-segment junk filter (engine extras, redists, EAC etc.)
+        if _is_junk_exe(rel):
             continue
+        # Filename junk filter (launcher, our loader, setup, …)
+        if any(j in exe.name.lower() for j in junk_names):
+            continue
+        # Caller-provided exclusion (e.g. our renamed loader after the
+        # V1 polish step).
         try:
             if exe.resolve() in exclude_resolved:
                 continue
