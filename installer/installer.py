@@ -473,20 +473,30 @@ def main() -> None:
     here = payload_root()
     self_name = Path(sys.argv[0]).name
 
-    # 1. Read app id from the bundled steam_settings.
-    appid_file = here / "steam_settings" / "steam_appid.txt"
-    if not appid_file.exists():
-        msgbox(
-            "Couldn't find steam_settings\\steam_appid.txt next to the installer.\n\n"
-            "Make sure you extracted the full zip into one folder before running this.",
-            flags=MB_OK | MB_ICON_ERROR,
-        )
-        sys.exit(1)
+    # 1. Read app id from any bundled steam_appid.txt. V1's flat layout puts
+    #    it at steam_settings/steam_appid.txt right next to the installer,
+    #    but GBE/V2 UE templates nest steam_settings under
+    #    Engine/Binaries/ThirdParty/Steamworks/.../Win64/ or the game's own
+    #    Binaries/Win64/. Search recursively so every layout works.
+    appid_candidates = [
+        here / "steam_settings" / "steam_appid.txt",
+        *here.rglob("steam_appid.txt"),
+    ]
+    app_id: str | None = None
+    for candidate in appid_candidates:
+        if candidate.exists():
+            try:
+                text = candidate.read_text(encoding="utf-8", errors="ignore").strip()
+            except OSError:
+                continue
+            if text.isdigit():
+                app_id = text
+                break
 
-    app_id = appid_file.read_text(encoding="utf-8", errors="ignore").strip()
-    if not app_id.isdigit():
+    if not app_id:
         msgbox(
-            f"steam_appid.txt doesn't contain a valid Steam App ID (found: {app_id!r}).",
+            "Couldn't find a valid steam_appid.txt anywhere in the extracted folder.\n\n"
+            "Make sure you extracted the full zip into one folder before running this.",
             flags=MB_OK | MB_ICON_ERROR,
         )
         sys.exit(1)
