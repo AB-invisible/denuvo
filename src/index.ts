@@ -564,26 +564,9 @@ async function handleChatCommand(interaction: any) {
 
         try {
           // Always route through uploadFile so the user gets a self-hosted
-          // 30-minute link instead of a permanent Discord attachment. The
-          // direct-attach branch below is kept as a documentation-grade
-          // fallback but never reached — gate is hard-coded false.
-          if (false && sizeMB <= limitMB) {
-            // Fits — attach directly
-            const zipFile = new AttachmentBuilder(zipPath, { name: `TEST [${safeGameName}].zip` });
-            const successEmbed = new EmbedBuilder()
-              .setTitle('🧪 TEST Token Generated')
-              .setDescription(`**${game.name}** template built successfully.\n\n⚠️ **This is a TEST zip** — the ticket inside is a placeholder string \`FAKE_TEST_TICKET_DO_NOT_USE...\`. The DLLs, configs, and structure are real. Use this to verify the template ships correctly.`)
-              .setColor(0x57F287)
-              .addFields(
-                { name: 'AppID', value: `\`${game.appId}\``, inline: true },
-                { name: 'Steam ID', value: `\`76561199000000001\``, inline: true },
-                { name: 'Zip Size', value: `\`${sizeMB.toFixed(1)} MB\``, inline: true }
-              )
-              .setTimestamp();
-            await interaction.editReply({ embeds: [successEmbed], files: [zipFile] });
-          } else {
-            // Too big — upload to file host and post a link
-            console.log(`[TestToken] Zip ${sizeMB.toFixed(1)} MB > ${limitMB} MB limit — uploading to file host`);
+          // 30-minute link instead of a permanent Discord attachment.
+          {
+            console.log(`[TestToken] Routing zip ${sizeMB.toFixed(1)} MB (limit ${limitMB} MB) through uploadFile for 30-min self-hosted link`);
             await interaction.editReply({ embeds: [
               new EmbedBuilder()
                 .setTitle('📤 Uploading TEST Token')
@@ -711,23 +694,7 @@ async function handleChatCommand(interaction: any) {
         let delivered: any;
         // Always route through uploadFile so the user gets a self-hosted
         // 30-minute link instead of a permanent Discord attachment.
-        // The direct-attach branch is kept as documentation but the gate
-        // is hard-coded false.
-        if (false && zipMB <= limitMB) {
-          // Attach directly to the channel
-          const zipFile = new AttachmentBuilder(zipPath, { name: `Token [${safeGameName}].zip` });
-          const successEmbed = new EmbedBuilder()
-            .setTitle(`📦 ${CONFIG.NAME} • Token Delivery`)
-            .setDescription(`<@${ticketHere?.userId || interaction.user.id}>, your activation token for **${game.name}** is ready!\n\n⚠️ **CRITICAL INSTRUCTIONS**\n1. Extract the zip into your game folder.\n2. **NEVER** launch the game from Steam.\n3. Always use the **.exe** located in your game folder.\n\n${ticketHere ? '*Press a button below once you\'ve tested it.*' : ''}`)
-            .setColor(0x57F287)
-            .addFields(successFields)
-            .setTimestamp();
-          delivered = await interaction.editReply({
-            embeds: [successEmbed],
-            files: [zipFile],
-            components: ticketHere ? [worksRow] : []
-          });
-        } else {
+        {
           // Upload to file host
           await interaction.editReply({ embeds: [
             new EmbedBuilder()
@@ -1414,32 +1381,6 @@ client.on(Events.MessageCreate, async (message) => {
               // Clean up local zip — we have the hosted copy
               try { fsMod.unlinkSync(zipPath); } catch {}
               return;
-            }
-
-            const zipFile = new AttachmentBuilder(zipPath, { name: `Token [${safeGameName}].zip` });
-            const deliveryEmbed = createTokenDeliveryEmbed(ticket.game.name, ticket.userId, client.user!);
-
-            const worksRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
-              new ButtonBuilder().setCustomId('works_yes').setLabel('Yes, it works!').setStyle(ButtonStyle.Success),
-              new ButtonBuilder().setCustomId('works_no').setLabel('No, it doesn\'t work').setStyle(ButtonStyle.Danger)
-            );
-
-            const deliveryMsg = await (message.channel as TextChannel).send({
-              embeds: [deliveryEmbed],
-              files: [zipFile],
-              components: [worksRow]
-            });
-
-            await prisma.ticket.update({
-              where: { id: ticket.id },
-              data: { deliveryMessageId: deliveryMsg.id, staffId: client.user!.id }
-            });
-
-            await genMsg.delete().catch(() => {});
-            await deliveryMsg.react('❤️').catch(() => {});
-
-            if (guild) {
-              await logAction(guild, '🤖 Auto-Token Delivered', `Bot auto-generated and delivered token for **${ticket.game.name}** (AppID: \`${appId}\`) in <#${message.channelId}>.`, 0x57F287);
             }
           } else {
             const failEmbed = new EmbedBuilder()
