@@ -294,10 +294,9 @@ export function createTokenDeliveryEmbed(
       `2. Right-click → **Extract All...** (extract into its own folder).\n` +
       `3. Double-click **\`Install ${safeName}.exe\`** and approve the UAC prompt.\n\n` +
       `**What happens next:**\n` +
-      `• The installer finds your game on Steam automatically and deploys the files.\n` +
-      `• It then test-launches **${gameName}** for ~45 seconds to verify activation — ` +
-      `**don't close the game during the test**.\n` +
-      `• On success: a desktop shortcut appears with the game's own icon, or ${gameName} just keeps running.\n\n` +
+      `• The installer finds your game on Steam automatically and deploys the activation files.\n` +
+      `• When it's done you'll see a confirmation popup with the exact thing to launch — ` +
+      `usually a desktop shortcut with your game's own icon, or just the Steam library button.\n\n` +
       `🎮 **${gameName} must already be installed via Steam first.**\n` +
       `━━━━━━━━━━━━━━━━━━━━━━`
     )

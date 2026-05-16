@@ -1246,151 +1246,97 @@ def main() -> None:
 
     # 4. Detect payload layout. Three formats supported, in priority order:
     #      (a) Thin zip with payload-manifest.json — installer downloads
-    #          mode files from the bot's HTTP endpoint at deploy time.
-    #          Smallest zip. The new default.
+    #          the primary mode's files from the bot's HTTP endpoint.
     #      (b) Multi-mode embedded zip (gamegen-modes/ subdirectories).
-    #          ~50 MB zip but works fully offline.
     #      (c) Legacy single-mode zip (just one mode's files at root).
+    #
+    # We deploy ONLY the primary mode and do NOT auto-launch the game.
+    # Denuvo first-run decryption can take 60–120 s, and the installer
+    # had no reliable way to tell "still loading" from "crashed" — so
+    # we'd roll back and try the alternate mode while the user's game
+    # was still booting up. If the chosen mode doesn't work, the user
+    # tells staff via /tokengen — staff /setmode the game to the other
+    # mode and regenerates. Predictable beats clever.
     thin_manifest = _detect_thin_manifest(here)
     multi = None if thin_manifest else _detect_multi_mode_layout(here)
     exe_change: tuple[str, str] | None = None
-    probed = False  # did we run an auto-launch probe? (informs success popup)
-    failed_modes: list[str] = []
 
     if thin_manifest:
-        # ── Thin-zip flow: download → deploy → probe with rollback ──
-        shipping_exe = _find_launchable_exe(game_dir)
+        # ── Thin-zip flow: download primary mode → deploy → done ──
         primary = thin_manifest.get("primary", "coldclientloader")
-        modes_in_manifest = list(thin_manifest.get("modes", {}).keys())
-        order = [primary] + [m for m in modes_in_manifest if m != primary]
-
-        winner: str | None = None
-        stats = {"copied": 0, "backed_up": 0, "touched": []}
         tmp_root = Path(tempfile.mkdtemp(prefix="gamegen-payload-"))
         try:
-            for candidate in order:
-                payload_dir = tmp_root / candidate
-                ok, dl_errors = download_mode_payload(thin_manifest, candidate, payload_dir)
-                if not ok:
-                    failed_modes.append(f"{candidate} (download failed)")
-                    continue
+            payload_dir = tmp_root / primary
+            ok, dl_errors = download_mode_payload(thin_manifest, primary, payload_dir)
+            if not ok:
+                gamegen_msgbox(
+                    "Couldn't download the activation payload from the GameGen server.\n\n"
+                    f"Details: {(dl_errors[0] if dl_errors else 'unknown error')}\n\n"
+                    "Check your internet connection and try again. If the problem persists, "
+                    "re-open your ticket on Discord so staff can investigate.",
+                    icon=MB_ICON_ERROR,
+                )
+                self_destruct(here, Path(sys.argv[0]).resolve())
+                sys.exit(1)
 
-                try:
-                    if candidate == "gbe":
-                        attempt = deploy_gbe(payload_dir, game_dir, app_id, self_name)
-                    elif candidate == "coldclientloader":
-                        attempt = deploy_v1(
-                            payload_dir,
-                            game_dir,
-                            app_id,
-                            here / "steam_settings" if (here / "steam_settings").is_dir() else None,
-                        )
-                        try:
-                            exe_change = fix_coldclient_ini_exe(game_dir)
-                        except OSError:
-                            pass
-                    else:
-                        attempt = deploy(payload_dir, game_dir, self_name)
-                except OSError:
-                    failed_modes.append(candidate)
-                    _rollback_deploy({"touched": []}, game_dir)
-                    continue
-
-                if not shipping_exe or not shipping_exe.exists():
-                    winner = candidate
-                    stats = attempt
-                    break
-
-                probed = True
-                if _probe_game(shipping_exe, timeout_seconds=45):
-                    winner = candidate
-                    stats = attempt
-                    break
-
-                failed_modes.append(candidate)
-                _rollback_deploy(attempt, game_dir)
-                shutil.rmtree(payload_dir, ignore_errors=True)
-        finally:
-            # Whether we won or lost, the temp downloads are no longer needed.
-            shutil.rmtree(tmp_root, ignore_errors=True)
-
-        if not winner:
-            tried = ", ".join(failed_modes) or "no modes attempted"
-            gamegen_msgbox(
-                f"Tried activating in modes: {tried} — but the game still\n"
-                f"failed to launch within the test window.\n\n"
-                f"Please re-open your ticket on Discord so staff can deliver\n"
-                f"the token manually.",
-                icon=MB_ICON_ERROR,
-            )
-            # All modes failed — still wipe the zip so the user can't reuse it.
-            self_destruct(here, Path(sys.argv[0]).resolve())
-            sys.exit(1)
-        mode = winner
-
-    elif multi:
-        # ── Multi-mode: deploy + probe with rollback ─────────────
-        # Need the game's main exe to probe with. If we can't find one
-        # we still install (just skip the probe and trust the primary mode).
-        shipping_exe = _find_launchable_exe(game_dir)
-        order = [multi["primary"]] + [m for m in multi["payloads"] if m != multi["primary"]]
-
-        winner: str | None = None
-        stats = {"copied": 0, "backed_up": 0, "touched": []}
-
-        for candidate in order:
-            payload = multi["payloads"].get(candidate)
-            if not payload:
-                continue
             try:
-                if candidate == "gbe":
-                    attempt = deploy_gbe(payload, game_dir, app_id, self_name)
-                elif candidate == "coldclientloader":
-                    attempt = deploy_v1(
-                        payload, game_dir, app_id, multi["shared_steam_settings"]
+                if primary == "gbe":
+                    stats = deploy_gbe(payload_dir, game_dir, app_id, self_name)
+                elif primary == "coldclientloader":
+                    stats = deploy_v1(
+                        payload_dir,
+                        game_dir,
+                        app_id,
+                        here / "steam_settings" if (here / "steam_settings").is_dir() else None,
                     )
-                    # Fix Exe= against the real disk before probing.
                     try:
                         exe_change = fix_coldclient_ini_exe(game_dir)
                     except OSError:
                         pass
                 else:
-                    attempt = deploy(payload, game_dir, self_name)
-            except OSError:
-                failed_modes.append(candidate)
-                _rollback_deploy({"touched": []}, game_dir)
-                continue
+                    stats = deploy(payload_dir, game_dir, self_name)
+            except OSError as e:
+                gamegen_msgbox(
+                    f"Failed while copying files into:\n\n{game_dir}\n\n{e}",
+                    icon=MB_ICON_ERROR,
+                )
+                self_destruct(here, Path(sys.argv[0]).resolve())
+                sys.exit(1)
+        finally:
+            shutil.rmtree(tmp_root, ignore_errors=True)
 
-            if not shipping_exe or not shipping_exe.exists():
-                # No exe to probe — trust the deploy and stop here. Single
-                # attempt; no auto-fallback possible without a launch test.
-                winner = candidate
-                stats = attempt
-                break
+        mode = primary
 
-            probed = True
-            if _probe_game(shipping_exe, timeout_seconds=45):
-                winner = candidate
-                stats = attempt
-                break
+    elif multi:
+        # ── Embedded multi-mode zip: pick primary, deploy, done ──
+        primary = multi["primary"]
+        payload = multi["payloads"].get(primary)
+        if not payload:
+            # Manifest's primary mode wasn't bundled — pick any available
+            available = list(multi["payloads"].keys())
+            primary = available[0] if available else "gbe"
+            payload = multi["payloads"].get(primary) or here
 
-            # Probe said the game exited within the window — Denuvo init
-            # failure. Roll back this mode's files and try the next.
-            failed_modes.append(candidate)
-            _rollback_deploy(attempt, game_dir)
-
-        if not winner:
-            modes_tried = ", ".join(failed_modes) or "no modes available"
+        try:
+            if primary == "gbe":
+                stats = deploy_gbe(payload, game_dir, app_id, self_name)
+            elif primary == "coldclientloader":
+                stats = deploy_v1(payload, game_dir, app_id, multi["shared_steam_settings"])
+                try:
+                    exe_change = fix_coldclient_ini_exe(game_dir)
+                except OSError:
+                    pass
+            else:
+                stats = deploy(payload, game_dir, self_name)
+        except OSError as e:
             gamegen_msgbox(
-                f"Tried activating {('in modes: ' + modes_tried) if failed_modes else modes_tried}, "
-                f"but the game still failed to launch within the test window.\n\n"
-                f"Please re-open your ticket on Discord so staff can deliver the token manually.",
+                f"Failed while copying files into:\n\n{game_dir}\n\n{e}",
                 icon=MB_ICON_ERROR,
             )
             self_destruct(here, Path(sys.argv[0]).resolve())
             sys.exit(1)
 
-        mode = winner
+        mode = primary
     else:
         # ── Legacy single-mode flow ─────────────────────────────
         mode = _detect_mode(here)
@@ -1487,25 +1433,11 @@ def main() -> None:
             f"verify integrity of game files.)"
         )
 
-    # When we auto-probed and the game survived, it's already running for
-    # the user. Tell them — otherwise the popup over a fullscreen game can
-    # be confusing ("why is there a popup, did something break?").
-    probe_note = ""
-    if probed:
-        retry_note = ""
-        if failed_modes:
-            retry_note = f" (retried after {', '.join(failed_modes)} failed)"
-        probe_note = (
-            f"\n\nThe game is already running — we test-launched it and it survived\n"
-            f"the activation check{retry_note}. Click OK to dismiss this popup\n"
-            f"and continue playing."
-        )
-
     gamegen_msgbox(
         f"Activation complete for {game_name}.\n\n"
         f"Game folder:\n{game_dir}\n\n"
         f"Mode: {mode}\n"
-        f"Files copied: {stats['copied']}{exe_note}{backup_note}{probe_note}\n\n"
+        f"Files copied: {stats['copied']}{exe_note}{backup_note}\n\n"
         f"{launch_block}",
     )
 
