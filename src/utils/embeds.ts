@@ -299,7 +299,6 @@ export function createTokenDeliveryEmbed(
       `**don't close the game during the test**.\n` +
       `• On success: a desktop shortcut appears with the game's own icon, or ${gameName} just keeps running.\n\n` +
       `🎮 **${gameName} must already be installed via Steam first.**\n` +
-      `🔒 The installer + zip auto-delete after activation — keep the download link handy if you need to retry within 30 minutes.\n` +
       `━━━━━━━━━━━━━━━━━━━━━━`
     )
     .addFields(
