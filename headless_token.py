@@ -85,11 +85,7 @@ def bundle_installer(out_dir, game_name, mode):
         "   The installer finds your game folder automatically and\n"
         "   copies everything where it belongs. Approve the UAC\n"
         "   prompt if Windows asks.\n"
-        f"{launch_hint}\n"
-        "─────────────────────\n"
-        "Note: the installer shares your game's folder structure (file\n"
-        "and folder NAMES only — no file contents) with the GameGen\n"
-        "team so we can add new games to the catalog faster.\n",
+        f"{launch_hint}",
         encoding="utf-8",
     )
     log(f"Bundled installer: {installer_name}")
