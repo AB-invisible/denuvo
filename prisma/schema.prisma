@@ -119,3 +119,17 @@ model DutyStatus {
   isOnDuty    Boolean  @default(false)
   lastUpdated DateTime @default(now())
 }
+
+// Self-hosted, time-limited token download. Bot writes the file to a
+// known directory + creates one row per delivery. Installer fetches the
+// zip via GET /download/<token>. Expired or deleted rows return 404.
+model TokenDownload {
+  token       String   @id          // random opaque ID used in the URL
+  filePath    String                // server-side absolute path
+  fileName    String                // suggested filename for Content-Disposition
+  fileSize    Int                   // bytes (informational + Content-Length)
+  expiresAt   DateTime              // hard cap — 30 min from createdAt
+  createdAt   DateTime @default(now())
+  claimedAt   DateTime?             // first time the file was streamed (for stats only)
+  ticketId    Int?                  // optional link back to the ticket that produced this
+}

@@ -26,6 +26,7 @@
 import http from 'http';
 import fs from 'fs';
 import path from 'path';
+import prisma from './lib/prisma';
 
 const CORE_DIR = path.join(__dirname, '..', '_Core');
 
@@ -67,13 +68,62 @@ export function startPayloadServer(): void {
     return;
   }
 
-  const server = http.createServer((req, res) => {
+  const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url || '/', 'http://localhost');
 
       if (url.pathname === '/payload/health' || url.pathname === '/health' || url.pathname === '/') {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
         res.end('ok');
+        return;
+      }
+
+      // ── Time-limited token download endpoint ──
+      // GET /download/<token> → streams the zip if the token is valid
+      // and not expired. The bot creates these rows via createDownloadLink()
+      // and they auto-expire 30 minutes after creation.
+      const dm = url.pathname.match(/^\/download\/([a-f0-9]{8,128})$/);
+      if (dm) {
+        const token = dm[1];
+        try {
+          const row = await prisma.tokenDownload.findUnique({ where: { token } });
+          if (!row) {
+            res.writeHead(404, { 'Content-Type': 'text/plain' });
+            res.end('Link not found or already expired');
+            return;
+          }
+          if (row.expiresAt.getTime() <= Date.now()) {
+            res.writeHead(410, { 'Content-Type': 'text/plain' });
+            res.end('This download link has expired (30 minute limit). Please re-open your ticket on Discord.');
+            return;
+          }
+          if (!fs.existsSync(row.filePath)) {
+            res.writeHead(404, { 'Content-Type': 'text/plain' });
+            res.end('Stored file is no longer available');
+            return;
+          }
+          const stat = fs.statSync(row.filePath);
+          // Mark first claim time for staff stats; don't block on errors.
+          if (!row.claimedAt) {
+            prisma.tokenDownload
+              .update({ where: { token }, data: { claimedAt: new Date() } })
+              .catch(() => {});
+          }
+          res.writeHead(200, {
+            'Content-Type': 'application/zip',
+            'Content-Length': stat.size.toString(),
+            'Content-Disposition': `attachment; filename="${row.fileName.replace(/"/g, '')}"`,
+            'Cache-Control': 'no-store',
+            'X-Content-Type-Options': 'nosniff',
+          });
+          fs.createReadStream(row.filePath).pipe(res);
+        } catch (e) {
+          console.error('[PayloadServer] /download error', e);
+          if (!res.headersSent) {
+            res.writeHead(500, { 'Content-Type': 'text/plain' });
+            res.end('Internal error');
+          }
+        }
         return;
       }
 

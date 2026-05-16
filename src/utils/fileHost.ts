@@ -19,6 +19,7 @@ import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
 import FormData from 'form-data';
+import { createDownloadLink } from './downloadHost';
 
 export type LitterboxExpiry = '1h' | '12h' | '24h' | '72h';
 
@@ -26,7 +27,7 @@ export interface UploadResult {
   /** The URL to send to the user (download page or direct download). */
   url: string;
   /** Which provider was used. */
-  provider: 'gofile' | 'litterbox';
+  provider: 'gamegen' | 'gofile' | 'litterbox';
   /** Whether the URL is a direct file download (true) or a download page (false). */
   isDirect: boolean;
   /** Human-readable expiry hint shown in messages. */
@@ -136,16 +137,36 @@ export async function uploadFile(filePath: string, litterboxExpiry: LitterboxExp
     throw new Error(`File exceeds 1 GB safety limit: ${(stat.size / 1024 / 1024).toFixed(1)} MB`);
   }
 
-  // Try gofile.io first — preserves filename
+  // Preferred: self-hosted 30-minute link via the bot's /download endpoint.
+  // Prevents users from sharing the zip outside the server — once the
+  // 30 min window closes the URL 404s and re-downloading is impossible.
+  // Falls back to external hosts if PUBLIC_URL isn't configured or the
+  // local copy fails (which would only happen on disk errors).
+  try {
+    const link = await createDownloadLink(filePath);
+    if (link) {
+      return {
+        url: link.url,
+        provider: 'gamegen',
+        isDirect: true,
+        expiryText: `Link expires in ${link.expiresInMinutes} minutes — download soon`,
+      };
+    }
+    console.warn('[fileHost] createDownloadLink returned null (no PUBLIC_URL?) — falling back to gofile');
+  } catch (selfErr) {
+    const se = selfErr as Error;
+    console.warn(`[fileHost] createDownloadLink threw, falling back to gofile: ${se.message}`);
+  }
+
+  // Try gofile.io next — preserves filename
   try {
     return await uploadToGofile(filePath);
   } catch (gofileErr) {
     const ge = gofileErr as Error;
     console.warn(`[fileHost] gofile.io failed, falling back to litterbox: ${ge.message}`);
-    // Fall through to litterbox
   }
 
-  // Fallback: litterbox.catbox.moe
+  // Last-resort fallback: litterbox.catbox.moe
   return await uploadToLitterboxRaw(filePath, litterboxExpiry);
 }
 

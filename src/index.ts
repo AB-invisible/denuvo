@@ -556,7 +556,11 @@ async function handleChatCommand(interaction: any) {
         const limitMB = tier >= 3 ? 100 : tier >= 2 ? 50 : 10;
 
         try {
-          if (sizeMB <= limitMB) {
+          // Always route through uploadFile so the user gets a self-hosted
+          // 30-minute link instead of a permanent Discord attachment. The
+          // direct-attach branch below is kept as a documentation-grade
+          // fallback but never reached — gate is hard-coded false.
+          if (false && sizeMB <= limitMB) {
             // Fits — attach directly
             const zipFile = new AttachmentBuilder(zipPath, { name: `TEST [${safeGameName}].zip` });
             const successEmbed = new EmbedBuilder()
@@ -698,7 +702,11 @@ async function handleChatCommand(interaction: any) {
 
       try {
         let delivered: any;
-        if (zipMB <= limitMB) {
+        // Always route through uploadFile so the user gets a self-hosted
+        // 30-minute link instead of a permanent Discord attachment.
+        // The direct-attach branch is kept as documentation but the gate
+        // is hard-coded false.
+        if (false && zipMB <= limitMB) {
           // Attach directly to the channel
           const zipFile = new AttachmentBuilder(zipPath, { name: `Token [${safeGameName}].zip` });
           const successEmbed = new EmbedBuilder()
@@ -1339,8 +1347,10 @@ client.on(Events.MessageCreate, async (message) => {
             const limitMB = tier >= 3 ? 100 : tier >= 2 ? 50 : 10;
             const zipMB = zipBytes / (1024 * 1024);
 
-            if (zipMB > limitMB) {
-              console.log(`[TokenGen] Zip ${zipMB.toFixed(1)} MB > ${limitMB} MB Discord limit (boost tier ${tier}) — uploading to file host instead`);
+            // Always upload (30-min self-hosted link). The legacy
+            // size-based branch only triggers if uploadFile fails entirely.
+            if (true || zipMB > limitMB) {
+              console.log(`[TokenGen] Routing zip ${zipMB.toFixed(1)} MB (limit ${limitMB} MB, boost tier ${tier}) through uploadFile for 30-min self-hosted link`);
 
               const uploadingEmbed = new EmbedBuilder()
                 .setTitle('📤 Uploading Token to External Host')
@@ -1864,6 +1874,11 @@ setInterval(() => checkWeeklyStaffStats(client), 15 * 60 * 1000); // Weekly Chec
 setInterval(() => checkDutyStatusReset(), 30 * 60 * 1000); // Duty Reset (Every 30m)
 setInterval(() => checkStaleTickets(client), 10 * 60 * 1000); // Stale Tickets (Every 10m)
 setInterval(() => cleanupExpiredCooldowns(), 6 * 60 * 60 * 1000); // Bug #15: Cooldown Cleanup (Every 6h)
+// Token downloads have a 30-minute TTL; sweep every 5 minutes to delete
+// the stored zip file + DB row once the link expires.
+setInterval(() => {
+  import('./utils/downloadHost').then(m => m.cleanupExpiredDownloads().catch(() => {}));
+}, 5 * 60 * 1000);
 
 // --- Process-level error handlers (prevents silent crashes) ---
 process.on('unhandledRejection', (reason, promise) => {

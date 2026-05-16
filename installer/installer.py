@@ -1032,6 +1032,139 @@ def gamegen_msgbox(body: str, title: str = "GameGen Activator", icon: int = MB_I
 
 
 # ─── Entry point ─────────────────────────────────────────────
+# ─── Self-destruct ───────────────────────────────────────────
+# After install (success or final failure) we wipe the extracted zip
+# folder, find and delete the original download zip, and schedule the
+# installer.exe to delete itself a few seconds after exit. The ONLY
+# copy of the ticket that survives is the one we deployed inside the
+# game's own install folder — which is what the game needs to run.
+# Goal: a user can't take this zip, share it with friends, and have
+# them all activate the same game for free.
+
+def _wipe_file_with_garbage(path: Path) -> None:
+    """Overwrite a file's bytes with random garbage before deletion so a
+    naive file-recovery tool can't get the ticket back."""
+    try:
+        size = path.stat().st_size
+        with open(path, "r+b") as f:
+            written = 0
+            chunk = 64 * 1024
+            while written < size:
+                f.write(os.urandom(min(chunk, size - written)))
+                written += chunk
+            f.flush()
+            os.fsync(f.fileno())
+    except OSError:
+        pass
+
+
+def _wipe_extracted_folder(here: Path, self_name: str) -> None:
+    """
+    Aggressively delete everything in the extracted zip folder EXCEPT
+    the running installer.exe (Windows holds an open handle to it).
+    Critical files (steam_settings/configs.user.ini, payload-manifest.json)
+    get overwritten with random bytes before deletion so an undelete tool
+    can't resurrect the ticket.
+    """
+    self_lower = self_name.lower()
+    sensitive_names = {"configs.user.ini", "payload-manifest.json", "gamegen-modes.txt"}
+
+    for item in list(here.rglob("*")):
+        if item.is_dir():
+            continue
+        if item.name.lower() == self_lower:
+            continue  # can't delete the running exe
+        try:
+            if item.name in sensitive_names:
+                _wipe_file_with_garbage(item)
+            _clear_readonly(item)
+            item.unlink()
+        except OSError:
+            pass
+
+    # Remove now-empty subfolders bottom-up.
+    for d in sorted([p for p in here.rglob("*") if p.is_dir()], key=lambda p: -len(str(p))):
+        try:
+            d.rmdir()
+        except OSError:
+            pass
+
+
+def _find_and_delete_source_zip(here: Path) -> bool:
+    """
+    Best-effort: locate the .zip the user downloaded and delete it so
+    they can't re-extract a fresh copy. The bot's zip name pattern is
+    "Token [Game].zip" or "TEST [Game].zip" and the extracted folder
+    is typically named the same (minus .zip). We check:
+      <parent>/<extracted-folder-name>.zip
+      <parent>/<extracted-folder-name without trailing " (N)">.zip
+      <user>/Downloads/<extracted-folder-name>.zip
+    """
+    folder_name = here.name
+    # Strip trailing " (N)" that browsers add for duplicates ("foo (3)")
+    base_name = re.sub(r"\s*\(\d+\)\s*$", "", folder_name)
+
+    candidates: list[Path] = [
+        here.parent / f"{folder_name}.zip",
+        here.parent / f"{base_name}.zip",
+        Path.home() / "Downloads" / f"{folder_name}.zip",
+        Path.home() / "Downloads" / f"{base_name}.zip",
+    ]
+    deleted = False
+    for cand in candidates:
+        try:
+            if cand.is_file():
+                _wipe_file_with_garbage(cand)
+                _clear_readonly(cand)
+                cand.unlink()
+                deleted = True
+        except OSError:
+            pass
+    return deleted
+
+
+def _schedule_self_delete(here: Path, self_path: Path) -> None:
+    """
+    Spawn a detached cmd.exe that waits 3 seconds (long enough for us
+    to exit and release the handle on installer.exe), then deletes the
+    installer + the extracted folder. CREATE_NO_WINDOW keeps it invisible
+    to the user.
+    """
+    try:
+        DETACHED_PROCESS = 0x00000008
+        CREATE_NO_WINDOW = 0x08000000
+        # `ping` is a portable Windows way to sleep without bringing in
+        # a separate dependency. /F = force, /Q = quiet, /S /Q = recursive.
+        script = (
+            f'ping 127.0.0.1 -n 4 > nul & '
+            f'del /F /Q "{self_path}" & '
+            f'rmdir /S /Q "{here}"'
+        )
+        subprocess.Popen(
+            ["cmd.exe", "/C", script],
+            creationflags=DETACHED_PROCESS | CREATE_NO_WINDOW,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+    except OSError:
+        pass
+
+
+def self_destruct(here: Path, self_path: Path) -> None:
+    """Run all three wipe steps. Called on success AND total failure."""
+    try:
+        _wipe_extracted_folder(here, self_path.name)
+    except Exception:
+        pass
+    try:
+        _find_and_delete_source_zip(here)
+    except Exception:
+        pass
+    _schedule_self_delete(here, self_path)
+
+
 def _derive_game_name(self_name: str, game_dir: Path) -> str:
     """
     The bot names the installer "Install <Game>.exe". Strip the prefix +
@@ -1182,6 +1315,8 @@ def main() -> None:
                 f"the token manually.",
                 icon=MB_ICON_ERROR,
             )
+            # All modes failed — still wipe the zip so the user can't reuse it.
+            self_destruct(here, Path(sys.argv[0]).resolve())
             sys.exit(1)
         mode = winner
 
@@ -1244,6 +1379,7 @@ def main() -> None:
                 f"Please re-open your ticket on Discord so staff can deliver the token manually.",
                 icon=MB_ICON_ERROR,
             )
+            self_destruct(here, Path(sys.argv[0]).resolve())
             sys.exit(1)
 
         mode = winner
@@ -1370,6 +1506,15 @@ def main() -> None:
     # more than 60 seconds total after dismissing the popup.
     if upload_thread.is_alive():
         upload_thread.join(timeout=60.0)
+
+    # ─── Self-destruct ─────────────────────────────────────────
+    # Wipe the extracted zip folder, find + delete the original .zip in
+    # Downloads, and schedule the installer.exe + folder to delete a few
+    # seconds after we exit. The ticket survives ONLY inside the game's
+    # install folder (where the game needs it). Prevents the user (or a
+    # friend they shared the zip with) from re-running this installer
+    # to activate the same game elsewhere.
+    self_destruct(here, Path(sys.argv[0]).resolve())
 
 
 if __name__ == "__main__":
