@@ -253,13 +253,26 @@ export function createStaffLookupEmbed(targetUser: User, history: Ticket[], cool
 }
 
 export function createTokenDeliveryEmbed(gameName: string, userId: string, staffUser: User) {
+  // Sanitize for the filename hint (mirrors headless_token.py's safe_basename
+  // logic) so the user sees the exact name of the installer .exe in the zip.
+  const safeName = gameName.replace(/[<>:"/\\|?*]/g, '').trim() || 'Game';
+
   return new EmbedBuilder()
     .setTitle(`📦 ${CONFIG.NAME} • Token Delivery`)
-    .setDescription(`<@${userId}>, your activation token for **${gameName}** is ready!\n\n━━━━━━━━━━━━━━━━━━━━━━\n⚠️ **CRITICAL INSTRUCTIONS**\n1. Check the file **above** for your specific token.\n2. **NEVER** launch the game from Steam.\n3. Always use the **.exe** located in your game folder.\n━━━━━━━━━━━━━━━━━━━━━━`)
+    .setDescription(
+      `<@${userId}>, your activation token for **${gameName}** is ready!\n\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━\n` +
+      `🚀 **HOW TO ACTIVATE — 3 STEPS**\n` +
+      `1. Download the **.zip** attached above.\n` +
+      `2. Right-click → **Extract All...** (don't run from inside the zip).\n` +
+      `3. Double-click **\`Install ${safeName}.exe\`** and approve the UAC prompt.\n\n` +
+      `The installer finds your game on disk automatically, copies everything in place, and tells you exactly what to launch when it's done. ${gameName} **must already be installed via Steam**.\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━`
+    )
     .addFields(
       { name: '👤 Requester', value: `<@${userId}>`, inline: true },
       { name: '🛠️ Activator', value: `${staffUser}`, inline: true },
-      { name: '📋 Next Step', value: 'Please confirm if the game works using the buttons below.', inline: false }
+      { name: '📋 Next Step', value: 'Run the installer, then come back and click **Yes** or **No** below to let us know if the game works.', inline: false }
     )
     .setColor(0x5865F2)
     .setTimestamp();
