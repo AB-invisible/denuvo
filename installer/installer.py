@@ -23,6 +23,7 @@ import os
 import re
 import shutil
 import stat
+import subprocess
 import sys
 import threading
 import urllib.request
@@ -612,6 +613,109 @@ def _main_game_exe_hint(game_dir: Path) -> str | None:
     return None
 
 
+# ─── V1 polish: rename loader + desktop shortcut ─────────────
+def rename_v1_loader(game_dir: Path, game_name: str) -> Path | None:
+    """
+    Rename the V1 launcher from "start-<Game>.exe" to just "<Game>.exe" so
+    it looks like a normal game binary in Explorer. If a file with that
+    name already exists (and isn't the loader we shipped), fall back to
+    "<Game> (GameGen).exe" — we never overwrite a real game binary.
+    """
+    candidates = list(game_dir.glob("start-*.exe"))
+    if not candidates:
+        return None
+    loader = candidates[0]
+
+    safe_name = re.sub(r'[<>:"/\\|?*]', '', game_name).strip()
+    if not safe_name:
+        return loader
+
+    target = game_dir / f"{safe_name}.exe"
+    if target.exists() and target.resolve() != loader.resolve():
+        target = game_dir / f"{safe_name} (GameGen).exe"
+
+    try:
+        loader.rename(target)
+        return target
+    except OSError:
+        return loader  # keep the original "start-" name on failure
+
+
+def create_desktop_shortcut(target_exe: Path, shortcut_name: str, icon_path: Path | None = None) -> bool:
+    """
+    Drop a .lnk on the user's Desktop pointing to target_exe. Uses
+    PowerShell + WScript.Shell COM (no extra deps; PowerShell is always
+    on Windows). IconLocation gets pointed at the game's real shipping
+    exe when available, so the shortcut shows the game's own icon
+    instead of Goldberg's generic loader icon.
+    """
+    try:
+        # Resolve the user's Desktop via the shell folder — some users
+        # have it relocated to OneDrive\Desktop, and Path.home()/"Desktop"
+        # silently misses that case.
+        desktop_str = subprocess.check_output(
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "[Environment]::GetFolderPath('Desktop')",
+            ],
+            text=True,
+            timeout=10,
+        ).strip()
+        desktop = Path(desktop_str) if desktop_str else Path.home() / "Desktop"
+        desktop.mkdir(parents=True, exist_ok=True)
+
+        # Sanitize the shortcut name for filesystem safety.
+        safe = re.sub(r'[<>:"/\\|?*]', '', shortcut_name).strip() or "Game"
+        lnk_path = desktop / f"{safe}.lnk"
+
+        # Build a minimal PowerShell script. Single-quote strings to avoid
+        # variable interpolation, then close-quote-and-reopen to splice
+        # in our paths safely.
+        def ps_str(p: Path | str) -> str:
+            return "'" + str(p).replace("'", "''") + "'"
+
+        icon_line = ""
+        if icon_path and Path(icon_path).exists():
+            icon_line = f"$s.IconLocation = {ps_str(icon_path)}"
+
+        script = (
+            f"$ws = New-Object -ComObject WScript.Shell; "
+            f"$s = $ws.CreateShortcut({ps_str(lnk_path)}); "
+            f"$s.TargetPath = {ps_str(target_exe)}; "
+            f"$s.WorkingDirectory = {ps_str(target_exe.parent)}; "
+            f"{icon_line}; "
+            f"$s.Save()"
+        )
+
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        return result.returncode == 0 and lnk_path.exists()
+    except Exception:
+        return False
+
+
+# ─── GameGen-branded popup ───────────────────────────────────
+_GAMEGEN_BANNER = (
+    "═══════════════════════════════════════\n"
+    "             G A M E   G E N\n"
+    "       Denuvo Activation Service\n"
+    "═══════════════════════════════════════\n"
+)
+_GAMEGEN_FOOTER = "\n— Powered by GameGen —"
+
+
+def gamegen_msgbox(body: str, title: str = "GameGen Activator", icon: int = MB_ICON_INFO) -> None:
+    """MessageBox with a consistent GameGen banner above + credit below."""
+    msgbox(f"{_GAMEGEN_BANNER}\n{body}{_GAMEGEN_FOOTER}", title, MB_OK | icon)
+
+
 # ─── Entry point ─────────────────────────────────────────────
 def _derive_game_name(self_name: str, game_dir: Path) -> str:
     """
@@ -652,20 +756,20 @@ def main() -> None:
                 break
 
     if not app_id:
-        msgbox(
+        gamegen_msgbox(
             "Couldn't find a valid steam_appid.txt anywhere in the extracted folder.\n\n"
             "Make sure you extracted the full zip into one folder before running this.",
-            flags=MB_OK | MB_ICON_ERROR,
+            icon=MB_ICON_ERROR,
         )
         sys.exit(1)
 
     # 2. Locate the installed game folder via Steam's own manifest data.
     game_dir = find_game_folder(app_id)
     if not game_dir:
-        msgbox(
+        gamegen_msgbox(
             f"Couldn't find the game for App ID {app_id} in any Steam library.\n\n"
             f"Make sure the game is installed via Steam first, then run this again.",
-            flags=MB_OK | MB_ICON_ERROR,
+            icon=MB_ICON_ERROR,
         )
         sys.exit(1)
 
@@ -674,11 +778,11 @@ def main() -> None:
     #    elevation. Re-launch ourselves under UAC if we can't write.
     if not can_write_to(game_dir):
         if is_admin():
-            msgbox(
+            gamegen_msgbox(
                 f"Even with administrator rights, the installer couldn't write to:\n\n"
                 f"{game_dir}\n\n"
                 f"Check that the folder isn't read-only.",
-                flags=MB_OK | MB_ICON_ERROR,
+                icon=MB_ICON_ERROR,
             )
             sys.exit(1)
         relaunch_elevated()
@@ -705,9 +809,9 @@ def main() -> None:
         else:
             stats = deploy(here, game_dir, self_name)
     except OSError as e:
-        msgbox(
+        gamegen_msgbox(
             f"Failed while copying files into:\n\n{game_dir}\n\n{e}",
-            flags=MB_OK | MB_ICON_ERROR,
+            icon=MB_ICON_ERROR,
         )
         sys.exit(1)
 
@@ -742,12 +846,29 @@ def main() -> None:
         )
 
     if mode == "coldclientloader":
-        loaders = list(game_dir.glob("start-*.exe"))
-        loader_name = loaders[0].name if loaders else "the loader .exe"
+        # V1 polish: rename "start-<Game>.exe" → "<Game>.exe" so it looks
+        # like a native game binary, then drop a desktop shortcut that uses
+        # the game's real icon so the user has a clean way to launch.
+        renamed = rename_v1_loader(game_dir, game_name)
+        loader_name = renamed.name if renamed else "the loader .exe"
+
+        shortcut_made = False
+        if renamed:
+            # Prefer the game's actual shipping exe as the icon source so the
+            # shortcut looks indistinguishable from a Steam-installed game.
+            shipping_icon = _scan_shipping_exe(game_dir)
+            shortcut_made = create_desktop_shortcut(renamed, game_name, icon_path=shipping_icon)
+
+        shortcut_block = (
+            f"\nDesktop shortcut: created (\"{game_name}\")."
+            if shortcut_made
+            else "\n(Desktop shortcut couldn't be created — you can pin the loader manually.)"
+        )
+
         launch_block = (
-            f"To play, open the game folder and double-click:\n"
-            f"  {loader_name}\n\n"
-            f"Do NOT launch the game from Steam itself — always use the loader."
+            f"To play, double-click the \"{game_name}\" shortcut on your desktop,\n"
+            f"or run \"{loader_name}\" from the game folder."
+            f"{shortcut_block}"
         )
     elif mode == "coldloader":
         main_exe = _main_game_exe_hint(game_dir) or "the game's .exe"
@@ -778,8 +899,8 @@ def main() -> None:
             f"verify integrity of game files.)"
         )
 
-    msgbox(
-        f"Activation complete.\n\n"
+    gamegen_msgbox(
+        f"Activation complete for {game_name}.\n\n"
         f"Game folder:\n{game_dir}\n\n"
         f"Mode: {mode}\n"
         f"Files copied: {stats['copied']}{exe_note}{backup_note}\n\n"
@@ -799,8 +920,8 @@ if __name__ == "__main__":
     except SystemExit:
         raise
     except Exception as e:  # last-resort catch so the user sees SOMETHING
-        msgbox(
+        gamegen_msgbox(
             f"Installer crashed unexpectedly:\n\n{type(e).__name__}: {e}",
-            flags=MB_OK | MB_ICON_ERROR,
+            icon=MB_ICON_ERROR,
         )
         sys.exit(1)
