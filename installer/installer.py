@@ -943,22 +943,51 @@ def deploy_v1(payload_root: Path, game_dir: Path, app_id: str, shared_settings: 
     return stats
 
 
-def _find_launchable_exe(game_dir: Path) -> Path | None:
+def _find_launchable_exe(game_dir: Path, exclude: list[Path] | None = None) -> Path | None:
     """
-    Best-guess exe to launch when probing. Tries -Shipping.exe first (UE);
-    falls back to the largest non-junk .exe at the game root.
+    Best-guess exe to launch when probing the real game. Tries
+    -Shipping.exe first (UE convention); falls back to the largest
+    non-junk .exe at the game root.
+
+    Junk prefixes/substrings we always skip:
+      - launcher / crashreport / redist / unins / setup — standard noise
+      - start- — OUR V1 loader (steamclient_loader_x64.exe gets renamed
+        to "start-<Game>.exe" by the bot at deploy time). Without this,
+        on flat-layout games where the real exe is smaller than our
+        loader (e.g. Fernbus 230 KB vs loader 351 KB), the scan picks
+        OUR loader as the target → ColdClientLoader.ini's Exe= points
+        the loader at itself → infinite spawn or fast crash.
+
+    `exclude`: optional explicit paths to skip (e.g. the post-rename
+    loader). Resolved-path equality, not name match.
     """
     shipping = _scan_shipping_exe(game_dir)
     if shipping:
         return shipping
-    junk = ("launcher", "crashreport", "redist", "unins", "setup")
+
+    junk = ("launcher", "crashreport", "redist", "unins", "setup", "start-")
+    exclude_resolved = set()
+    for p in (exclude or []):
+        try:
+            exclude_resolved.add(p.resolve())
+        except OSError:
+            pass
+
     candidates = []
     for exe in game_dir.glob("*.exe"):
-        if exe.is_file() and not any(j in exe.name.lower() for j in junk):
-            try:
-                candidates.append((exe.stat().st_size, exe))
-            except OSError:
-                pass
+        if not exe.is_file():
+            continue
+        if any(j in exe.name.lower() for j in junk):
+            continue
+        try:
+            if exe.resolve() in exclude_resolved:
+                continue
+        except OSError:
+            pass
+        try:
+            candidates.append((exe.stat().st_size, exe))
+        except OSError:
+            pass
     candidates.sort(key=lambda t: t[0], reverse=True)
     return candidates[0][1] if candidates else None
 
