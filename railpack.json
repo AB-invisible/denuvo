@@ -20,6 +20,6 @@
     }
   },
   "deploy": {
-    "startCommand": "npx prisma db push --accept-data-loss && npm run start"
+    "startCommand": "timeout 90 npx prisma db push --accept-data-loss --skip-generate; npm run start"
   }
 }
