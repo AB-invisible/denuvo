@@ -331,7 +331,13 @@ def _place_steam_settings(src_settings: Path, dst_dir: Path, stats: dict | None 
         shutil.copytree(src_settings, target, dirs_exist_ok=True)
 
 
-def deploy_gbe(src_root: Path, game_dir: Path, app_id: str, self_name: str) -> dict:
+def deploy_gbe(
+    src_root: Path,
+    game_dir: Path,
+    app_id: str,
+    self_name: str,
+    shared_settings: Path | None = None,
+) -> dict:
     """
     Smart GBE deployment. Goal: don't trust the zip's folder structure;
     place Goldberg's payload where each game actually looks for it.
@@ -357,10 +363,20 @@ def deploy_gbe(src_root: Path, game_dir: Path, app_id: str, self_name: str) -> d
 
     goldberg_api = _find_in_payload(src_root, "steam_api64.dll")
     goldberg_client = _find_in_payload(src_root, "steamclient64.dll")
-    src_settings_candidates = [
-        src_root / "steam_settings",
-        *(p for p in src_root.rglob("steam_settings") if p.is_dir()),
-    ]
+
+    # Locate the steam_settings folder Goldberg needs (ticket, configs,
+    # achievements). It can live in any of these places, in priority order:
+    #   1. shared_settings argument — used by the thin-zip flow, where
+    #      the DLLs were downloaded to a temp dir and the steam_settings
+    #      folder is sitting next to Install <Game>.exe instead.
+    #   2. src_root/steam_settings — legacy flat-layout zips.
+    #   3. anywhere inside src_root (recursive) — UE template zips that
+    #      nested steam_settings under Engine/Binaries/.../Win64/.
+    src_settings_candidates = []
+    if shared_settings and shared_settings.is_dir():
+        src_settings_candidates.append(shared_settings)
+    src_settings_candidates.append(src_root / "steam_settings")
+    src_settings_candidates.extend(p for p in src_root.rglob("steam_settings") if p.is_dir())
     src_settings = next((p for p in src_settings_candidates if p.is_dir()), None)
 
     if not goldberg_api:
@@ -897,15 +913,32 @@ def deploy_v1(payload_root: Path, game_dir: Path, app_id: str, shared_settings: 
         stats["copied"] += 1
         stats["touched"].append(dst)
 
-    # Shared steam_settings/ → game root for V1 (Goldberg loader reads it
-    # from the loader directory by default; we put it next to loader.exe).
+    # Shared steam_settings/ → MUST sit next to the game's steam_api64.dll
+    # (NOT next to the V1 loader at game root). For UE games that means
+    # Engine/Binaries/ThirdParty/Steamworks/.../Win64/steam_settings/.
+    # Goldberg's loader injects steamclient64.dll into the game process,
+    # but the ticket bytes get read from the steam_api64.dll's sibling
+    # steam_settings/. If we put it at game root instead, Denuvo can't
+    # find the ticket and init fails.
     if shared_settings and shared_settings.is_dir():
-        _place_steam_settings(shared_settings, game_dir, stats=stats)
-        # Ensure steam_appid.txt exists alongside the settings
-        try:
-            (game_dir / "steam_settings" / "steam_appid.txt").write_text(app_id, encoding="utf-8")
-        except OSError:
-            pass
+        api_locations = _find_existing_locations(game_dir, "steam_api64.dll")
+        if not api_locations:
+            # Game has no steam_api64.dll anywhere (rare). Fall back to
+            # game root so SOMETHING ships.
+            api_locations = [game_dir / "steam_api64.dll"]
+
+        for api_loc in api_locations:
+            try:
+                _place_steam_settings(shared_settings, api_loc.parent, stats=stats)
+                (api_loc.parent / "steam_settings" / "steam_appid.txt").write_text(
+                    app_id, encoding="utf-8"
+                )
+                # Also drop a bare steam_appid.txt next to the DLL itself —
+                # some games' Steam API check reads it from there directly
+                # without going through steam_settings/.
+                (api_loc.parent / "steam_appid.txt").write_text(app_id, encoding="utf-8")
+            except OSError:
+                pass
 
     return stats
 
@@ -1279,15 +1312,23 @@ def main() -> None:
                 self_destruct(here, Path(sys.argv[0]).resolve())
                 sys.exit(1)
 
+            # The thin zip ships steam_settings/ next to Install <Game>.exe
+            # (i.e. inside `here`), separate from the downloaded DLL payload.
+            # Pass it through so deploy_gbe / deploy_v1 can land it next
+            # to the right DLL on disk.
+            shared_settings = here / "steam_settings" if (here / "steam_settings").is_dir() else None
             try:
                 if primary == "gbe":
-                    stats = deploy_gbe(payload_dir, game_dir, app_id, self_name)
+                    stats = deploy_gbe(
+                        payload_dir, game_dir, app_id, self_name,
+                        shared_settings=shared_settings,
+                    )
                 elif primary == "coldclientloader":
                     stats = deploy_v1(
                         payload_dir,
                         game_dir,
                         app_id,
-                        here / "steam_settings" if (here / "steam_settings").is_dir() else None,
+                        shared_settings,
                     )
                     try:
                         exe_change = fix_coldclient_ini_exe(game_dir)
@@ -1319,7 +1360,10 @@ def main() -> None:
 
         try:
             if primary == "gbe":
-                stats = deploy_gbe(payload, game_dir, app_id, self_name)
+                stats = deploy_gbe(
+                    payload, game_dir, app_id, self_name,
+                    shared_settings=multi["shared_steam_settings"],
+                )
             elif primary == "coldclientloader":
                 stats = deploy_v1(payload, game_dir, app_id, multi["shared_steam_settings"])
                 try:
