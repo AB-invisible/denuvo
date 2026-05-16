@@ -33,6 +33,65 @@ def log(msg):
     print(msg, flush=True)
 
 
+def bundle_installer(out_dir, game_name, mode):
+    """
+    Drop _Core/installer.exe into the output folder (renamed per-game) and
+    write a short README. Used by all three modes so the user always gets
+    a zero-input deploy experience whether the token came from /tokengen
+    or /test.
+
+    The installer itself reads steam_settings/steam_appid.txt to find the
+    appid, looks the game up via Steam's libraryfolders.vdf and
+    appmanifest_<appid>.acf, and copies the zip's contents into the game
+    folder root. For V1 it also auto-fixes ColdClientLoader.ini's Exe=
+    line by scanning for a -Shipping.exe.
+
+    Returns the chosen filename, or None if the installer binary hasn't
+    been built yet (CI didn't run / failed).
+    """
+    src = CORE_DIR / "installer.exe"
+    if not src.exists():
+        log("WARN: _Core/installer.exe not built — shipping zip without auto-installer")
+        return None
+
+    safe_basename = re.sub(r'[<>:"/\\|?*]', '', game_name).strip() or "Game"
+    installer_name = f"Install {safe_basename}.exe"
+    shutil.copy2(src, out_dir / installer_name)
+
+    # Per-mode entry-point hint. After install the user launches:
+    #   V1  → start-<game>.exe sitting at the game folder root
+    #   GBE → the game's own exe via Steam (we replaced the DLLs in place)
+    #   V2  → the game's own exe directly (hijack DLL loads on startup)
+    if mode == "coldclientloader":
+        launch_hint = (
+            f"3. Open your game folder and double-click \"start-{safe_basename}.exe\".\n"
+            "   (Don't launch the game from Steam — always use the loader.)\n"
+        )
+    elif mode == "coldloader":
+        launch_hint = (
+            "3. Launch the game's exe directly (NOT through Steam). The\n"
+            "   hijack DLL loads automatically and provides the ticket.\n"
+        )
+    else:  # gbe
+        launch_hint = (
+            "3. Launch the game as you normally would from Steam.\n"
+        )
+
+    (out_dir / "README - Read Me First.txt").write_text(
+        "GameGen — How to play\n"
+        "─────────────────────\n\n"
+        f"1. Make sure {game_name} is installed via Steam.\n"
+        f"2. Double-click \"{installer_name}\".\n"
+        "   The installer finds your game folder automatically and\n"
+        "   copies everything where it belongs. Approve the UAC\n"
+        "   prompt if Windows asks.\n"
+        f"{launch_hint}",
+        encoding="utf-8",
+    )
+    log(f"Bundled installer: {installer_name}")
+    return installer_name
+
+
 # ─── TEMPLATE VALIDATION ─────────────────────────
 def get_template_status(app_id):
     """Check if a template exists and looks valid."""
@@ -569,6 +628,8 @@ def main(app_id, game_name, steampass_uuid, generation_mode="gbe"):
         for api in out.rglob("steam_api64.dll"):
             (api.parent / "steam_appid.txt").write_text(str(app_id))
 
+        bundle_installer(out, game_name, "gbe")
+
         safe_name = re.sub(r'[<>:"/\\|?*]', '', game_name).strip()
         prefix = "TEST" if fake_mode else "Token"
         zip_base = str(TICKETS_DIR / f"{prefix} [{safe_name}]")
@@ -718,32 +779,8 @@ def main(app_id, game_name, steampass_uuid, generation_mode="gbe"):
         inject_ticket(ss_dir / "configs.user.ini", token_b64, steam_id)
         log("Injected ticket into steam_settings/configs.user.ini")
 
-        # 6. Bundle the auto-installer (installer.exe) so the user never has
-        # to paste a path. The installer reads steam_settings/steam_appid.txt
-        # for the appid, looks the game up via Steam's libraryfolders.vdf +
-        # appmanifest_<appid>.acf, and copies this whole folder INTO the
-        # game's install root. Built via .github/workflows/build-installer.yml.
-        installer_src = CORE_DIR / "installer.exe"
-        safe_loader_basename = safe_loader_name  # set in step 1 above
-        installer_out_name = f"Install {safe_loader_basename}.exe"
-        if installer_src.exists():
-            shutil.copy2(installer_src, out / installer_out_name)
-            (out / "README - Read Me First.txt").write_text(
-                "GameGen — How to play\n"
-                "─────────────────────\n\n"
-                f"1. Make sure {game_name} is installed via Steam.\n"
-                f"2. Double-click \"{installer_out_name}\".\n"
-                "   The installer finds your game folder automatically and\n"
-                "   copies everything where it belongs. Approve the UAC\n"
-                "   prompt if Windows asks.\n"
-                f"3. Open your game folder and double-click\n"
-                f"   \"{loader_out_name}\" to play.\n"
-                "   (Don't launch the game from Steam — always use the loader.)\n",
-                encoding="utf-8",
-            )
-            log(f"Bundled installer: {installer_out_name}")
-        else:
-            log("WARN: _Core/installer.exe not built — shipping zip without auto-installer")
+        # 6. Bundle the auto-installer + README
+        bundle_installer(out, game_name, "coldclientloader")
 
         # 7. Zip
         safe_name = re.sub(r'[<>:"/\\|?*]', '', game_name).strip()
@@ -892,6 +929,8 @@ def main(app_id, game_name, steampass_uuid, generation_mode="gbe"):
     # Inject ticket into configs.user.ini (always — template or not)
     inject_ticket(ss_dir / "configs.user.ini", token_b64, steam_id)
     log("Injected ticket into configs.user.ini")
+
+    bundle_installer(out, game_name, "coldloader")
 
     # ── Step 5: Zip with game name ──
     safe_name = re.sub(r'[<>:"/\\|?*]', '', game_name).strip()
