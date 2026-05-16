@@ -49,9 +49,41 @@ async function getInfoContent() {
 
 export async function createTicket(interaction: StringSelectMenuInteraction, gameName: string) {
   try {
+    // ─── Replay guard ──────────────────────────────────────────
+    // Discord can re-deliver the same interactionCreate event when the
+    // bot gateway disconnects + resumes (which happens on every Railway
+    // redeploy). The first copy already deferred and created the
+    // ticket; the replay would call deferReply again and throw error
+    // 40060 ("Interaction has already been acknowledged"), confusing
+    // the staff log into thinking the user couldn't open a ticket when
+    // they actually did. Skip silently if the interaction is already
+    // owned by an earlier handler.
+    if (interaction.deferred || interaction.replied) {
+      console.warn(`[createTicket] Replay of interaction ${interaction.id} ignored (already acknowledged).`);
+      return;
+    }
+
     await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
     const guild = interaction.guild;
     if (!guild) return;
+
+    // ─── Closed-panel / maintenance guard ──────────────────────
+    // /closepanel deletes the panel message + the panel DB record, but
+    // Discord keeps serving the cached dropdown to clients for up to
+    // ~15 minutes. Without this check, a stale dropdown click would
+    // create a real ticket against an offline dashboard. Reject early
+    // and tell the user the dashboard is closed.
+    const [activePanel, activeMaintenance] = await Promise.all([
+      prisma.panel.findFirst({ where: { channelId: interaction.channelId } }),
+      prisma.maintenance.findFirst({ where: { channelId: interaction.channelId } }),
+    ]);
+    if (!activePanel || activeMaintenance) {
+      return interaction.editReply({
+        content:
+          '🛠️ **Dashboard Closed:** The activation panel is currently offline for maintenance. '
+          + 'Please wait for it to reopen — your click came from a cached dropdown.',
+      });
+    }
 
     // --- ATOMIC TRANSACTION START ---
     const result = await prisma.$transaction(async (tx) => {
@@ -226,12 +258,23 @@ export async function createTicket(interaction: StringSelectMenuInteraction, gam
     await refreshAllPanels();
 
   } catch (error) {
-    const err = error as Error;
+    const err = error as Error & { code?: number };
+    const detail = err?.message || String(err);
+
+    // Discord error 40060 = "Interaction has already been acknowledged".
+    // This is the gateway-replay case (see "Replay guard" above) — the
+    // FIRST copy of the interaction succeeded, so there's nothing useful
+    // to surface to staff. Don't spam the log channel with these.
+    const isReplay = err?.code === 40060 || detail.includes('already been acknowledged');
+    if (isReplay) {
+      console.warn(`[createTicket] Interaction replay swallowed (40060) for ${interaction.id}.`);
+      return;
+    }
+
     console.error('Error in createTicket:', err);
 
     // Build a useful error message instead of a generic one — helps staff debug
     // config issues without digging through Railway logs.
-    const detail = err?.message || String(err);
     let hint = '';
     if (detail.includes('Missing Permissions')) {
       hint = '\n\n*The bot is missing **Manage Channels** or **Manage Roles** permission in this server.*';
