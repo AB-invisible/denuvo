@@ -252,10 +252,37 @@ export function createStaffLookupEmbed(targetUser: User, history: Ticket[], cool
   return embed;
 }
 
-export function createTokenDeliveryEmbed(gameName: string, userId: string, staffUser: User) {
+export interface TokenDeliveryLinkInfo {
+  /** Self-hosted download URL (https://<bot>/download/<token>) */
+  url: string;
+  /** Human-readable expiry hint, e.g. "30 minutes — download soon" */
+  expiryText: string;
+  /** Zip size for the user-facing hint, e.g. "9.0" */
+  sizeMB?: string;
+}
+
+/**
+ * Universal token-delivery embed used by /test, /tokengen and the
+ * auto-gen flow. Pass `link` for hosted zips (the normal path now —
+ * direct Discord attachment of the zip is no longer used). Without a
+ * link the embed still works for the rare offline-attach fallback.
+ */
+export function createTokenDeliveryEmbed(
+  gameName: string,
+  userId: string,
+  staffUser: User,
+  link?: TokenDeliveryLinkInfo,
+) {
   // Sanitize for the filename hint (mirrors headless_token.py's safe_basename
   // logic) so the user sees the exact name of the installer .exe in the zip.
   const safeName = gameName.replace(/[<>:"/\\|?*]/g, '').trim() || 'Game';
+  const sizeNote = link?.sizeMB ? ` _(~${link.sizeMB} MB)_` : '';
+
+  // Step 1 changes depending on whether we have a download link. Keep
+  // the rest of the copy identical so the user experience is uniform.
+  const step1 = link
+    ? `1. **[⬇️ Download Token Zip](${link.url})**${sizeNote} — link expires in **${link.expiryText.replace(/^Link expires in /i, '')}**.`
+    : `1. Download the **.zip** attached above.`;
 
   return new EmbedBuilder()
     .setTitle(`📦 ${CONFIG.NAME} • Token Delivery`)
@@ -263,10 +290,16 @@ export function createTokenDeliveryEmbed(gameName: string, userId: string, staff
       `<@${userId}>, your activation token for **${gameName}** is ready!\n\n` +
       `━━━━━━━━━━━━━━━━━━━━━━\n` +
       `🚀 **HOW TO ACTIVATE — 3 STEPS**\n` +
-      `1. Download the **.zip** attached above.\n` +
-      `2. Right-click → **Extract All...** (don't run from inside the zip).\n` +
+      `${step1}\n` +
+      `2. Right-click → **Extract All...** (extract into its own folder).\n` +
       `3. Double-click **\`Install ${safeName}.exe\`** and approve the UAC prompt.\n\n` +
-      `The installer finds your game on disk automatically, copies everything in place, and tells you exactly what to launch when it's done. ${gameName} **must already be installed via Steam**.\n` +
+      `**What happens next:**\n` +
+      `• The installer finds your game on Steam automatically and deploys the files.\n` +
+      `• It then test-launches **${gameName}** for ~45 seconds to verify activation — ` +
+      `**don't close the game during the test**.\n` +
+      `• On success: a desktop shortcut appears with the game's own icon, or ${gameName} just keeps running.\n\n` +
+      `🎮 **${gameName} must already be installed via Steam first.**\n` +
+      `🔒 The installer + zip auto-delete after activation — keep the download link handy if you need to retry within 30 minutes.\n` +
       `━━━━━━━━━━━━━━━━━━━━━━`
     )
     .addFields(

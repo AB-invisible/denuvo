@@ -585,22 +585,22 @@ async function handleChatCommand(interaction: any) {
                 .setTimestamp()
             ]});
             const upload = await uploadFile(zipPath, '24h');
-            const filenameNote = upload.provider === 'gofile'
-              ? `The link opens a download page — click **Download** there to save \`TEST [${safeGameName}].zip\` (filename preserved).`
-              : `Direct download. File will arrive named with a random hash.`;
             const hostedEmbed = new EmbedBuilder()
-              .setTitle('🧪 TEST Token Generated (External)')
+              .setTitle('🧪 TEST Token Generated')
               .setDescription(
-                `**${game.name}** template built successfully — too big to attach (${sizeMB.toFixed(1)} MB), uploaded via ${upload.provider}.\n\n` +
-                `**[⬇️ Download TEST Zip](${upload.url})**\n\n` +
-                filenameNote + `\n\n` +
-                `⚠️ Fake ticket inside — DO NOT use against a real game.\n` +
-                `⏱️ ${upload.expiryText}.`
+                `**${game.name}** test zip is ready — use it to verify the template ships correctly.\n\n` +
+                `**[⬇️ Download TEST Zip](${upload.url})** _(~${sizeMB.toFixed(1)} MB)_\n\n` +
+                `⏱️ ${upload.expiryText}.\n\n` +
+                `⚠️ **Fake ticket inside** — this is for layout/install verification only. ` +
+                `Do NOT use this zip against a real Denuvo game; activation will fail.\n\n` +
+                `🚀 To verify the installer flow end-to-end, extract this zip into its own folder and ` +
+                `double-click **\`Install ${safeGameName}.exe\`** as if you were a real user.`
               )
               .setColor(0x57F287)
               .addFields(
                 { name: 'AppID', value: `\`${game.appId}\``, inline: true },
-                { name: 'Size', value: `\`${sizeMB.toFixed(1)} MB\``, inline: true }
+                { name: 'Size', value: `\`${sizeMB.toFixed(1)} MB\``, inline: true },
+                { name: 'Link host', value: `\`${upload.provider}\``, inline: true }
               )
               .setTimestamp();
             await interaction.editReply({ embeds: [hostedEmbed] });
@@ -730,25 +730,12 @@ async function handleChatCommand(interaction: any) {
               .setTimestamp()
           ] });
           const upload = await uploadFile(zipPath, '72h');
-          const filenameNote = upload.provider === 'gofile'
-            ? `Click the link → click **Download** on the gofile page → file saves as \`Token [${safeGameName}].zip\`.`
-            : `Direct download link. File will arrive with a random filename — rename to \`Token [${safeGameName}].zip\` if you want it organized.`;
-          const hostedEmbed = new EmbedBuilder()
-            .setTitle(`📦 ${CONFIG.NAME} • Token Delivery (External)`)
-            .setDescription(
-              `<@${ticketHere?.userId || interaction.user.id}>, your activation token for **${game.name}** is ready!\n\n` +
-              `**[⬇️ Download Token Zip](${upload.url})**\n\n${filenameNote}\n\n` +
-              `⚠️ **CRITICAL INSTRUCTIONS**\n` +
-              `1. Download the zip from the link above.\n` +
-              `2. Extract it into your game folder.\n` +
-              `3. **NEVER** launch the game from Steam.\n` +
-              `4. Always use the **.exe** located in your game folder.\n\n` +
-              `⏱️ ${upload.expiryText}.\n` +
-              `${ticketHere ? '\n*Press a button below once you\'ve tested it.*' : ''}`
-            )
-            .setColor(0x57F287)
-            .addFields(successFields)
-            .setTimestamp();
+          const hostedEmbed = createTokenDeliveryEmbed(
+            game.name,
+            ticketHere?.userId || interaction.user.id,
+            interaction.user,
+            { url: upload.url, expiryText: upload.expiryText, sizeMB: zipMB.toFixed(1) },
+          ).addFields(successFields);
           delivered = await interaction.editReply({
             embeds: [hostedEmbed],
             components: ticketHere ? [worksRow] : []
@@ -1387,34 +1374,13 @@ client.on(Events.MessageCreate, async (message) => {
                 return;
               }
 
-              // Success: post the link instead of attaching the file
-              const filenameNote = upload.provider === 'gofile'
-                ? `The link opens a download page — click the **Download** button on that page to save **\`Token [${safeGameName}].zip\`** (filename is preserved).`
-                : `The link is a direct download. The file will arrive named with a random hash — **rename it to \`Token [${safeGameName}].zip\`** before extracting if you want it organized (the zip contents are correct either way).`;
-
-              const linkEmbed = new EmbedBuilder()
-                .setTitle(`📦 ${CONFIG.NAME} • Token Delivery (External)`)
-                .setDescription(
-                  `<@${ticket.userId}>, your activation token for **${ticket.game.name}** is ready!\n\n` +
-                  `The zip was too large for Discord (${zipMB.toFixed(1)} MB), so it's been uploaded to a file host.\n\n` +
-                  `**[⬇️ Download Token Zip](${upload.url})** *(${zipMB.toFixed(1)} MB)*\n\n` +
-                  filenameNote + `\n\n` +
-                  `━━━━━━━━━━━━━━━━━━━━━━\n` +
-                  `⚠️ **CRITICAL INSTRUCTIONS**\n` +
-                  `1. Download the zip from the link above.\n` +
-                  `2. Extract it into your game folder.\n` +
-                  `3. **NEVER** launch the game from Steam.\n` +
-                  `4. Always use the **.exe** located in your game folder.\n` +
-                  `━━━━━━━━━━━━━━━━━━━━━━\n` +
-                  `⏱️ ${upload.expiryText}.`
-                )
-                .addFields(
-                  { name: '👤 Requester', value: `<@${ticket.userId}>`, inline: true },
-                  { name: '🛠️ Activator', value: `${client.user}`, inline: true },
-                  { name: '📋 Next Step', value: 'Confirm using the buttons below once installed.', inline: false }
-                )
-                .setColor(0x5865F2)
-                .setTimestamp();
+              // Success: post the link using the unified delivery embed
+              const linkEmbed = createTokenDeliveryEmbed(
+                ticket.game.name,
+                ticket.userId,
+                client.user!,
+                { url: upload.url, expiryText: upload.expiryText, sizeMB: zipMB.toFixed(1) },
+              );
 
               const worksRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
                 new ButtonBuilder().setCustomId('works_yes').setLabel('Yes, it works!').setStyle(ButtonStyle.Success),
