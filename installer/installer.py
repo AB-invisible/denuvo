@@ -1,10 +1,11 @@
 """
-GameGen V1 Activator
-────────────────────
-Ships inside every V1 token zip. Zero user input: finds the game on
-disk via Steam's manifest files, copies the V1 payload (loader, DLLs,
-steam_settings/, ColdClientLoader.ini) into the game folder root, and
-tells the user the single .exe to double-click to play.
+GameGen Activator
+─────────────────
+Ships inside every token zip the bot generates (V1, V2 and GBE modes).
+Zero user input: finds the game on disk via Steam's manifest files,
+detects which mode the zip was generated in, deploys the payload into
+the right places, backs up any original files we overwrote, and tells
+the user the single thing to double-click to play.
 
 Compile to a single Windows .exe with PyInstaller:
     pyinstaller --onefile --noconsole --name installer installer.py
@@ -14,6 +15,7 @@ import ctypes
 import os
 import re
 import shutil
+import stat
 import sys
 from pathlib import Path
 
@@ -136,22 +138,82 @@ def payload_root() -> Path:
     return Path(sys.argv[0]).resolve().parent
 
 
-def deploy(src_root: Path, dst_root: Path, self_name: str) -> int:
+# Files commonly already present in a game install. When we're about to
+# overwrite one, take a copy as <name>.original.bak first so the user can
+# revert without a full Steam "verify integrity" run.
+_BACKUP_FILENAMES = {
+    "steam_api64.dll", "steam_api.dll",
+    "steamclient64.dll", "steamclient.dll",
+    # DLL-hijack proxies used by V2 (coldloader) mode
+    "version.dll", "dinput8.dll", "winmm.dll", "dsound.dll", "xinput1_3.dll",
+    # Overlay
+    "GameOverlayRenderer64.dll", "GameOverlayRenderer.dll",
+}
+
+# Files/folder-names the zip carries but that should NEVER land in the game
+# folder — packaging artifacts that aren't part of the runtime payload.
+_INSTALL_SKIP = {"readme - read me first.txt"}
+
+
+def _detect_mode(src_root: Path) -> str:
+    """Inspect the bundled payload to figure out which mode produced this zip."""
+    if (src_root / "ColdClientLoader.ini").exists():
+        return "coldclientloader"
+    if any(src_root.rglob("coldloader.dll")):
+        return "coldloader"
+    return "gbe"
+
+
+def _clear_readonly(path: Path) -> None:
+    """Drop the read-only bit so shutil.copy2 can overwrite the target."""
+    try:
+        path.chmod(path.stat().st_mode | stat.S_IWRITE)
+    except OSError:
+        pass
+
+
+def deploy(src_root: Path, dst_root: Path, self_name: str) -> dict:
     """
-    Copy everything from src_root → dst_root, EXCEPT the installer itself.
-    Returns the count of top-level items copied.
+    Walk src_root recursively, mirroring everything into dst_root.
+
+    - Skips the installer itself and any packaging-only artifacts.
+    - When overwriting an existing file with a name in _BACKUP_FILENAMES,
+      first stash the existing one as <name>.original.bak (only if no bak
+      exists yet — preserves the TRUE original across re-installs).
+    - Clears the read-only bit on the destination before overwriting so
+      games that ship DLLs read-only don't trip shutil.copy2.
+
+    Returns a dict with copied/backed_up counts for the success message.
     """
-    copied = 0
-    for item in src_root.iterdir():
-        if item.name.lower() == self_name.lower():
+    stats = {"copied": 0, "backed_up": 0}
+    self_lower = self_name.lower()
+
+    for src in src_root.rglob("*"):
+        if src.is_dir():
             continue
-        target = dst_root / item.name
-        if item.is_dir():
-            shutil.copytree(item, target, dirs_exist_ok=True)
-        else:
-            shutil.copy2(item, target)
-        copied += 1
-    return copied
+        rel = src.relative_to(src_root)
+        name_low = rel.name.lower()
+        if name_low == self_lower or name_low in _INSTALL_SKIP:
+            continue
+
+        dst = dst_root / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+
+        if dst.exists():
+            if rel.name in _BACKUP_FILENAMES or name_low in {n.lower() for n in _BACKUP_FILENAMES}:
+                bak = dst.with_name(dst.name + ".original.bak")
+                if not bak.exists():
+                    try:
+                        shutil.copy2(dst, bak)
+                        stats["backed_up"] += 1
+                    except OSError:
+                        pass  # backup is best-effort; not a hard fail
+            _clear_readonly(dst)
+
+        shutil.copy2(src, dst)
+        stats["copied"] += 1
+
+    return stats
 
 
 # ─── Exe= fix-up ─────────────────────────────────────────────
@@ -241,6 +303,20 @@ def fix_coldclient_ini_exe(game_dir: Path) -> tuple[str, str] | None:
     return None
 
 
+def _main_game_exe_hint(game_dir: Path) -> str | None:
+    """For V2/GBE: find a sensible exe name to mention in the success popup."""
+    shipping = _scan_shipping_exe(game_dir)
+    if shipping:
+        return shipping.name
+    # Fall back to any .exe at the game root that isn't an installer/launcher
+    junk = ("launcher", "crashreport", "redist", "unins", "setup")
+    for exe in sorted(game_dir.glob("*.exe"), key=lambda p: p.stat().st_size, reverse=True):
+        low = exe.name.lower()
+        if not any(j in low for j in junk):
+            return exe.name
+    return None
+
+
 # ─── Entry point ─────────────────────────────────────────────
 def main() -> None:
     here = payload_root()
@@ -289,9 +365,14 @@ def main() -> None:
         relaunch_elevated()
         return  # control never reaches here
 
-    # 4. Copy the payload into the game folder root.
+    # 4. Detect the mode the zip was built in so we can give a mode-correct
+    #    success message and decide what extra post-deploy steps to run.
+    mode = _detect_mode(here)
+
+    # 5. Copy the payload into the game folder, backing up any DLLs we're
+    #    about to overwrite. shutil-level OSError is fatal here.
     try:
-        copied = deploy(here, game_dir, self_name)
+        stats = deploy(here, game_dir, self_name)
     except OSError as e:
         msgbox(
             f"Failed while copying files into:\n\n{game_dir}\n\n{e}",
@@ -299,22 +380,16 @@ def main() -> None:
         )
         sys.exit(1)
 
-    # 5. Fix the ColdClientLoader.ini Exe= line. Steam's launch-config API
-    #    sometimes lists a stale/launcher exe (e.g. "APK2.exe") that doesn't
-    #    exist on disk, while the real binary is the UE shipping build at
-    #    "UNION/Binaries/Win64/APK2-Win64-Shipping.exe". The bot can't see
-    #    the user's disk; we can — so we rewrite the .ini using the real
-    #    shipping binary if one exists.
+    # 6. V1 only: fix ColdClientLoader.ini Exe= using the real shipping binary
+    #    on disk (the bot's Steam-launch-config pick is sometimes stale).
     exe_change: tuple[str, str] | None = None
-    try:
-        exe_change = fix_coldclient_ini_exe(game_dir)
-    except OSError:
-        pass  # not fatal — loader may still work with the bot's pick
+    if mode == "coldclientloader":
+        try:
+            exe_change = fix_coldclient_ini_exe(game_dir)
+        except OSError:
+            pass  # best-effort; the bot's pick may still work
 
-    # 6. Find the loader we just placed and report success.
-    loaders = list(game_dir.glob("start-*.exe"))
-    loader_name = loaders[0].name if loaders else "the loader .exe"
-
+    # 7. Build a mode-aware success message.
     exe_note = ""
     if exe_change and exe_change[0] != "missing":
         exe_note = (
@@ -323,20 +398,48 @@ def main() -> None:
             f"  now: {exe_change[1]}"
         )
     elif exe_change and exe_change[0] == "missing":
-        # No shipping exe and the bot's pick doesn't exist on disk.
-        # Don't fail — just warn. User can report and we'll patch the bot.
         exe_note = (
             f"\n\nWARNING: ColdClientLoader.ini points to '{exe_change[1]}'\n"
             f"but that file doesn't exist in the game folder. The loader\n"
             f"may fail to spawn the game — please report this in Discord."
         )
 
+    if mode == "coldclientloader":
+        loaders = list(game_dir.glob("start-*.exe"))
+        loader_name = loaders[0].name if loaders else "the loader .exe"
+        launch_block = (
+            f"To play, open the game folder and double-click:\n"
+            f"  {loader_name}\n\n"
+            f"Do NOT launch the game from Steam itself — always use the loader."
+        )
+    elif mode == "coldloader":
+        main_exe = _main_game_exe_hint(game_dir) or "the game's .exe"
+        launch_block = (
+            f"To play, launch the game's exe directly (NOT through Steam):\n"
+            f"  {main_exe}\n\n"
+            f"The hijack DLL loads automatically and provides the ticket."
+        )
+    else:  # gbe
+        launch_block = (
+            "To play, launch the game from Steam as usual. The replaced\n"
+            "DLLs provide the activation ticket transparently."
+        )
+
+    backup_note = ""
+    if stats["backed_up"]:
+        backup_note = (
+            f"\n\nOriginal files backed up: {stats['backed_up']}\n"
+            f"(Look for *.original.bak in the game folder. To revert: delete\n"
+            f"the new files and rename .bak back, or run Steam → properties →\n"
+            f"verify integrity of game files.)"
+        )
+
     msgbox(
         f"Activation complete.\n\n"
         f"Game folder:\n{game_dir}\n\n"
-        f"Files copied: {copied}{exe_note}\n\n"
-        f"To play, open the game folder and double-click:\n  {loader_name}\n\n"
-        f"Tip: do NOT launch the game from Steam itself — always use the loader.",
+        f"Mode: {mode}\n"
+        f"Files copied: {stats['copied']}{exe_note}{backup_note}\n\n"
+        f"{launch_block}",
     )
 
 
