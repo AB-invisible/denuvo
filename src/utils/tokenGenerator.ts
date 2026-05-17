@@ -128,6 +128,17 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
       // Metadata table issue is non-fatal — proceed without cached token.
     }
 
+    // Explicitly forward PUBLIC_URL / RAILWAY_PUBLIC_DOMAIN to Python.
+    // The implicit { ...process.env } spread in buildPythonEnv() should
+    // already carry these over, but we hit a case where Python's
+    // _public_base_url() returned None (and the bot fell back to the
+    // big embedded zip) even though the Node side could see PUBLIC_URL
+    // fine. Passing them explicitly removes any ambiguity around
+    // Railway's env-var inheritance.
+    const publicUrlEnv = process.env.PUBLIC_URL || '';
+    const railwayDomainEnv = process.env.RAILWAY_PUBLIC_DOMAIN || '';
+    console.log(`[TokenGen] Forwarding PUBLIC_URL='${publicUrlEnv}' RAILWAY_PUBLIC_DOMAIN='${railwayDomainEnv}' to Python`);
+
     const env = buildPythonEnv({
       STEAMPASS_LOGIN: process.env.STEAMPASS_LOGIN || '',
       STEAMPASS_PASSWORD: process.env.STEAMPASS_PASSWORD || '',
@@ -139,6 +150,11 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
       // it to the child process. If not set, Python skips HMAC and the
       // bot operates in consumed-only mode.
       HMAC_SECRET: process.env.HMAC_SECRET || '',
+      // Force-include the public URL bits so headless_token.py's
+      // _public_base_url() can route to build_thin_zip instead of
+      // falling back to the 50+ MB embedded multi-mode zip.
+      PUBLIC_URL: publicUrlEnv,
+      RAILWAY_PUBLIC_DOMAIN: railwayDomainEnv,
     });
 
     const proc = execFile(

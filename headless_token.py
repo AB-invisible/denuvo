@@ -912,12 +912,19 @@ def main(app_id, game_name, steampass_uuid, generation_mode="gbe"):
     #   3. Otherwise → multi-mode embedded zip (both payloads bundled, ~50 MB).
     if os.environ.get("GAMEGEN_LEGACY_OUTPUT") != "1":
         base_url = _public_base_url()
+        # Diagnostic: surface exactly what env vars Python saw and which
+        # zip layout we're about to build. Visible in Railway logs when
+        # something goes wrong with the env-var plumbing again.
+        pu = os.environ.get("PUBLIC_URL", "")
+        rd = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
+        log(f"Routing decision: PUBLIC_URL='{pu}' RAILWAY_PUBLIC_DOMAIN='{rd}' resolved_base_url='{base_url}'")
         if base_url:
+            log(f"→ build_thin_zip (manifest mode, ~9 MB)")
             zip_path = build_thin_zip(
                 out, app_id, game_name, generation_mode, token_b64, steam_id, fake_mode, base_url
             )
         else:
-            log("PUBLIC_URL/RAILWAY_PUBLIC_DOMAIN not set — falling back to embedded multi-mode zip")
+            log("→ build_multi_mode_zip (embedded fallback, ~50 MB) — PUBLIC_URL not set")
             zip_path = build_multi_mode_zip(
                 out, app_id, game_name, generation_mode, token_b64, steam_id, fake_mode
             )
