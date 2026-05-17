@@ -85,13 +85,53 @@ export async function createTicket(interaction: StringSelectMenuInteraction, gam
       });
     }
 
+    // ─── Pre-flight orphan cleanup (OUTSIDE the transaction) ──
+    // The previous self-heal lived INSIDE the prisma.$transaction
+    // below, which was a bad fit: guild.channels.fetch() is a Discord
+    // REST call that can take 1–3 s, and Prisma's default transaction
+    // timeout is 5 s. On any latency spike the whole transaction
+    // (including the orphan close) rolled back and the user stayed
+    // stuck. Doing it as a separate non-transactional pair of queries
+    // here means the close commits independently — even if it
+    // resolves slowly, the create flow that follows is just a fresh
+    // transaction.
+    const stale = await prisma.ticket.findFirst({
+      where: { userId: interaction.user.id, status: { in: ['OPEN', 'CLAIMED'] } },
+    });
+    if (stale) {
+      let channelExists = false;
+      try {
+        const fetched = await guild.channels.fetch(stale.channelId);
+        channelExists = fetched !== null && fetched !== undefined;
+      } catch {
+        // discord.js throws DiscordAPIError 10003 for unknown channels,
+        // or generic ResponseError on timeouts — both → channel gone.
+        channelExists = false;
+      }
+
+      if (!channelExists) {
+        console.warn(`[createTicket] Self-healing orphaned ticket ${stale.id} (channel ${stale.channelId} no longer exists)`);
+        await prisma.ticket.update({
+          where: { id: stale.id },
+          data: { status: 'CLOSED', closedAt: new Date() },
+        }).catch((e: Error) => {
+          console.error(`[createTicket] Failed to close orphan ticket ${stale.id}:`, e.message);
+        });
+        // Fall through — user gets a fresh ticket below.
+      } else {
+        return interaction.editReply({
+          content: `❌ **Active Session:** You are already engaged in a session in <#${stale.channelId}>.`,
+        });
+      }
+    }
+
     // --- ATOMIC TRANSACTION START ---
     const result = await prisma.$transaction(async (tx) => {
       const now = new Date();
       const cooldown = await tx.cooldown.findUnique({ where: { userId: interaction.user.id } });
       if (cooldown && cooldown.until > now) {
         const hoursLeft = (cooldown.until.getTime() - now.getTime()) / (1000 * 60 * 60);
-        
+
         // Permanent ban detection (anything > 1 week is treated as permanent)
         if (hoursLeft > 168) {
           return { error: `🚨 **Access Revoked:** Your activation privileges have been permanently terminated due to multiple **failed denuvo checks**.` };
@@ -100,36 +140,16 @@ export async function createTicket(interaction: StringSelectMenuInteraction, gam
         return { error: `❌ **Security Cooldown Active:** Please wait **${Math.ceil(hoursLeft)} hour(s)** before opening a new session.` };
       }
 
+      // We've already handled the orphan-cleanup case above. This is a
+      // belt-and-suspenders re-check: if a NEW OPEN ticket appeared in
+      // the brief window between the pre-flight and the transaction
+      // (very rare — would require two clicks racing), we still bail
+      // gracefully instead of overwriting state.
       const existingTicket = await tx.ticket.findFirst({
-        where: { userId: interaction.user.id, status: { in: ['OPEN', 'CLAIMED'] } }
+        where: { userId: interaction.user.id, status: { in: ['OPEN', 'CLAIMED'] } },
       });
       if (existingTicket) {
-        // ─── Self-heal stale "active session" rows ──────────────
-        // Sometimes a ticket channel gets deleted directly (manual
-        // cleanup, Discord auto-archive, channel-limit purge) without
-        // going through closeTicket(). The DB row stays at OPEN, and
-        // every future ticket attempt by this user hits this branch
-        // with a <#unknown> mention to a channel that no longer exists.
-        // Probe Discord for the channel; if it's gone, mark this
-        // ticket CLOSED so the new ticket can proceed.
-        let channelExists = true;
-        try {
-          const fetched = await guild.channels.fetch(existingTicket.channelId);
-          channelExists = fetched !== null;
-        } catch {
-          channelExists = false;
-        }
-
-        if (!channelExists) {
-          await tx.ticket.update({
-            where: { id: existingTicket.id },
-            data: { status: 'CLOSED', closedAt: new Date() },
-          });
-          // Don't return — fall through to the rest of the create flow
-          // so the user gets their new ticket on this same click.
-        } else {
-          return { error: `❌ **Active Session:** You are already engaged in a session in <#${existingTicket.channelId}>.` };
-        }
+        return { error: `❌ **Active Session:** You are already engaged in a session in <#${existingTicket.channelId}>.` };
       }
 
       const game = await tx.game.findUnique({
