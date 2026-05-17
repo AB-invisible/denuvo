@@ -410,18 +410,24 @@ def bundle_installer(out_dir, game_name, mode):
     #   GBE → the game's own exe via Steam (we replaced the DLLs in place)
     #   V2  → the game's own exe directly (hijack DLL loads on startup)
     if mode == "coldclientloader":
+        # The installer renames the loader to "<Game>.exe" and also
+        # drops a desktop shortcut named "<Game>" with the game's icon.
+        # Don't mention "start-<Game>.exe" — that intermediate name
+        # only exists for the few seconds between deploy and rename.
         launch_hint = (
-            f"3. Open your game folder and double-click \"start-{safe_basename}.exe\".\n"
-            "   (Don't launch the game from Steam — always use the loader.)\n"
+            f"3. Once the installer finishes, double-click the\n"
+            f"   \"{safe_basename}\" shortcut on your Desktop to play.\n"
         )
     elif mode == "coldloader":
         launch_hint = (
-            "3. Launch the game's exe directly (NOT through Steam). The\n"
+            "3. Once the installer finishes, launch the game's main .exe\n"
+            "   directly from the game folder (NOT through Steam). The\n"
             "   hijack DLL loads automatically and provides the ticket.\n"
         )
     else:  # gbe
         launch_hint = (
-            "3. Launch the game as you normally would from Steam.\n"
+            "3. Once the installer finishes, launch the game from Steam\n"
+            "   like you normally would.\n"
         )
 
     (out_dir / "README - Read Me First.txt").write_text(
