@@ -944,6 +944,85 @@ def deploy_v1(payload_root: Path, game_dir: Path, app_id: str, shared_settings: 
     return stats
 
 
+# ─── V2 (coldloader) deploy ──────────────────────────────────
+def deploy_v2(
+    payload_root: Path,
+    game_dir: Path,
+    app_id: str,
+    shared_settings: Path | None,
+) -> dict:
+    """
+    Deploy a V2 (coldloader) payload — DLL-hijack mode.
+
+    The payload contains:
+      version.dll                  ← hijack proxy; sits next to game's exe
+      coldloader.dll               ← loaded by version.dll, runs the emu
+      steam_api64.dll              ← Goldberg flat; replaces game's own
+      steamclient64.dll            ← Goldberg flat
+      GameOverlayRenderer64.dll
+      coldloader.ini               ← has the app id; lives next to coldloader.dll
+    plus shared_settings/ for the ticket + configs.
+
+    Placement strategy:
+      - Hijack DLL + coldloader.dll + coldloader.ini + steamclient64.dll
+        + GameOverlayRenderer64.dll → next to the game's MAIN EXE. That's
+        where Windows looks for proxy DLLs when the exe starts; if the
+        hijack isn't there, the emu never loads.
+      - steam_api64.dll replacement + steam_settings/ + steam_appid.txt
+        → next to the game's existing steam_api64.dll (Engine path for
+        UE games, game root for flat games). Same logic as deploy_gbe.
+
+    There's no separate loader exe; the user just launches the game's
+    own .exe directly. The hijack DLL pulls in the emu transparently.
+    """
+    stats = {"copied": 0, "backed_up": 0, "touched": [], "api_locations": 0}
+
+    # 1. Find the game's main exe so we know where to drop the hijack.
+    main_exe = _scan_shipping_exe(game_dir) or _find_launchable_exe(game_dir)
+    hijack_dir = main_exe.parent if main_exe else game_dir
+
+    # 2. Drop hijack DLL + coldloader.dll + coldloader.ini +
+    #    steamclient64.dll + overlay next to the main exe.
+    # NOTE: steam_api64.dll is deliberately NOT placed here unless the
+    # game also keeps its existing steam_api64.dll at this same location
+    # (handled by step 3 below).
+    hijack_filenames = (
+        "version.dll",
+        "coldloader.dll",
+        "steamclient64.dll",
+        "GameOverlayRenderer64.dll",
+    )
+    for fname in hijack_filenames:
+        src = payload_root / fname
+        if not src.is_file():
+            continue
+        dst = hijack_dir / fname
+        _backup_and_overwrite(src, dst, stats)
+
+    # 3. Replace every existing steam_api64.dll with Goldberg's flat
+    #    version and drop steam_settings/ + steam_appid.txt next to each.
+    goldberg_api = payload_root / "steam_api64.dll"
+    api_locations = _find_existing_locations(game_dir, "steam_api64.dll")
+    if not api_locations and goldberg_api.is_file():
+        # Game has no steam_api64.dll. Drop one next to the hijack so
+        # coldloader.dll can find it via standard DLL search.
+        api_locations = [hijack_dir / "steam_api64.dll"]
+
+    if goldberg_api.is_file():
+        for api_loc in api_locations:
+            _backup_and_overwrite(goldberg_api, api_loc, stats)
+            stats["api_locations"] += 1
+            try:
+                if shared_settings and shared_settings.is_dir():
+                    _place_steam_settings(shared_settings, api_loc.parent, stats=stats)
+                (api_loc.parent / "steam_appid.txt").write_text(app_id, encoding="utf-8")
+                stats["touched"].append(api_loc.parent / "steam_appid.txt")
+            except OSError:
+                pass
+
+    return stats
+
+
 def _find_launchable_exe(game_dir: Path, exclude: list[Path] | None = None) -> Path | None:
     """
     Best-guess exe to launch — i.e. the game's real binary. Tries
@@ -1654,6 +1733,13 @@ def main() -> None:
                         exe_change = fix_coldclient_ini_exe(game_dir)
                     except OSError:
                         pass
+                elif primary == "coldloader":
+                    stats = deploy_v2(
+                        payload_dir,
+                        game_dir,
+                        app_id,
+                        shared_settings,
+                    )
                 else:
                     stats = deploy(payload_dir, game_dir, self_name)
             except OSError as e:
@@ -1690,6 +1776,8 @@ def main() -> None:
                     exe_change = fix_coldclient_ini_exe(game_dir)
                 except OSError:
                     pass
+            elif primary == "coldloader":
+                stats = deploy_v2(payload, game_dir, app_id, multi["shared_steam_settings"])
             else:
                 stats = deploy(payload, game_dir, self_name)
         except OSError as e:

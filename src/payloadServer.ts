@@ -38,10 +38,16 @@ async function getPrisma() {
   return mod.default;
 }
 
-// Map URL "mode" segment → sub-directory under _Core/
+// Map URL "mode" segment → sub-directory under _Core/.
+// gbe and v2 both source from _Core/ directly because the V2 (coldloader)
+// payload re-uses several of the same DLLs the GBE flat layout ships
+// (steam_api64.dll, steamclient64.dll, GameOverlayRenderer64.dll) plus
+// the V2-specific coldloader.dll and version.dll hijack proxy. V1 uses
+// the experimental Goldberg variants in _Core/coldclientloader/.
 const MODE_DIRS: Record<string, string> = {
   gbe: '',
   v1: 'coldclientloader',
+  v2: '',
 };
 
 function resolveFile(mode: string, filename: string): string | null {

@@ -152,9 +152,42 @@ def build_thin_zip(out, app_id, game_name, generation_mode, token_b64, steam_id,
         "\n[Debug]\nResumeByDebugger=0\n"
     )
 
+    # ── V2 (coldloader) payload ──
+    # DLL-hijack mode: a small proxy DLL (version.dll, dinput8.dll, etc.)
+    # sits next to the game's exe, gets auto-loaded by Windows' DLL
+    # search order, and loads coldloader.dll which in turn provides the
+    # Steam emulator. No separate loader.exe — user just runs the game's
+    # normal binary. Goldberg's coldloader.dll reads coldloader.ini for
+    # the app id.
+    v2_entries = []
+    for fname, dst_name in (
+        # version.dll is the most universally supported hijack proxy.
+        # If a specific game needs winmm.dll or dinput8.dll instead, we
+        # can per-game override later — version.dll covers ~90% of cases.
+        ("version.dll",                "version.dll"),
+        ("coldloader.dll",             "coldloader.dll"),
+        ("steam_api64.dll",            "steam_api64.dll"),
+        ("steamclient64.dll",          "steamclient64.dll"),
+        ("GameOverlayRenderer64.dll",  "GameOverlayRenderer64.dll"),
+    ):
+        e = _entry(CORE_DIR / fname, f"/payload/v2/{fname}", dst_name)
+        if e:
+            v2_entries.append(e)
+    v2_ini_content = (
+        "[settings]\n"
+        f"appid = {app_id}\n"
+        "cleanup_delay = 10\n"
+    )
+
+    # `primary` is the bot's hint for which mode the installer should
+    # deploy. Anything else gets coerced to coldclientloader as a safe
+    # default — but we now accept all three real modes explicitly so a
+    # game /setmode'd to coldloader actually gets V2 instead of being
+    # silently downgraded to V1 (which was the bug behind the user's
+    # Crimson Desert complaint).
     primary = (
         generation_mode
-        if generation_mode in ("gbe", "coldclientloader")
+        if generation_mode in ("gbe", "coldclientloader", "coldloader")
         else "coldclientloader"
     )
 
@@ -210,6 +243,14 @@ def build_thin_zip(out, app_id, game_name, generation_mode, token_b64, steam_id,
                 # after downloading the V1 binaries.
                 "ini_filename": "ColdClientLoader.ini",
                 "ini_content": v1_ini_content,
+            },
+            "coldloader": {
+                "files": v2_entries,
+                # coldloader.dll reads this for the app id at runtime.
+                # Installer drops it next to the hijack DLL (which lives
+                # next to the game's main exe).
+                "ini_filename": "coldloader.ini",
+                "ini_content": v2_ini_content,
             },
         },
     }
