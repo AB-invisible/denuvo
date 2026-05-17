@@ -1513,89 +1513,50 @@ def main() -> None:
     game_name = _derive_game_name(self_name, game_dir)
     upload_thread = _upload_template_async(game_dir, app_id, game_name)
 
-    # 7. Build a mode-aware success message.
-    exe_note = ""
-    if exe_change and exe_change[0] != "missing":
-        exe_note = (
-            f"\n\nFixed launcher target:\n"
-            f"  was: {exe_change[0]}\n"
-            f"  now: {exe_change[1]}"
-        )
-    elif exe_change and exe_change[0] == "missing":
-        exe_note = (
-            f"\n\nWARNING: ColdClientLoader.ini points to '{exe_change[1]}'\n"
-            f"but that file doesn't exist in the game folder. The loader\n"
-            f"may fail to spawn the game — please report this in Discord."
-        )
-
+    # 7. Build a user-facing success message. We deliberately HIDE every
+    #    technical detail (mode name, files-copied count, .ini fixups,
+    #    backup paths) — the user just wants to know it worked and what
+    #    to click next. Everything is logged to the daemon-thread template
+    #    upload anyway, so staff still has visibility on the bot side.
     if mode == "coldclientloader":
         # V1 polish: rename "start-<Game>.exe" → "<Game>.exe" so it looks
         # like a native game binary, then drop a desktop shortcut that uses
         # the game's real icon so the user has a clean way to launch.
         renamed = rename_v1_loader(game_dir, game_name)
-        loader_name = renamed.name if renamed else "the loader .exe"
 
-        shortcut_made = False
         if renamed:
             # Icon source priority:
             #   1. *-Shipping.exe (UE games) — usually has the prettiest icon
             #   2. Largest non-junk .exe found recursively, excluding our
             #      own loader so we never pin the generic Goldberg icon
-            # Either way the shortcut shows the game's REAL icon, never
-            # the bot's loader icon. If both fail (no exe at all), the
-            # shortcut falls back to Windows' generic exe icon.
             icon_source = _scan_shipping_exe(game_dir)
             if not icon_source or not icon_source.exists():
                 icon_source = _find_launchable_exe(game_dir, exclude=[renamed])
-            shortcut_made = create_desktop_shortcut(renamed, game_name, icon_path=icon_source)
+            create_desktop_shortcut(renamed, game_name, icon_path=icon_source)
 
-        shortcut_block = (
-            f"\nDesktop shortcut: created (\"{game_name}\")."
-            if shortcut_made
-            else "\n(Desktop shortcut couldn't be created — you can pin the loader manually.)"
-        )
-
-        launch_block = (
-            f"To play, double-click the \"{game_name}\" shortcut on your desktop,\n"
-            f"or run \"{loader_name}\" from the game folder."
-            f"{shortcut_block}"
-        )
+        play_headline = f"Double-click the \"{game_name}\" shortcut\non your Desktop."
     elif mode == "coldloader":
         main_exe = _main_game_exe_hint(game_dir) or "the game's .exe"
-        launch_block = (
-            f"To play, launch the game's exe directly (NOT through Steam):\n"
-            f"  {main_exe}\n\n"
-            f"The hijack DLL loads automatically and provides the ticket."
-        )
+        play_headline = f"Run \"{main_exe}\" from the game folder.\n(Not from Steam.)"
     else:  # gbe
-        loc_summary = ""
-        if "api_locations" in stats:
-            loc_summary = (
-                f"\nReplaced steam_api64.dll in {stats['api_locations']} location(s)."
-            )
-            if stats.get("client_locations"):
-                loc_summary += f"\nReplaced steamclient64.dll in {stats['client_locations']} location(s)."
-        launch_block = (
-            f"To play, launch the game from Steam as usual. The replaced\n"
-            f"DLLs provide the activation ticket transparently.{loc_summary}"
-        )
+        play_headline = "Launch the game from Steam\nlike you normally would."
 
-    backup_note = ""
-    if stats["backed_up"]:
-        backup_note = (
-            f"\n\nOriginal files backed up: {stats['backed_up']}\n"
-            f"(Look for *.original.bak in the game folder. To revert: delete\n"
-            f"the new files and rename .bak back, or run Steam → properties →\n"
-            f"verify integrity of game files.)"
-        )
-
-    gamegen_msgbox(
-        f"Activation complete for {game_name}.\n\n"
-        f"Game folder:\n{game_dir}\n\n"
-        f"Mode: {mode}\n"
-        f"Files copied: {stats['copied']}{exe_note}{backup_note}\n\n"
-        f"{launch_block}",
+    # Big, prominent HOW TO PLAY block. Banner is repeated and the
+    # instruction is centered and surrounded by whitespace so the user
+    # can't miss it. MessageBoxW renders monospace-ish — alignment lands.
+    horizontal = "━" * 38
+    success_text = (
+        f"✅  {game_name} is ready to play!\n"
+        "\n"
+        f"{horizontal}\n"
+        "             HOW TO PLAY\n"
+        f"{horizontal}\n"
+        "\n"
+        f"{play_headline}\n"
+        "\n"
+        f"{horizontal}\n"
     )
+    gamegen_msgbox(success_text)
 
     # Wait for the background template upload to finish so the process
     # doesn't exit mid-flight. Hard cap so the user is never blocked for
