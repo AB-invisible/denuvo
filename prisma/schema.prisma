@@ -132,6 +132,13 @@ model DutyStatus {
 model TokenDownload {
   token         String   @id            // random opaque ID used in the download URL
   installerKey  String?  @unique        // separate per-zip secret embedded in payload-manifest.json
+  // HMAC-binding: ties the installer key to THIS specific zip's ticket so
+  // an attacker can't swap _sig in someone else's zip with an unused key
+  // from their own. expectedHmac = hmac_sha256(HMAC_SECRET, sig|appId|ticketHash).
+  // Server recomputes on validate and rejects on mismatch.
+  ticketHash    String?                  // sha256(token_b64) — bound to this zip's actual ticket
+  expectedHmac  String?                  // hmac_sha256(HMAC_SECRET, sig|appId|ticketHash)
+  appId         Int?                     // bound app id for validation cross-check
   filePath      String                  // server-side absolute path
   fileName      String                  // suggested filename for Content-Disposition
   fileSize      Int                     // bytes (informational + Content-Length)

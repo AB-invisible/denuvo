@@ -27,6 +27,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import urllib.request
 import uuid
 import zipfile
@@ -1165,16 +1166,31 @@ def _validate_installer_key(manifest: dict) -> tuple[bool, str]:
     Only returns True if the bot's HTTP endpoint answers 200.
 
     `reason` is a short, human-readable string for the popup.
+
+    Sends `_sig` in the URL path. Also sends `_th` (ticket hash) and
+    `_hmac` (signature over sig+appId+ticketHash) as query params so
+    the server can verify this manifest hasn't been swapped onto a
+    different zip's payload.
     """
     sig = (manifest.get("_sig") or "").strip()
     base_url = (manifest.get("base_url") or "").strip()
+    ticket_hash = (manifest.get("_th") or "").strip()
+    installer_hmac = (manifest.get("_hmac") or "").strip()
     if not sig:
         return False, "missing activation key"
     if not base_url:
         return False, "missing server URL"
     if not re.match(r"^https?://", base_url, re.IGNORECASE):
         base_url = "https://" + base_url
-    endpoint = f"{base_url.rstrip('/')}/installer-validate/{sig}"
+    # Build query string for the binding fields (omit if empty —
+    # legacy bot without HMAC_SECRET would have emitted empty values).
+    query_parts: list[str] = []
+    if ticket_hash:
+        query_parts.append(f"th={urllib.parse.quote(ticket_hash)}")
+    if installer_hmac:
+        query_parts.append(f"hmac={urllib.parse.quote(installer_hmac)}")
+    qs = ("?" + "&".join(query_parts)) if query_parts else ""
+    endpoint = f"{base_url.rstrip('/')}/installer-validate/{sig}{qs}"
 
     last_reason = "network error"
     for attempt in range(3):

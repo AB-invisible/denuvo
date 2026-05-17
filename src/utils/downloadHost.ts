@@ -74,6 +74,7 @@ export async function createDownloadLink(
   srcZipPath: string,
   ticketId?: number,
   installerKey?: string,
+  bindings?: { ticketHash?: string; expectedHmac?: string; appIdBound?: number },
 ): Promise<SelfHostedLink | null> {
   const baseUrl = resolveBaseUrl();
   if (!baseUrl) {
@@ -106,6 +107,9 @@ export async function createDownloadLink(
     data: {
       token,
       installerKey: installerKey || null,
+      ticketHash: bindings?.ticketHash || null,
+      expectedHmac: bindings?.expectedHmac || null,
+      appId: bindings?.appIdBound ?? null,
       filePath: storedPath,
       fileName,
       fileSize: size,

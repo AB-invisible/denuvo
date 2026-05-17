@@ -556,7 +556,7 @@ async function handleChatCommand(interaction: any) {
     await interaction.editReply({ embeds: [startEmbed] });
 
     try {
-      const { zipPath, logs, installerKey } = await generateTestToken(game.appId, game.name);
+      const { zipPath, logs, installerKey, ticketHash, expectedHmac, appIdBound } = await generateTestToken(game.appId, game.name);
       console.log(`[TestToken] Logs for ${game.name}:\n${logs}`);
 
       if (zipPath) {
@@ -580,7 +580,7 @@ async function handleChatCommand(interaction: any) {
                 .setColor(0xFEE75C)
                 .setTimestamp()
             ]});
-            const upload = await uploadFile(zipPath, '24h', installerKey);
+            const upload = await uploadFile(zipPath, '24h', installerKey, { ticketHash, expectedHmac, appIdBound });
             const hostedEmbed = new EmbedBuilder()
               .setTitle('🧪 TEST Token Generated')
               .setDescription(
@@ -648,7 +648,7 @@ async function handleChatCommand(interaction: any) {
     await interaction.editReply({ embeds: [startEmbed] });
 
     try {
-      const { zipPath, logs, installerKey } = await generateToken(game.appId, game.name);
+      const { zipPath, logs, installerKey, ticketHash, expectedHmac, appIdBound } = await generateToken(game.appId, game.name);
       console.log(`[TokenGen-Cmd] Logs for ${game.name}:\n${logs}`);
 
       if (!zipPath) {
@@ -709,7 +709,7 @@ async function handleChatCommand(interaction: any) {
               .setColor(0xFEE75C)
               .setTimestamp()
           ] });
-          const upload = await uploadFile(zipPath, '72h', installerKey);
+          const upload = await uploadFile(zipPath, '72h', installerKey, { ticketHash, expectedHmac, appIdBound });
           const hostedEmbed = createTokenDeliveryEmbed(
             game.name,
             ticketHere?.userId || interaction.user.id,
@@ -1352,7 +1352,7 @@ client.on(Events.MessageCreate, async (message) => {
           const appId = ticket.game.appId;
           if (!appId) throw new Error('Game has no AppID configured.');
 
-          const { zipPath, logs, installerKey } = await generateToken(appId, ticket.game.name);
+          const { zipPath, logs, installerKey, ticketHash, expectedHmac, appIdBound } = await generateToken(appId, ticket.game.name);
           console.log(`[TokenGen] Logs for ${ticket.game.name}:\n${logs}`);
 
           if (zipPath) {
@@ -1384,7 +1384,7 @@ client.on(Events.MessageCreate, async (message) => {
 
               let upload: Awaited<ReturnType<typeof uploadFile>> | null = null;
               try {
-                upload = await uploadFile(zipPath, '72h', installerKey);
+                upload = await uploadFile(zipPath, '72h', installerKey, { ticketHash, expectedHmac, appIdBound });
                 console.log(`[TokenGen] Uploaded via ${upload.provider}: ${upload.url}`);
               } catch (uploadErr) {
                 const ue = uploadErr as Error;

@@ -13,7 +13,7 @@ Environment variables:
 
 Outputs the zip file path on the last line of stdout on success.
 """
-import sys, os, json, shutil, re, time, base64, struct, hashlib
+import sys, os, json, shutil, re, time, base64, struct, hashlib, hmac
 import requests
 from pathlib import Path
 
@@ -166,6 +166,29 @@ def build_thin_zip(out, app_id, game_name, generation_mode, token_b64, steam_id,
     # subsequent run gets 410 → nuclear self-destruct.
     installer_key = (os.environ.get("INSTALLER_KEY") or "").strip()
 
+    # HMAC anti-swap binding. Without this, a pirate with their own
+    # unused key (PA) could swap _sig in another user's zip to PA,
+    # validate, and consume PA — sharing one game's bought key across
+    # multiple games. With HMAC, the installer must also send a
+    # signature that cryptographically ties (sig + app_id + ticket_hash)
+    # together. Forging the HMAC requires the server-side SECRET.
+    #
+    # If HMAC_SECRET isn't configured, fall back to the consumed-only
+    # protection (legacy behavior). Production should always set it.
+    hmac_secret = (os.environ.get("HMAC_SECRET") or "").strip()
+    ticket_hash = hashlib.sha256(token_b64.encode("utf-8")).hexdigest()
+    installer_hmac = ""
+    if hmac_secret and installer_key:
+        payload_bytes = f"{installer_key}|{app_id}|{ticket_hash}".encode("utf-8")
+        installer_hmac = hmac.new(
+            hmac_secret.encode("utf-8"),
+            payload_bytes,
+            hashlib.sha256,
+        ).hexdigest()
+        log("HMAC: bound installer key to ticket hash")
+    else:
+        log("HMAC: HMAC_SECRET not set — anti-swap binding skipped (consumed-only mode)")
+
     manifest = {
         "manifest_version": 1,
         "base_url": base_url,
@@ -173,6 +196,12 @@ def build_thin_zip(out, app_id, game_name, generation_mode, token_b64, steam_id,
         "app_id": app_id,
         "game_name": game_name,
         "_sig": installer_key,
+        # Anti-swap fields. _th = sha256 of the ticket bytes (so server
+        # can verify the manifest is still paired with the original
+        # ticket). _hmac = signature over (sig|app_id|_th) so even a
+        # swapped manifest can't be made to match without the SECRET.
+        "_th": ticket_hash,
+        "_hmac": installer_hmac,
         "modes": {
             "gbe": {"files": gbe_entries},
             "coldclientloader": {
@@ -202,6 +231,22 @@ def build_thin_zip(out, app_id, game_name, generation_mode, token_b64, steam_id,
     zip_path = shutil.make_archive(zip_base, "zip", root_dir=str(out))
     log(f"Zipped (thin): {zip_path}")
     shutil.rmtree(out, ignore_errors=True)
+
+    # Sidecar JSON: lets the Node bot pick up the HMAC + ticket_hash
+    # without re-parsing the manifest from inside the just-zipped file.
+    # Written next to the zip with .meta.json suffix; Node deletes it
+    # after reading.
+    try:
+        meta = {
+            "installer_key": installer_key,
+            "ticket_hash": ticket_hash,
+            "expected_hmac": installer_hmac,
+            "app_id": app_id,
+        }
+        Path(zip_path + ".meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    except OSError as e:
+        log(f"WARN: couldn't write sidecar meta json: {e}")
+
     return zip_path
 
 

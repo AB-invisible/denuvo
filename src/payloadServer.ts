@@ -24,6 +24,7 @@
  */
 
 import http from 'http';
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
@@ -86,15 +87,24 @@ export function startPayloadServer(): void {
       }
 
       // ── Installer activation-key validation ──────────────
-      // POST /installer-validate/<key>
-      // The installer.exe reads its embedded `_sig` from
-      // payload-manifest.json and POSTs it here on first run. We:
-      //   - 410 if key is unknown, expired, or already consumed
-      //   - 200 if valid → flip consumed=true so re-runs (and
-      //     shared-zip runs by other users) all get rejected
+      // POST /installer-validate/<key>?th=<ticketHash>&hmac=<hmac>&app=<appId>
+      //
+      // The installer reads `_sig`, `_th`, `_hmac`, and `app_id` from
+      // payload-manifest.json and sends them all on first run. Server:
+      //   1. Looks up by _sig.
+      //   2. Rejects if missing/expired/consumed.
+      //   3. If HMAC binding fields are stored, verifies:
+      //        - provided._th == stored.ticketHash (manifest unmodified)
+      //        - provided._hmac == stored.expectedHmac (basic match)
+      //        - recomputed hmac(SECRET, sig|appId|ticketHash) == stored.expectedHmac
+      //          (defends against DB-row tampering by attacker with DB access)
+      //   4. On success: flip consumed=true → 200.
       const vm = url.pathname.match(/^\/installer-validate\/([a-f0-9]{8,128})$/);
       if (vm && (req.method === 'POST' || req.method === 'GET')) {
         const key = vm[1];
+        const params = url.searchParams;
+        const providedTh = (params.get('th') || '').trim();
+        const providedHmac = (params.get('hmac') || '').trim();
         try {
           const prisma = await getPrisma();
           const row = await prisma.tokenDownload.findFirst({ where: { installerKey: key } });
@@ -113,6 +123,46 @@ export function startPayloadServer(): void {
             res.end('Activation key already used.');
             return;
           }
+
+          // HMAC anti-swap binding — only enforced if this row was
+          // generated WITH a binding (legacy rows have nulls and pass).
+          const secret = (process.env.HMAC_SECRET || '').trim();
+          if (row.expectedHmac && row.ticketHash) {
+            if (!providedTh || !providedHmac) {
+              res.writeHead(410, { 'Content-Type': 'text/plain' });
+              res.end('Activation request missing binding signature.');
+              return;
+            }
+            // 1. Ticket-hash tamper detection: the installer's claimed
+            //    ticket hash must match what we stored.
+            if (providedTh !== row.ticketHash) {
+              res.writeHead(410, { 'Content-Type': 'text/plain' });
+              res.end('Activation key is paired with a different zip.');
+              return;
+            }
+            // 2. Basic HMAC equality: provided must match stored.
+            if (providedHmac !== row.expectedHmac) {
+              res.writeHead(410, { 'Content-Type': 'text/plain' });
+              res.end('Activation signature does not match.');
+              return;
+            }
+            // 3. Recompute from SECRET + stored data — catches anyone
+            //    who tampered with the DB row's expectedHmac directly.
+            if (secret && row.appId != null) {
+              const payload = `${key}|${row.appId}|${row.ticketHash}`;
+              const recomputed = crypto
+                .createHmac('sha256', secret)
+                .update(payload)
+                .digest('hex');
+              if (recomputed !== row.expectedHmac) {
+                console.warn('[PayloadServer] HMAC mismatch on validate — DB row may be tampered.');
+                res.writeHead(410, { 'Content-Type': 'text/plain' });
+                res.end('Activation signature failed cryptographic verification.');
+                return;
+              }
+            }
+          }
+
           await prisma.tokenDownload.update({
             where: { token: row.token },
             data: { consumed: true, consumedAt: new Date() },
@@ -122,8 +172,6 @@ export function startPayloadServer(): void {
         } catch (e) {
           console.error('[PayloadServer] /installer-validate error', e);
           if (!res.headersSent) {
-            // 5xx, not 4xx — the installer treats network/server errors
-            // as retryable, only 4xx triggers self-destruct.
             res.writeHead(500, { 'Content-Type': 'text/plain' });
             res.end('Internal error');
           }

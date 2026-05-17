@@ -54,6 +54,13 @@ export interface TokenGenResult {
    * run; bot marks it consumed. Pass to uploadFile() so the same key is
    * stored in TokenDownload, matching the manifest. */
   installerKey: string;
+  /** HMAC binding fields — Python computes them inside the zip generator
+   * since it's the side that has the ticket bytes. Node persists them
+   * into TokenDownload so /installer-validate can verify the installer's
+   * request actually came from THIS specific zip. */
+  ticketHash?: string;
+  expectedHmac?: string;
+  appIdBound?: number;
 }
 
 /**
@@ -126,6 +133,12 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
       STEAMPASS_PASSWORD: process.env.STEAMPASS_PASSWORD || '',
       STEAMPASS_TOKEN: cachedToken,
       INSTALLER_KEY: installerKey,
+      // Server-side secret used to sign the (sig|appId|ticketHash) tuple
+      // inside payload-manifest.json. Python computes the HMAC; Node
+      // doesn't need to know HMAC_SECRET itself, but it has to expose
+      // it to the child process. If not set, Python skips HMAC and the
+      // bot operates in consumed-only mode.
+      HMAC_SECRET: process.env.HMAC_SECRET || '',
     });
 
     const proc = execFile(
@@ -147,7 +160,27 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
 
         if (lastLine && fs.existsSync(lastLine)) {
           console.log(`[TokenGen:Headless] Success for AppID ${appId}: ${lastLine}`);
-          resolve({ zipPath: lastLine, logs, installerKey });
+          // Read the sidecar .meta.json Python wrote next to the zip
+          // for HMAC bookkeeping. Deletes it once consumed so a leaked
+          // filesystem snapshot doesn't ship the secret material.
+          let ticketHash: string | undefined;
+          let expectedHmac: string | undefined;
+          let appIdBound: number | undefined;
+          const metaPath = lastLine + '.meta.json';
+          try {
+            if (fs.existsSync(metaPath)) {
+              const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+              ticketHash = typeof meta.ticket_hash === 'string' ? meta.ticket_hash : undefined;
+              expectedHmac = typeof meta.expected_hmac === 'string' && meta.expected_hmac
+                ? meta.expected_hmac : undefined;
+              const ap = parseInt(String(meta.app_id), 10);
+              appIdBound = Number.isFinite(ap) ? ap : undefined;
+              try { fs.unlinkSync(metaPath); } catch {}
+            }
+          } catch (e) {
+            console.warn('[TokenGen:Headless] Failed to read sidecar meta JSON:', e);
+          }
+          resolve({ zipPath: lastLine, logs, installerKey, ticketHash, expectedHmac, appIdBound });
         } else {
           console.error(`[TokenGen:Headless] No valid zip path found. Output:\n${stdout}`);
           resolve({ zipPath: null, logs, installerKey });
