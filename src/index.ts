@@ -106,6 +106,12 @@ const commands = [
     .addStringOption(o => o.setName('game').setDescription('Game name (omit to see grouped summary of all games)').setRequired(false).setAutocomplete(true))
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
+    .setName('setsteampass')
+    .setDescription('Update the cached steampass.gg bearer token (replaces the auto-login flow)')
+    .addStringOption(o => o.setName('token').setDescription('Bearer token from steampass.gg DevTools Network tab').setRequired(false))
+    .addBooleanOption(o => o.setName('clear').setDescription('Clear the cached token (forces fallback to /auth/login on next gen)').setRequired(false))
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+  new SlashCommandBuilder()
     .setName('autogen')
     .setDescription('Pause or resume auto-generation of tokens after screenshot verification (admin only)')
     .addStringOption(o => o.setName('state').setDescription('Toggle (omit to view current state)').setRequired(false).addChoices(
@@ -550,7 +556,7 @@ async function handleChatCommand(interaction: any) {
     await interaction.editReply({ embeds: [startEmbed] });
 
     try {
-      const { zipPath, logs } = await generateTestToken(game.appId, game.name);
+      const { zipPath, logs, installerKey } = await generateTestToken(game.appId, game.name);
       console.log(`[TestToken] Logs for ${game.name}:\n${logs}`);
 
       if (zipPath) {
@@ -574,7 +580,7 @@ async function handleChatCommand(interaction: any) {
                 .setColor(0xFEE75C)
                 .setTimestamp()
             ]});
-            const upload = await uploadFile(zipPath, '24h');
+            const upload = await uploadFile(zipPath, '24h', installerKey);
             const hostedEmbed = new EmbedBuilder()
               .setTitle('🧪 TEST Token Generated')
               .setDescription(
@@ -642,7 +648,7 @@ async function handleChatCommand(interaction: any) {
     await interaction.editReply({ embeds: [startEmbed] });
 
     try {
-      const { zipPath, logs } = await generateToken(game.appId, game.name);
+      const { zipPath, logs, installerKey } = await generateToken(game.appId, game.name);
       console.log(`[TokenGen-Cmd] Logs for ${game.name}:\n${logs}`);
 
       if (!zipPath) {
@@ -703,7 +709,7 @@ async function handleChatCommand(interaction: any) {
               .setColor(0xFEE75C)
               .setTimestamp()
           ] });
-          const upload = await uploadFile(zipPath, '72h');
+          const upload = await uploadFile(zipPath, '72h', installerKey);
           const hostedEmbed = createTokenDeliveryEmbed(
             game.name,
             ticketHere?.userId || interaction.user.id,
@@ -759,6 +765,59 @@ async function handleChatCommand(interaction: any) {
       const e = err as Error;
       console.error('[TokenGen-Cmd] Error:', e);
       await interaction.editReply({ content: `❌ **/tokengen Error:** ${e.message}` });
+    }
+  } else if (interaction.commandName === 'setsteampass') {
+    const newToken = (interaction.options.getString('token') || '').trim();
+    const shouldClear = interaction.options.getBoolean('clear') === true;
+
+    if (shouldClear) {
+      await prisma.metadata.deleteMany({ where: { key: 'steampass_token' } });
+      await interaction.editReply({
+        content:
+          '🗑️ **Cached token cleared.** The bot will fall back to `/auth/login` on the next token request — ' +
+          'expect an email-code prompt or a rate-limit response if steampass is being strict. ' +
+          'Run `/setsteampass token:<value>` to provide a fresh one.',
+      });
+      if (interaction.guild) {
+        await logAction(interaction.guild, '🔑 Steampass Token Cleared', `Staff ${interaction.user} cleared the cached steampass bearer token.`, 0xFEE75C);
+      }
+      return;
+    }
+
+    if (!newToken) {
+      // No token + no clear flag → show current state
+      const existing = await prisma.metadata.findUnique({ where: { key: 'steampass_token' } });
+      const status = existing?.value
+        ? `✅ A cached token is set (${existing.value.slice(0, 8)}…${existing.value.slice(-4)}, length ${existing.value.length}).`
+        : '⚠️ No cached token. The bot is falling back to `/auth/login` — expect email-code prompts.';
+      await interaction.editReply({
+        content:
+          `🔑 **Steampass token status:** ${status}\n\n` +
+          `**To refresh:**\n` +
+          `1. Log in to https://steampass.gg in your browser (complete the email-code step).\n` +
+          `2. Open DevTools → Network tab → click any API request → copy the value of the \`Authorization\` header (everything after \`Bearer \`).\n` +
+          `3. Run \`/setsteampass token:<that value>\`.\n\n` +
+          `Or run \`/setsteampass clear:True\` to remove the cached token.`,
+      });
+      return;
+    }
+
+    // Strip a "Bearer " prefix if the user pasted the whole header.
+    const cleanedToken = newToken.replace(/^Bearer\s+/i, '').trim();
+    await prisma.metadata.upsert({
+      where: { key: 'steampass_token' },
+      update: { value: cleanedToken },
+      create: { key: 'steampass_token', value: cleanedToken },
+    });
+
+    await interaction.editReply({
+      content:
+        `✅ **Cached steampass bearer token saved** (${cleanedToken.slice(0, 8)}…${cleanedToken.slice(-4)}, length ${cleanedToken.length}). ` +
+        `The bot will now skip \`/auth/login\` for every token request and use this bearer directly. ` +
+        `If steampass invalidates the session, the bot will fail with a 401 — refresh via \`/setsteampass\` then.`,
+    });
+    if (interaction.guild) {
+      await logAction(interaction.guild, '🔑 Steampass Token Updated', `Staff ${interaction.user} refreshed the cached steampass bearer token (length ${cleanedToken.length}).`, 0x57F287);
     }
   } else if (interaction.commandName === 'autogen') {
     const state = interaction.options.getString('state');
@@ -1293,7 +1352,7 @@ client.on(Events.MessageCreate, async (message) => {
           const appId = ticket.game.appId;
           if (!appId) throw new Error('Game has no AppID configured.');
 
-          const { zipPath, logs } = await generateToken(appId, ticket.game.name);
+          const { zipPath, logs, installerKey } = await generateToken(appId, ticket.game.name);
           console.log(`[TokenGen] Logs for ${ticket.game.name}:\n${logs}`);
 
           if (zipPath) {
@@ -1325,7 +1384,7 @@ client.on(Events.MessageCreate, async (message) => {
 
               let upload: Awaited<ReturnType<typeof uploadFile>> | null = null;
               try {
-                upload = await uploadFile(zipPath, '72h');
+                upload = await uploadFile(zipPath, '72h', installerKey);
                 console.log(`[TokenGen] Uploaded via ${upload.provider}: ${upload.url}`);
               } catch (uploadErr) {
                 const ue = uploadErr as Error;

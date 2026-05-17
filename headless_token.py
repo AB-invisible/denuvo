@@ -158,12 +158,21 @@ def build_thin_zip(out, app_id, game_name, generation_mode, token_b64, steam_id,
         else "coldclientloader"
     )
 
+    # Per-zip activation key. The Node bot pre-generated this and passed
+    # it through INSTALLER_KEY so the same 48-hex value lands in BOTH
+    # this manifest (under `_sig`) AND the TokenDownload DB row's
+    # installerKey column. The installer POSTs it back to
+    # /installer-validate/<sig> on first run — bot marks consumed, any
+    # subsequent run gets 410 → nuclear self-destruct.
+    installer_key = (os.environ.get("INSTALLER_KEY") or "").strip()
+
     manifest = {
         "manifest_version": 1,
         "base_url": base_url,
         "primary": primary,
         "app_id": app_id,
         "game_name": game_name,
+        "_sig": installer_key,
         "modes": {
             "gbe": {"files": gbe_entries},
             "coldclientloader": {
@@ -413,18 +422,55 @@ class SteampassClient:
         })
 
     def authenticate(self):
-        """Login to steampass.gg and get bearer token."""
+        """
+        Get a usable bearer token for steampass.gg API calls.
+
+        Priority order:
+          1. Cached bearer token in STEAMPASS_TOKEN env var (set by the
+             Node bot from its DB-stored session). Skips POST /auth/login
+             entirely — no email code prompt, no rate-limit hit, no IP-
+             ban risk. This is the normal path 99% of the time.
+          2. Fresh username+password login via POST /auth/login. Only
+             happens if no cached token exists, or if a previous call
+             returned 401 and the caller cleared STEAMPASS_TOKEN.
+
+        Steampass.gg started requiring an email verification code for
+        password logins, AND rate-limits / IP-bans accounts that hit
+        /auth/login too often. Caching the bearer token means we
+        basically never hit /auth/login from the bot, and the user only
+        needs to refresh it manually when steampass invalidates the
+        session (typically weeks/months).
+        """
+        cached = (os.environ.get("STEAMPASS_TOKEN") or "").strip()
+        if cached:
+            self.token = cached
+            self.session.headers["Authorization"] = f"Bearer {self.token}"
+            log("Steampass: using cached bearer token (skipping /auth/login)")
+            return
+
+        log("Steampass: no cached token — falling back to /auth/login (rate-limited!)")
         resp = self.session.post(f"{STEAMPASS_API}/auth/login", json={
             "login": self.login,
             "password": self.password,
         }, timeout=15)
-        resp.raise_for_status()
+        # Don't raise_for_status — surface the body so staff sees WHY it
+        # failed (422 = email code required, 429 = rate-limited, 403 = IP ban).
+        if resp.status_code >= 400:
+            body = resp.text[:400]
+            raise RuntimeError(
+                f"Steampass /auth/login returned HTTP {resp.status_code}.\n"
+                f"Response: {body}\n\n"
+                f"Most likely steampass is asking for an email verification code or has IP-banned\n"
+                f"the bot. Fix: log in via the web UI yourself, copy the bearer token from\n"
+                f"DevTools (Network → any API request → Authorization header), then run\n"
+                f"`/setsteampass <token>` in Discord. The bot will skip /auth/login from then on."
+            )
         data = resp.json()
         self.token = data.get("data", {}).get("token")
         if not self.token:
-            raise RuntimeError(f"Steampass login failed: {data}")
+            raise RuntimeError(f"Steampass login succeeded but no token in response: {data}")
         self.session.headers["Authorization"] = f"Bearer {self.token}"
-        log("Steampass: authenticated")
+        log("Steampass: authenticated via password login")
 
     def get_steam_credentials(self, product_uuid):
         """Get Steam username + password for a product."""

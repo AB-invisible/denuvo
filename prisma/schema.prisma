@@ -123,13 +123,22 @@ model DutyStatus {
 // Self-hosted, time-limited token download. Bot writes the file to a
 // known directory + creates one row per delivery. Installer fetches the
 // zip via GET /download/<token>. Expired or deleted rows return 404.
+//
+// Anti-sharing: each row also carries an `installerKey` separate from
+// the download token. The installer.exe POSTs this key to
+// /installer-validate/<key> on first run; the bot flips `consumed=true`
+// and refuses subsequent calls. If a user shares the zip, the second
+// installer run gets 410 → nuclear self-destruct.
 model TokenDownload {
-  token       String   @id          // random opaque ID used in the URL
-  filePath    String                // server-side absolute path
-  fileName    String                // suggested filename for Content-Disposition
-  fileSize    Int                   // bytes (informational + Content-Length)
-  expiresAt   DateTime              // hard cap — 30 min from createdAt
-  createdAt   DateTime @default(now())
-  claimedAt   DateTime?             // first time the file was streamed (for stats only)
-  ticketId    Int?                  // optional link back to the ticket that produced this
+  token         String   @id            // random opaque ID used in the download URL
+  installerKey  String?  @unique        // separate per-zip secret embedded in payload-manifest.json
+  filePath      String                  // server-side absolute path
+  fileName      String                  // suggested filename for Content-Disposition
+  fileSize      Int                     // bytes (informational + Content-Length)
+  expiresAt     DateTime                // hard cap — 30 min from createdAt
+  createdAt     DateTime @default(now())
+  claimedAt     DateTime?               // first time the file was streamed (for stats only)
+  consumed      Boolean  @default(false) // true once /installer-validate has succeeded once
+  consumedAt    DateTime?               // when the installer actually ran for this zip
+  ticketId      Int?                    // optional link back to the ticket that produced this
 }

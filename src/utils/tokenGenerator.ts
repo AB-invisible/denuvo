@@ -12,6 +12,7 @@
  */
 
 import { execFile } from 'child_process';
+import crypto from 'crypto';
 import path from 'path';
 import fs from 'fs';
 import prisma from '../lib/prisma';
@@ -45,11 +46,21 @@ function buildPythonEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return env;
 }
 
+export interface TokenGenResult {
+  zipPath: string | null;
+  logs: string;
+  /** 48-hex secret embedded inside the zip's payload-manifest.json as
+   * `_sig`. The installer POSTs it to /installer-validate/<key> on first
+   * run; bot marks it consumed. Pass to uploadFile() so the same key is
+   * stored in TokenDownload, matching the manifest. */
+  installerKey: string;
+}
+
 /**
  * Generate a Denuvo token zip for the given AppID.
  * Returns the absolute path to the generated zip file, or null on failure.
  */
-export async function generateToken(appId: number, gameName: string): Promise<{ zipPath: string | null; logs: string }> {
+export async function generateToken(appId: number, gameName: string): Promise<TokenGenResult> {
   // Look up steampass UUID + generation mode from the database
   const game = await prisma.game.findFirst({ where: { appId } });
   const steampassUuid = game?.steampassUuid;
@@ -72,7 +83,7 @@ export async function generateToken(appId: number, gameName: string): Promise<{ 
  * placeholder ticket. The structure (DLLs, configs, achievements, etc.)
  * is identical to a real token zip — only the ticket value is fake.
  */
-export async function generateTestToken(appId: number, gameName: string): Promise<{ zipPath: string | null; logs: string }> {
+export async function generateTestToken(appId: number, gameName: string): Promise<TokenGenResult> {
   // Use the same generationMode as a real run so the test zip layout
   // matches what users would get.
   const game = await prisma.game.findFirst({ where: { appId } });
@@ -89,11 +100,32 @@ export async function generateTestToken(appId: number, gameName: string): Promis
  *   - "coldloader": V2 DLL hijack with coldloader.dll + proxy DLLs
  *   - "coldclientloader": V1 launcher with START_<game>.exe
  */
-function generateHeadless(appId: number, gameName: string, steampassUuid: string, generationMode: string = 'gbe'): Promise<{ zipPath: string | null; logs: string }> {
-  return new Promise((resolve) => {
+function generateHeadless(appId: number, gameName: string, steampassUuid: string, generationMode: string = 'gbe'): Promise<TokenGenResult> {
+  // Pre-generate the per-zip installer key NOW (before spawning Python)
+  // so Python can embed it inside payload-manifest.json as `_sig`. The
+  // SAME key gets handed back to the caller and persisted in
+  // TokenDownload via createDownloadLink(installerKey=...) — that's how
+  // the bot's /installer-validate endpoint knows which key is valid.
+  const installerKey = crypto.randomBytes(24).toString('hex'); // 48 hex chars
+
+  return new Promise(async (resolve) => {
+    // Load the cached steampass bearer token from DB (Metadata table) so
+    // Python can skip POST /auth/login entirely. Set via /setsteampass.
+    // Falls back gracefully if the row doesn't exist — Python will then
+    // attempt a fresh login and surface a clear error if it 422s.
+    let cachedToken = '';
+    try {
+      const row = await prisma.metadata.findUnique({ where: { key: 'steampass_token' } });
+      cachedToken = (row?.value || '').trim();
+    } catch {
+      // Metadata table issue is non-fatal — proceed without cached token.
+    }
+
     const env = buildPythonEnv({
       STEAMPASS_LOGIN: process.env.STEAMPASS_LOGIN || '',
       STEAMPASS_PASSWORD: process.env.STEAMPASS_PASSWORD || '',
+      STEAMPASS_TOKEN: cachedToken,
+      INSTALLER_KEY: installerKey,
     });
 
     const proc = execFile(
@@ -105,7 +137,7 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
 
         if (error) {
           console.error(`[TokenGen:Headless] Process error for AppID ${appId}:`, error.message);
-          resolve({ zipPath: null, logs });
+          resolve({ zipPath: null, logs, installerKey });
           return;
         }
 
@@ -115,10 +147,10 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
 
         if (lastLine && fs.existsSync(lastLine)) {
           console.log(`[TokenGen:Headless] Success for AppID ${appId}: ${lastLine}`);
-          resolve({ zipPath: lastLine, logs });
+          resolve({ zipPath: lastLine, logs, installerKey });
         } else {
           console.error(`[TokenGen:Headless] No valid zip path found. Output:\n${stdout}`);
-          resolve({ zipPath: null, logs });
+          resolve({ zipPath: null, logs, installerKey });
         }
       }
     );
@@ -129,7 +161,11 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
  * Legacy token generation using local Steam client + generate_token.py.
  * Requires Steam to be running and logged into an account that owns the game.
  */
-function generateLegacy(appId: number, gameName: string): Promise<{ zipPath: string | null; logs: string }> {
+function generateLegacy(appId: number, gameName: string): Promise<TokenGenResult> {
+  // Legacy generator doesn't emit a payload-manifest.json so the installer
+  // key never gets embedded — but we still emit one for type-compat with
+  // the headless path. Legacy zips are end-of-life anyway.
+  const installerKey = crypto.randomBytes(24).toString('hex');
   return new Promise((resolve) => {
     const proc = execFile(
       PYTHON_EXE,
@@ -140,7 +176,7 @@ function generateLegacy(appId: number, gameName: string): Promise<{ zipPath: str
 
         if (error) {
           console.error(`[TokenGen:Legacy] Process error for AppID ${appId}:`, error.message);
-          resolve({ zipPath: null, logs });
+          resolve({ zipPath: null, logs, installerKey });
           return;
         }
 
@@ -149,10 +185,10 @@ function generateLegacy(appId: number, gameName: string): Promise<{ zipPath: str
 
         if (lastLine && fs.existsSync(lastLine)) {
           console.log(`[TokenGen:Legacy] Success for AppID ${appId}: ${lastLine}`);
-          resolve({ zipPath: lastLine, logs });
+          resolve({ zipPath: lastLine, logs, installerKey });
         } else {
           console.error(`[TokenGen:Legacy] No valid zip path found. Output:\n${stdout}`);
-          resolve({ zipPath: null, logs });
+          resolve({ zipPath: null, logs, installerKey });
         }
       }
     );

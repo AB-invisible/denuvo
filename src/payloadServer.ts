@@ -85,6 +85,52 @@ export function startPayloadServer(): void {
         return;
       }
 
+      // ── Installer activation-key validation ──────────────
+      // POST /installer-validate/<key>
+      // The installer.exe reads its embedded `_sig` from
+      // payload-manifest.json and POSTs it here on first run. We:
+      //   - 410 if key is unknown, expired, or already consumed
+      //   - 200 if valid → flip consumed=true so re-runs (and
+      //     shared-zip runs by other users) all get rejected
+      const vm = url.pathname.match(/^\/installer-validate\/([a-f0-9]{8,128})$/);
+      if (vm && (req.method === 'POST' || req.method === 'GET')) {
+        const key = vm[1];
+        try {
+          const prisma = await getPrisma();
+          const row = await prisma.tokenDownload.findFirst({ where: { installerKey: key } });
+          if (!row) {
+            res.writeHead(410, { 'Content-Type': 'text/plain' });
+            res.end('Activation key not recognized.');
+            return;
+          }
+          if (row.expiresAt.getTime() <= Date.now()) {
+            res.writeHead(410, { 'Content-Type': 'text/plain' });
+            res.end('Activation key expired.');
+            return;
+          }
+          if (row.consumed) {
+            res.writeHead(410, { 'Content-Type': 'text/plain' });
+            res.end('Activation key already used.');
+            return;
+          }
+          await prisma.tokenDownload.update({
+            where: { token: row.token },
+            data: { consumed: true, consumedAt: new Date() },
+          });
+          res.writeHead(200, { 'Content-Type': 'text/plain' });
+          res.end('ok');
+        } catch (e) {
+          console.error('[PayloadServer] /installer-validate error', e);
+          if (!res.headersSent) {
+            // 5xx, not 4xx — the installer treats network/server errors
+            // as retryable, only 4xx triggers self-destruct.
+            res.writeHead(500, { 'Content-Type': 'text/plain' });
+            res.end('Internal error');
+          }
+        }
+        return;
+      }
+
       // ── Time-limited token download endpoint ──
       // GET /download/<token> → streams the zip if the token is valid
       // and not expired. The bot creates these rows via createDownloadLink()

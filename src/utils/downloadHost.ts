@@ -64,10 +64,16 @@ export function downloadStorageDir(): string {
  * Move (or copy) the zip into the download-storage directory, create a
  * DB row, and return the URL the user clicks. Pass ticketId for staff
  * auditing if the caller has it.
+ *
+ * `installerKey` (optional): a 48-hex secret the bot pre-generated and
+ * already embedded inside the zip's payload-manifest.json as `_sig`.
+ * We store it in the same DB row so the bot's
+ * POST /installer-validate/<key> endpoint can verify + mark consumed.
  */
 export async function createDownloadLink(
   srcZipPath: string,
   ticketId?: number,
+  installerKey?: string,
 ): Promise<SelfHostedLink | null> {
   const baseUrl = resolveBaseUrl();
   if (!baseUrl) {
@@ -99,6 +105,7 @@ export async function createDownloadLink(
   await prisma.tokenDownload.create({
     data: {
       token,
+      installerKey: installerKey || null,
       filePath: storedPath,
       fileName,
       fileSize: size,

