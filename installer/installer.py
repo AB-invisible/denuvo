@@ -1202,47 +1202,94 @@ def _resolve_desktop_dir() -> Path:
     return Path.home() / "Desktop"
 
 
-def _read_lnk_target(lnk_path: Path) -> str:
-    """Read the TargetPath property of a .lnk file. Empty on any failure."""
+def _read_lnk(lnk_path: Path) -> tuple[str, str]:
+    """
+    Read both TargetPath and Arguments from a .lnk file via PowerShell.
+    Returns ('', '') on any failure. Both fields matter for shortcut
+    cleanup because some user-made shortcuts target steam.exe with the
+    real game info hidden in Arguments (-applaunch <appid> or similar).
+    """
     try:
-        # Path may contain spaces / Unicode; pass it verbatim via single-quoted
-        # PowerShell string (with '' to escape any embedded single quotes).
         ps_path = "'" + str(lnk_path).replace("'", "''") + "'"
-        script = f"(New-Object -ComObject WScript.Shell).CreateShortcut({ps_path}).TargetPath"
+        script = (
+            f"$s = (New-Object -ComObject WScript.Shell).CreateShortcut({ps_path}); "
+            f"Write-Output $s.TargetPath; "
+            f"Write-Output '---SEP---'; "
+            f"Write-Output $s.Arguments"
+        )
         out = subprocess.check_output(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
             text=True, timeout=10,
         )
-        return out.strip()
+        parts = out.split("---SEP---", 1)
+        target = parts[0].strip() if len(parts) > 0 else ""
+        args = parts[1].strip() if len(parts) > 1 else ""
+        return target, args
     except Exception:
-        return ""
+        return "", ""
+
+
+def _normalize_for_name_match(s: str) -> str:
+    """
+    Strip extension + non-alphanumeric chars for fuzzy filename matching.
+    'The Bus.lnk'        → 'thebus'
+    'TheBus.lnk'         → 'thebus'
+    'The_Bus - copy.lnk' → 'thebuscopy'
+    """
+    stem = s.rsplit(".", 1)[0] if "." in s else s
+    return re.sub(r"[^a-z0-9]", "", stem.lower())
+
+
+def _name_matches_game(filename: str, game_name: str) -> bool:
+    """
+    True if a shortcut filename appears to refer to this game by name.
+    Tolerates spacing / punctuation differences. Requires at least
+    4 characters of game name to match to avoid false-positives on
+    tiny game names.
+    """
+    f = _normalize_for_name_match(filename)
+    g = _normalize_for_name_match(game_name)
+    if len(g) < 4:
+        return f == g
+    # Substring either direction — covers 'TheBus.lnk' for 'The Bus' and
+    # 'The Bus - Shortcut.lnk' for 'The Bus'.
+    return f == g or g in f or f in g
 
 
 def cleanup_other_game_shortcuts(
     game_dir: Path,
     app_id: str,
+    game_name: str,
     our_loader: Path | None = None,
 ) -> int:
     """
-    Sweep the user's Desktop for shortcuts pointing at this specific
-    game and delete them. Goal: after install, the ONLY desktop icon
-    for this game is the one we just created (pointing at our V1
-    loader) — no confusion between Steam's auto-shortcut, an
-    older user-made shortcut, and ours.
+    Sweep the user's Desktop for shortcuts referring to this specific
+    game and delete them. After install, the ONLY desktop icon for
+    this game should be the one we just created (pointing at our V1
+    loader).
 
-    Match rules:
-      • .url file (Steam's "Create desktop shortcut" output) whose
-        contents contain 'rungameid/<app_id>' → delete.
-      • .lnk file whose resolved TargetPath sits anywhere INSIDE the
-        game's install folder → delete.
+    A shortcut is considered 'for this game' if ANY of these is true:
+      1. It's a .url file containing 'rungameid/<app_id>'
+         (Steam's auto-generated 'Create desktop shortcut' output)
+      2. It's a .lnk whose TargetPath resolves to a file INSIDE the
+         game's install folder (e.g. a user-made shortcut to the
+         game's own .exe like Fernbus.exe)
+      3. It's a .lnk whose Arguments contain 'rungameid/<app_id>' or
+         '-applaunch <app_id>' (user-made or generated shortcut that
+         points at steam.exe with this game's id)
+      4. It's a .lnk or .url whose filename (with spaces/punctuation
+         stripped) matches or contains the game name — catches manual
+         shortcuts like 'TheBus.lnk' for the game 'The Bus'
 
     Safety:
-      • The .lnk for `our_loader` is explicitly skipped — we never
+      • The .lnk for `our_loader` is explicitly skipped — we NEVER
         delete the shortcut we just created.
       • Anything outside the Desktop folder is untouched.
-      • Anything pointing at unrelated files / other games is untouched.
+      • Other games' shortcuts are untouched (name match is per-game,
+        Steam url match is per-app_id, target/args matches are
+        per-install-dir / per-app_id).
 
-    Returns the count of shortcuts deleted (for the success log).
+    Returns the count of shortcuts deleted.
     """
     desktop = _resolve_desktop_dir()
     if not desktop.is_dir():
@@ -1260,7 +1307,8 @@ def cleanup_other_game_shortcuts(
         except OSError:
             our_target_norm = str(our_loader).lower()
 
-    needle = f"rungameid/{app_id}"
+    rungameid_needle = f"rungameid/{app_id}"
+    applaunch_needle = f"-applaunch {app_id}"
     deleted = 0
 
     for entry in list(desktop.iterdir()):
@@ -1269,42 +1317,55 @@ def cleanup_other_game_shortcuts(
         name_lower = entry.name.lower()
 
         try:
+            should_delete = False
+
             if name_lower.endswith(".url"):
                 # Steam-generated internet shortcut. Tiny INI-style file:
                 # [InternetShortcut]
                 # URL=steam://rungameid/<appid>
                 content = entry.read_text(encoding="utf-8", errors="ignore").lower()
-                if needle in content:
-                    _clear_readonly(entry)
-                    entry.unlink()
-                    deleted += 1
-                    continue
+                if rungameid_needle in content:
+                    should_delete = True
+                # Even if URL doesn't match, the filename might still
+                # clearly belong to this game (user renamed the .url).
+                elif _name_matches_game(entry.name, game_name):
+                    should_delete = True
 
             elif name_lower.endswith(".lnk"):
-                target = _read_lnk_target(entry)
-                if not target:
-                    continue
+                target, args = _read_lnk(entry)
                 try:
-                    target_norm = str(Path(target).resolve()).lower()
+                    target_norm = str(Path(target).resolve()).lower() if target else ""
                 except OSError:
-                    target_norm = target.lower()
+                    target_norm = target.lower() if target else ""
+                args_lower = (args or "").lower()
 
-                # Don't touch the shortcut we just created.
+                # Rule 0: NEVER touch the shortcut we just created.
                 if our_target_norm and target_norm == our_target_norm:
                     continue
 
-                # Anything pointing inside the game's install folder is
-                # either the game's own exe or a user-made shortcut to
-                # something in the game dir. Either way: remove so the
-                # user has one and only one entry point on their desktop.
-                if (
+                # Rule 2: target points inside the game's install folder
+                if target_norm and (
                     target_norm == game_root_norm
                     or target_norm.startswith(game_root_norm + "\\")
                     or target_norm.startswith(game_root_norm + "/")
                 ):
-                    _clear_readonly(entry)
-                    entry.unlink()
-                    deleted += 1
+                    should_delete = True
+
+                # Rule 3: Arguments encode this app_id (steam.exe shortcut)
+                if not should_delete and args_lower and (
+                    rungameid_needle in args_lower or applaunch_needle in args_lower
+                ):
+                    should_delete = True
+
+                # Rule 4: filename matches the game name (catches
+                # 'TheBus.lnk' even when its target is unhelpful)
+                if not should_delete and _name_matches_game(entry.name, game_name):
+                    should_delete = True
+
+            if should_delete:
+                _clear_readonly(entry)
+                entry.unlink()
+                deleted += 1
         except OSError:
             pass
 
@@ -1963,8 +2024,12 @@ def main() -> None:
             # the user has only ONE icon to click — ours. Catches:
             #   - Steam's auto-generated <Game>.url (steam://rungameid/...)
             #   - User-made .lnk shortcuts pointing into the game folder
+            #   - User-made .lnk shortcuts to steam.exe with this app_id
+            #     in Arguments (-applaunch <id> / rungameid/<id>)
+            #   - Any .lnk/.url whose filename matches the game name
+            #     (e.g. 'TheBus.lnk' for game 'The Bus')
             # Skips our just-created loader shortcut by target match.
-            cleanup_other_game_shortcuts(game_dir, app_id, our_loader=renamed)
+            cleanup_other_game_shortcuts(game_dir, app_id, game_name, our_loader=renamed)
 
         play_headline = f"Double-click the \"{game_name}\" shortcut\non your Desktop."
     elif mode == "coldloader":
