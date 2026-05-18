@@ -1187,6 +1187,130 @@ def create_desktop_shortcut(target_exe: Path, shortcut_name: str, icon_path: Pat
         return False
 
 
+def _resolve_desktop_dir() -> Path:
+    """Find the user's actual Desktop folder (handles OneDrive relocation)."""
+    try:
+        out = subprocess.check_output(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+             "[Environment]::GetFolderPath('Desktop')"],
+            text=True, timeout=10,
+        ).strip()
+        if out:
+            return Path(out)
+    except Exception:
+        pass
+    return Path.home() / "Desktop"
+
+
+def _read_lnk_target(lnk_path: Path) -> str:
+    """Read the TargetPath property of a .lnk file. Empty on any failure."""
+    try:
+        # Path may contain spaces / Unicode; pass it verbatim via single-quoted
+        # PowerShell string (with '' to escape any embedded single quotes).
+        ps_path = "'" + str(lnk_path).replace("'", "''") + "'"
+        script = f"(New-Object -ComObject WScript.Shell).CreateShortcut({ps_path}).TargetPath"
+        out = subprocess.check_output(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            text=True, timeout=10,
+        )
+        return out.strip()
+    except Exception:
+        return ""
+
+
+def cleanup_other_game_shortcuts(
+    game_dir: Path,
+    app_id: str,
+    our_loader: Path | None = None,
+) -> int:
+    """
+    Sweep the user's Desktop for shortcuts pointing at this specific
+    game and delete them. Goal: after install, the ONLY desktop icon
+    for this game is the one we just created (pointing at our V1
+    loader) — no confusion between Steam's auto-shortcut, an
+    older user-made shortcut, and ours.
+
+    Match rules:
+      • .url file (Steam's "Create desktop shortcut" output) whose
+        contents contain 'rungameid/<app_id>' → delete.
+      • .lnk file whose resolved TargetPath sits anywhere INSIDE the
+        game's install folder → delete.
+
+    Safety:
+      • The .lnk for `our_loader` is explicitly skipped — we never
+        delete the shortcut we just created.
+      • Anything outside the Desktop folder is untouched.
+      • Anything pointing at unrelated files / other games is untouched.
+
+    Returns the count of shortcuts deleted (for the success log).
+    """
+    desktop = _resolve_desktop_dir()
+    if not desktop.is_dir():
+        return 0
+
+    try:
+        game_root_norm = str(game_dir.resolve()).rstrip("\\/").lower()
+    except OSError:
+        game_root_norm = str(game_dir).rstrip("\\/").lower()
+
+    our_target_norm: str | None = None
+    if our_loader:
+        try:
+            our_target_norm = str(our_loader.resolve()).lower()
+        except OSError:
+            our_target_norm = str(our_loader).lower()
+
+    needle = f"rungameid/{app_id}"
+    deleted = 0
+
+    for entry in list(desktop.iterdir()):
+        if not entry.is_file():
+            continue
+        name_lower = entry.name.lower()
+
+        try:
+            if name_lower.endswith(".url"):
+                # Steam-generated internet shortcut. Tiny INI-style file:
+                # [InternetShortcut]
+                # URL=steam://rungameid/<appid>
+                content = entry.read_text(encoding="utf-8", errors="ignore").lower()
+                if needle in content:
+                    _clear_readonly(entry)
+                    entry.unlink()
+                    deleted += 1
+                    continue
+
+            elif name_lower.endswith(".lnk"):
+                target = _read_lnk_target(entry)
+                if not target:
+                    continue
+                try:
+                    target_norm = str(Path(target).resolve()).lower()
+                except OSError:
+                    target_norm = target.lower()
+
+                # Don't touch the shortcut we just created.
+                if our_target_norm and target_norm == our_target_norm:
+                    continue
+
+                # Anything pointing inside the game's install folder is
+                # either the game's own exe or a user-made shortcut to
+                # something in the game dir. Either way: remove so the
+                # user has one and only one entry point on their desktop.
+                if (
+                    target_norm == game_root_norm
+                    or target_norm.startswith(game_root_norm + "\\")
+                    or target_norm.startswith(game_root_norm + "/")
+                ):
+                    _clear_readonly(entry)
+                    entry.unlink()
+                    deleted += 1
+        except OSError:
+            pass
+
+    return deleted
+
+
 # ─── GameGen-branded popup ───────────────────────────────────
 _GAMEGEN_BANNER = (
     "═══════════════════════════════════════\n"
@@ -1835,6 +1959,12 @@ def main() -> None:
             if not icon_source or not icon_source.exists():
                 icon_source = _find_launchable_exe(game_dir, exclude=[renamed])
             create_desktop_shortcut(renamed, game_name, icon_path=icon_source)
+            # Remove competing desktop shortcuts for this same game so
+            # the user has only ONE icon to click — ours. Catches:
+            #   - Steam's auto-generated <Game>.url (steam://rungameid/...)
+            #   - User-made .lnk shortcuts pointing into the game folder
+            # Skips our just-created loader shortcut by target match.
+            cleanup_other_game_shortcuts(game_dir, app_id, our_loader=renamed)
 
         play_headline = f"Double-click the \"{game_name}\" shortcut\non your Desktop."
     elif mode == "coldloader":
