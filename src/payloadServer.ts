@@ -92,6 +92,110 @@ export function startPayloadServer(): void {
         return;
       }
 
+      // ── Staff API: generate a token + return its download link ──
+      // POST /admin/generate-token
+      //   Authorization: Bearer <STAFF_API_TOKEN>
+      //   Content-Type: application/json
+      //   Body: { "appId": 3321460, "gameName": "Crimson Desert" }
+      //
+      // Returns 200 with { downloadUrl, expiresAt, expiresInMinutes }.
+      // Lets staff drive token issuance from a separate app (CLI, GUI,
+      // whatever) without going through the Discord ticket flow. Each
+      // issued token still has all the normal protections — single-use
+      // consumed flag, HMAC binding (if HMAC_SECRET is set), 30-min
+      // link expiry, installer self-destruct on rejection.
+      if (url.pathname === '/admin/generate-token' && req.method === 'POST') {
+        const expectedToken = (process.env.STAFF_API_TOKEN || '').trim();
+        if (!expectedToken) {
+          res.writeHead(503, { 'Content-Type': 'text/plain' });
+          res.end('STAFF_API_TOKEN env var is not configured on this server.');
+          return;
+        }
+        const auth = (req.headers.authorization || '').trim();
+        if (auth !== `Bearer ${expectedToken}`) {
+          res.writeHead(401, { 'Content-Type': 'text/plain' });
+          res.end('Unauthorized — bad or missing Bearer token.');
+          return;
+        }
+
+        // Read JSON body (cap at 64 KB just to be defensive).
+        const chunks: Buffer[] = [];
+        let total = 0;
+        let aborted = false;
+        for await (const chunk of req) {
+          chunks.push(chunk as Buffer);
+          total += (chunk as Buffer).length;
+          if (total > 64 * 1024) { aborted = true; break; }
+        }
+        if (aborted) {
+          res.writeHead(413, { 'Content-Type': 'text/plain' });
+          res.end('Request body too large.');
+          return;
+        }
+        let body: any;
+        try {
+          body = JSON.parse(Buffer.concat(chunks).toString('utf-8') || '{}');
+        } catch {
+          res.writeHead(400, { 'Content-Type': 'text/plain' });
+          res.end('Invalid JSON body.');
+          return;
+        }
+
+        const appId = Number.parseInt(String(body.appId || ''), 10);
+        const gameName = String(body.gameName || '').trim();
+        if (!Number.isFinite(appId) || appId <= 0 || !gameName) {
+          res.writeHead(400, { 'Content-Type': 'text/plain' });
+          res.end('Request must include numeric appId and non-empty gameName.');
+          return;
+        }
+
+        try {
+          // Dynamic imports keep payloadServer.ts loadable even when the
+          // generator or upload modules have init issues (same isolation
+          // pattern as our Prisma loader).
+          const { generateToken } = await import('./utils/tokenGenerator');
+          const { uploadFile } = await import('./utils/fileHost');
+
+          const result = await generateToken(appId, gameName);
+          if (!result.zipPath) {
+            console.error('[Admin] Token generation failed:', result.logs.slice(-500));
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+              error: 'generation_failed',
+              detail: result.logs.slice(-400),
+            }));
+            return;
+          }
+
+          const upload = await uploadFile(
+            result.zipPath,
+            '24h',
+            result.installerKey,
+            {
+              ticketHash: result.ticketHash,
+              expectedHmac: result.expectedHmac,
+              appIdBound: result.appIdBound,
+            },
+          );
+
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            downloadUrl: upload.url,
+            provider: upload.provider,
+            expiryText: upload.expiryText,
+            expiresInMinutes: 30,
+            // sig is the same as the installerKey embedded in the manifest,
+            // useful for staff audit trails / their app's UI.
+            installerKey: result.installerKey,
+          }));
+        } catch (e) {
+          console.error('[Admin] /admin/generate-token error', e);
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'internal_error', detail: String(e).slice(0, 400) }));
+        }
+        return;
+      }
+
       // ── Installer activation-key validation ──────────────
       // POST /installer-validate/<key>?th=<ticketHash>&hmac=<hmac>&app=<appId>
       //
