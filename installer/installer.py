@@ -914,32 +914,31 @@ def deploy_v1(payload_root: Path, game_dir: Path, app_id: str, shared_settings: 
         stats["copied"] += 1
         stats["touched"].append(dst)
 
-    # Shared steam_settings/ → MUST sit next to the game's steam_api64.dll
-    # (NOT next to the V1 loader at game root). For UE games that means
-    # Engine/Binaries/ThirdParty/Steamworks/.../Win64/steam_settings/.
-    # Goldberg's loader injects steamclient64.dll into the game process,
-    # but the ticket bytes get read from the steam_api64.dll's sibling
-    # steam_settings/. If we put it at game root instead, Denuvo can't
-    # find the ticket and init fails.
+    # Shared steam_settings/ → game folder ROOT, beside the V1 loader,
+    # ColdClientLoader.ini, GameOverlayRenderer*.dll and the bundled
+    # steamclient64.dll. Everything V1-related lives together.
+    #
+    # Per Goldberg's experimental ColdClientLoader docs:
+    #   "all emu config files should be put beside the steamclient(64).dll"
+    # The loader force-injects Goldberg's steamclient64.dll into the
+    # game process, and that's what reads steam_settings/. Goldberg's
+    # steamclient resolves the settings dir relative to its own load
+    # path (= the loader's directory = game root). The game's own
+    # steam_api64.dll is untouched, sitting wherever it shipped (Engine
+    # path for UE games); it doesn't need a settings sibling because
+    # the injected steamclient handles the ticket lookup.
     if shared_settings and shared_settings.is_dir():
-        api_locations = _find_existing_locations(game_dir, "steam_api64.dll")
-        if not api_locations:
-            # Game has no steam_api64.dll anywhere (rare). Fall back to
-            # game root so SOMETHING ships.
-            api_locations = [game_dir / "steam_api64.dll"]
-
-        for api_loc in api_locations:
-            try:
-                _place_steam_settings(shared_settings, api_loc.parent, stats=stats)
-                (api_loc.parent / "steam_settings" / "steam_appid.txt").write_text(
-                    app_id, encoding="utf-8"
-                )
-                # Also drop a bare steam_appid.txt next to the DLL itself —
-                # some games' Steam API check reads it from there directly
-                # without going through steam_settings/.
-                (api_loc.parent / "steam_appid.txt").write_text(app_id, encoding="utf-8")
-            except OSError:
-                pass
+        try:
+            _place_steam_settings(shared_settings, game_dir, stats=stats)
+            (game_dir / "steam_settings" / "steam_appid.txt").write_text(
+                app_id, encoding="utf-8"
+            )
+            # Bare steam_appid.txt at game root — some games' Steam init
+            # checks for it next to the loader directly.
+            (game_dir / "steam_appid.txt").write_text(app_id, encoding="utf-8")
+            stats["touched"].append(game_dir / "steam_appid.txt")
+        except OSError:
+            pass
 
     return stats
 
