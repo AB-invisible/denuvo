@@ -92,6 +92,148 @@ export function startPayloadServer(): void {
         return;
       }
 
+      // ── Staff API: register a key produced by an external generator ──
+      // POST /admin/register-key
+      //   Authorization: Bearer <STAFF_API_TOKEN>
+      //   Content-Type: application/json
+      //   Body: {
+      //     "installerKey": "<48-hex>",
+      //     "appId": 3321460,
+      //     "ticketHash": "<64-hex sha256>",
+      //     "gameName": "Crimson Desert",
+      //     "expiresInMinutes": 30,
+      //     "fileName": "Token [Crimson Desert].zip"   (optional, for audit)
+      //   }
+      //
+      //   →  200 OK
+      //      {
+      //        "expectedHmac": "<the HMAC value to embed as _hmac>",
+      //        "expiresAt": "ISO-8601",
+      //        "ok": true
+      //      }
+      //
+      // This is the entry point for a standalone desktop generator that
+      // does its own steampass auth + zip building locally. The bot's
+      // only job here is to:
+      //   1. Verify the request is from staff (bearer token)
+      //   2. Compute the HMAC server-side using HMAC_SECRET (so the
+      //      secret never leaves Railway)
+      //   3. Insert a TokenDownload row so the installer's later POST
+      //      to /installer-validate/<sig> resolves and consumes it
+      //
+      // The external generator embeds the returned `expectedHmac` into
+      // the manifest's `_hmac` field, plus its locally-generated
+      // installerKey as `_sig`, plus the ticket hash as `_th`. The
+      // resulting zip behaves identically to a bot-generated one when
+      // an end user runs the installer — same consumed flag, same HMAC
+      // binding, same 30-min lifetime.
+      if (url.pathname === '/admin/register-key' && req.method === 'POST') {
+        const expectedToken = (process.env.STAFF_API_TOKEN || '').trim();
+        if (!expectedToken) {
+          res.writeHead(503, { 'Content-Type': 'text/plain' });
+          res.end('STAFF_API_TOKEN env var is not configured on this server.');
+          return;
+        }
+        const auth = (req.headers.authorization || '').trim();
+        if (auth !== `Bearer ${expectedToken}`) {
+          res.writeHead(401, { 'Content-Type': 'text/plain' });
+          res.end('Unauthorized — bad or missing Bearer token.');
+          return;
+        }
+
+        // JSON body (cap at 64 KB)
+        const chunks2: Buffer[] = [];
+        let total2 = 0;
+        let aborted2 = false;
+        for await (const chunk of req) {
+          chunks2.push(chunk as Buffer);
+          total2 += (chunk as Buffer).length;
+          if (total2 > 64 * 1024) { aborted2 = true; break; }
+        }
+        if (aborted2) {
+          res.writeHead(413, { 'Content-Type': 'text/plain' });
+          res.end('Request body too large.');
+          return;
+        }
+        let regBody: any;
+        try {
+          regBody = JSON.parse(Buffer.concat(chunks2).toString('utf-8') || '{}');
+        } catch {
+          res.writeHead(400, { 'Content-Type': 'text/plain' });
+          res.end('Invalid JSON body.');
+          return;
+        }
+
+        const installerKey = String(regBody.installerKey || '').trim();
+        const ticketHash = String(regBody.ticketHash || '').trim();
+        const appIdNum = Number.parseInt(String(regBody.appId || ''), 10);
+        const gameName = String(regBody.gameName || '').trim();
+        const ttlMinutes = Math.min(Math.max(Number.parseInt(String(regBody.expiresInMinutes || '30'), 10) || 30, 1), 720);
+        const fileName = String(regBody.fileName || `Token [${gameName || 'Game'}].zip`);
+
+        if (!/^[a-f0-9]{16,128}$/i.test(installerKey)) {
+          res.writeHead(400, { 'Content-Type': 'text/plain' });
+          res.end('installerKey must be 16–128 hex characters.');
+          return;
+        }
+        if (!/^[a-f0-9]{16,128}$/i.test(ticketHash)) {
+          res.writeHead(400, { 'Content-Type': 'text/plain' });
+          res.end('ticketHash must be 16–128 hex characters.');
+          return;
+        }
+        if (!Number.isFinite(appIdNum) || appIdNum <= 0) {
+          res.writeHead(400, { 'Content-Type': 'text/plain' });
+          res.end('appId must be a positive integer.');
+          return;
+        }
+
+        try {
+          const secret = (process.env.HMAC_SECRET || '').trim();
+          const expectedHmac = secret
+            ? crypto.createHmac('sha256', secret).update(`${installerKey}|${appIdNum}|${ticketHash}`).digest('hex')
+            : '';
+
+          const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000);
+          const prisma = await getPrisma();
+          await prisma.tokenDownload.create({
+            data: {
+              // download URL token is unused for this path (no /download/<x>
+              // route — staff hosts the zip themselves), but the column is
+              // the PK so we generate something unique.
+              token: crypto.randomBytes(24).toString('hex'),
+              installerKey,
+              ticketHash,
+              expectedHmac: expectedHmac || null,
+              appId: appIdNum,
+              filePath: '',           // intentionally empty — no server-hosted file
+              fileName,
+              fileSize: 0,
+              expiresAt,
+              ticketId: null,
+            },
+          });
+
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            ok: true,
+            expectedHmac,
+            expiresAt: expiresAt.toISOString(),
+            expiresInMinutes: ttlMinutes,
+          }));
+        } catch (e: any) {
+          console.error('[Admin] /admin/register-key error', e);
+          // Unique constraint on installerKey → caller already registered this sig
+          if (e?.code === 'P2002') {
+            res.writeHead(409, { 'Content-Type': 'text/plain' });
+            res.end('installerKey already registered. Generate a new one and retry.');
+            return;
+          }
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'internal_error', detail: String(e).slice(0, 400) }));
+        }
+        return;
+      }
+
       // ── Staff API: generate a token + return its download link ──
       // POST /admin/generate-token
       //   Authorization: Bearer <STAFF_API_TOKEN>
