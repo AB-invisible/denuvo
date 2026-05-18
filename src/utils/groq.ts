@@ -44,20 +44,27 @@ A compliant screenshot MUST contain the following three windows simultaneously:
    "${gameName}". Accept close matches, regional titles (e.g. Biohazard
    for Resident Evil), abbreviations, and project codenames.
 
-2. WINDOWS UPDATE BLOCKER (WUB): Must show Windows Updates are
-   currently BLOCKED. The DEFINITIVE indicator is the large status
-   shield / icon in the bottom-right of the WUB window:
-     ✅ COMPLIANT → shield is GREEN with a checkmark (or a green tick
-        icon), regardless of which radio button is selected or what
-        text labels appear. Green = blocker is active = updates blocked.
-     ❌ NON-COMPLIANT → shield is RED with an X (or a red cross icon).
-        Red = blocker disabled = updates can run.
+2. WINDOWS UPDATE BLOCKER (WUB): Must show Windows Update SERVICE is
+   currently DISABLED / STOPPED. The DEFINITIVE indicator is the large
+   status shield / icon under "Stato Servizi" / "Service Status" in
+   the bottom-right of the WUB window. The shield reflects the
+   CURRENT runtime state of the Windows Update service:
+     ✅ COMPLIANT → shield is RED (or red with an X / red cross).
+        Red = Windows Update service has been STOPPED by WUB = updates
+        cannot run = exactly what we want.
+     ❌ NON-COMPLIANT → shield is GREEN (or green with a checkmark).
+        Green = Windows Update service is RUNNING = the user hasn't
+        actually clicked "Apply" with the Disable option, OR they
+        re-enabled it = updates can flow = NOT compliant.
 
-   DO NOT rely solely on radio button labels — the app exists in many
-   localizations (English, Italian "Abilita/Disabilita", Spanish,
-   Portuguese, etc.) and the button names can mislead. Trust the
-   shield COLOR. A green shield with red selection ring is still
-   compliant (the protection is active).
+   DO NOT rely on radio button labels — the app is localized
+   (English, Italian "Abilita/Disabilita", Spanish, Portuguese, etc.)
+   AND the radio buttons show what the user INTENDS to do, not what's
+   currently active. Only the shield color tells you the live state.
+
+   Common confusion: a user might select the "Disable Service" radio
+   button but NOT click "Apply" — radio shows correct intent, but
+   shield is still green (service still running) → NOT compliant.
 
 3. PROPERTIES WINDOW: A folder or EXE properties window related to the
    game (file size, attributes, type, etc.).
