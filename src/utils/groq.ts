@@ -39,18 +39,37 @@ Target Game: "${gameName}"
 
 REQUIREMENTS:
 A compliant screenshot MUST contain the following three windows simultaneously:
-1. FILE EXPLORER: Must show a directory path or folder name matching "${gameName}". Accept close matches and abbreviations.
-2. WINDOWS UPDATE BLOCKER (WUB): Must show "Disable Updates" as the active state (Green shield, checkmark, or selected radio button).
-3. PROPERTIES WINDOW: A folder or EXE properties window related to the game.
+
+1. FILE EXPLORER: Must show a directory path or folder name matching
+   "${gameName}". Accept close matches, regional titles (e.g. Biohazard
+   for Resident Evil), abbreviations, and project codenames.
+
+2. WINDOWS UPDATE BLOCKER (WUB): Must show Windows Updates are
+   currently BLOCKED. The DEFINITIVE indicator is the large status
+   shield / icon in the bottom-right of the WUB window:
+     ✅ COMPLIANT → shield is GREEN with a checkmark (or a green tick
+        icon), regardless of which radio button is selected or what
+        text labels appear. Green = blocker is active = updates blocked.
+     ❌ NON-COMPLIANT → shield is RED with an X (or a red cross icon).
+        Red = blocker disabled = updates can run.
+
+   DO NOT rely solely on radio button labels — the app exists in many
+   localizations (English, Italian "Abilita/Disabilita", Spanish,
+   Portuguese, etc.) and the button names can mislead. Trust the
+   shield COLOR. A green shield with red selection ring is still
+   compliant (the protection is active).
+
+3. PROPERTIES WINDOW: A folder or EXE properties window related to the
+   game (file size, attributes, type, etc.).
 
 INSTRUCTIONS:
 - Analyze the image carefully for these three elements.
-- Verify that Windows updates are actually disabled in the WUB window.
-- Check that the file path is clearly visible and belongs to "${gameName}".
-- Be intelligent about regional titles (e.g. Biohazard for Resident Evil).
+- For WUB, examine the icon color, not the text labels.
+- For File Explorer, accept partial matches and codenames.
+- All three windows must be VISIBLE in the same screenshot.
 
 OUTPUT FORMAT:
-REASONING: [Explain your findings for each requirement]
+REASONING: [Explain your findings for each requirement; for WUB, name the shield color you see]
 ANSWER: [YES or NO]`,
             },
             {
