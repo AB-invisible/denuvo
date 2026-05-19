@@ -13,9 +13,11 @@ Compile to a single Windows .exe with PyInstaller:
 
 # Bumped to force a CI rebuild after the template-upload code landed.
 # (The previous _Core/installer.exe was built from the pre-webhook commit.)
-# Rev 3: replaced ping-based self-delete sleep with hidden PowerShell so
-# no cmd window flashes at the end of the install.
-__build_revision__ = 3
+# Rev 3: tried hidden PowerShell for self-delete — turned out unreliable
+#        (pwsh cold-start races PyInstaller teardown; AV flags it).
+# Rev 4: back to cmd.exe + .cmd self-delete, but hidden via STARTUPINFO
+#        SW_HIDE so ping doesn't flash a console window.
+__build_revision__ = 4
 
 import ctypes
 import io
@@ -1683,83 +1685,86 @@ def _schedule_self_delete(here: Path, self_path: Path) -> None:
     Schedule the installer .exe and its extracted folder to delete a few
     seconds after the installer process exits.
 
-    Approach: launch a single hidden PowerShell process that sleeps,
-    then deletes both targets. No .bat file, no ping.exe, no cmd.exe —
-    so no window can flash.
+    Approach: write a stand-alone .cmd to %TEMP% and launch it via
+    cmd.exe, hidden via STARTUPINFO.wShowWindow = SW_HIDE. The .cmd
+    waits ~6s (ping-based sleep, redirected to nul), then deletes the
+    .exe + folder + itself.
 
-    The previous .bat-based version used `ping -n 7 127.0.0.1 >nul` as
-    its sleep, which briefly flashed a cmd window on some systems. When
-    cmd.exe is launched with DETACHED_PROCESS it has no console, so
-    when it spawns ping.exe (a console-subsystem app) Windows allocates
-    a NEW console for ping — and CREATE_NO_WINDOW on the parent does
-    not propagate. PowerShell's `-WindowStyle Hidden` + `Start-Sleep`
-    (which is an internal cmdlet, not a child process) avoids that
-    entirely.
+    Why STARTUPINFO + SW_HIDE instead of DETACHED_PROCESS /
+    CREATE_NO_WINDOW:
+      - DETACHED_PROCESS and CREATE_NO_WINDOW both mean cmd.exe has
+        NO console at all. When cmd then spawns ping.exe (a console
+        subsystem app), Windows is forced to allocate a fresh console
+        for it — which is the brief flash users were seeing.
+      - STARTUPINFO with STARTF_USESHOWWINDOW + SW_HIDE tells Windows
+        to create cmd's console hidden. ping.exe inherits the hidden
+        console instead of allocating its own. No flash.
 
-    Flags:
-      DETACHED_PROCESS           — no parent console inherited
+      We also tried a hidden PowerShell as a no-subprocess alternative,
+      but pwsh's 1-2s cold start races PyInstaller teardown and AV
+      products flag `powershell -WindowStyle Hidden -Command Remove-Item`
+      as suspicious. cmd.exe + .cmd + STARTUPINFO is fast and benign.
+
+    Creation flags:
       CREATE_NEW_PROCESS_GROUP   — Ctrl-C in parent can't kill it
       CREATE_BREAKAWAY_FROM_JOB  — escape PyInstaller's Job Object
                                    so we outlive the installer .exe
-      CREATE_NO_WINDOW           — belt-and-braces with -WindowStyle
     """
-    # Escape single quotes for PowerShell single-quoted string literals.
-    def ps_lit(p) -> str:
-        return "'" + str(p).replace("'", "''") + "'"
-
-    # Wait ~6s (long enough for the installer to fully exit and Windows
-    # to release the .exe handle), then nuke the .exe and the extracted
-    # folder. -Force handles read-only files; -ErrorAction
-    # SilentlyContinue swallows any leftover race condition.
-    script = (
-        "Start-Sleep -Seconds 6; "
-        f"Remove-Item -LiteralPath {ps_lit(self_path)} -Force -ErrorAction SilentlyContinue; "
-        f"Remove-Item -LiteralPath {ps_lit(here)} -Recurse -Force -ErrorAction SilentlyContinue"
-    )
-
-    DETACHED_PROCESS = 0x00000008
-    CREATE_NEW_PROCESS_GROUP = 0x00000200
-    CREATE_BREAKAWAY_FROM_JOB = 0x01000000
-    CREATE_NO_WINDOW = 0x08000000
-    flags = (
-        DETACHED_PROCESS
-        | CREATE_NEW_PROCESS_GROUP
-        | CREATE_BREAKAWAY_FROM_JOB
-        | CREATE_NO_WINDOW
-    )
-
-    cmd = [
-        "powershell.exe",
-        "-NoProfile",
-        "-NonInteractive",
-        "-WindowStyle", "Hidden",
-        "-Command", script,
-    ]
-
     try:
-        subprocess.Popen(
-            cmd,
-            creationflags=flags,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            close_fds=True,
+        import tempfile
+        # .cmd in %TEMP% outlives the installer's own folder and can't
+        # be locked by anything we control. %~f0 = the script itself,
+        # so it can self-delete on its last line.
+        fd, bat_path_str = tempfile.mkstemp(suffix=".cmd", prefix="gamegen-cleanup-")
+        os.close(fd)
+        bat_path = Path(bat_path_str)
+        bat_content = (
+            "@echo off\r\n"
+            "ping -n 7 127.0.0.1 >nul\r\n"
+            f'del /F /Q "{self_path}" >nul 2>&1\r\n'
+            f'rmdir /S /Q "{here}" >nul 2>&1\r\n'
+            '(goto) 2>nul & del "%~f0"\r\n'
         )
-    except OSError:
-        # If CREATE_BREAKAWAY_FROM_JOB itself fails (some restricted
-        # environments don't allow it), retry without that flag. Better
-        # than nothing — at worst the cleanup just doesn't run.
+        bat_path.write_text(bat_content, encoding="ascii", errors="ignore")
+
+        CREATE_NEW_PROCESS_GROUP = 0x00000200
+        CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+        flags = CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB
+
+        # STARTUPINFO with SW_HIDE: cmd.exe gets a console window, but
+        # it's hidden from the moment of creation. Children like ping
+        # inherit the same hidden console. No window can be seen.
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0  # SW_HIDE
+
         try:
             subprocess.Popen(
-                cmd,
-                creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
+                ["cmd.exe", "/C", str(bat_path)],
+                creationflags=flags,
+                startupinfo=startupinfo,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 close_fds=True,
+                cwd=str(bat_path.parent),
             )
         except OSError:
-            pass
+            # CREATE_BREAKAWAY_FROM_JOB can fail in restricted envs
+            # (rare). Retry without it — at worst the cleanup just
+            # doesn't run, which is better than crashing the installer.
+            subprocess.Popen(
+                ["cmd.exe", "/C", str(bat_path)],
+                creationflags=CREATE_NEW_PROCESS_GROUP,
+                startupinfo=startupinfo,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+                cwd=str(bat_path.parent),
+            )
+    except OSError:
+        pass
 
 
 def self_destruct(here: Path, self_path: Path) -> None:
