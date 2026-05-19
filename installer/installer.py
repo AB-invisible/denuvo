@@ -17,7 +17,10 @@ Compile to a single Windows .exe with PyInstaller:
 #        (pwsh cold-start races PyInstaller teardown; AV flags it).
 # Rev 4: back to cmd.exe + .cmd self-delete, but hidden via STARTUPINFO
 #        SW_HIDE so ping doesn't flash a console window.
-__build_revision__ = 4
+# Rev 5: revert prior GameGen activation before each install (via a
+#        manifest left in the game folder). Stops stale config from a
+#        previous broken install from layering under the new one.
+__build_revision__ = 5
 
 import ctypes
 import io
@@ -867,6 +870,131 @@ def _restore_from_backups(game_dir: Path) -> int:
         except OSError:
             pass
     return restored
+
+
+# ─── Pre-install: revert any prior GameGen activation ────────
+# Each successful install drops _gamegen_install.json in the game's
+# root folder. It lists every file/dir we placed and every backup we
+# made. On a re-install we read it back, undo everything, then start
+# fresh — so the new install never layers on top of stale config from
+# a broken previous attempt.
+_INSTALL_MANIFEST_NAME = "_gamegen_install.json"
+
+
+def _revert_previous_install(game_dir: Path) -> int:
+    """
+    Look for _gamegen_install.json in game_dir. If present, delete every
+    file we placed, rmtree every directory we placed (steam_settings/),
+    restore every .original.bak, then delete the manifest itself.
+
+    Falls back to a plain _restore_from_backups() sweep when there's no
+    manifest, so pre-manifest installs still self-heal on next run.
+
+    Returns count of artifacts removed/restored. Best-effort — never
+    raises; a partial cleanup beats no cleanup.
+    """
+    manifest_path = game_dir / _INSTALL_MANIFEST_NAME
+    if not manifest_path.is_file():
+        # Old install with no manifest — at minimum restore any orphan
+        # .bak files so the new install doesn't re-overlay them.
+        return _restore_from_backups(game_dir)
+
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        data = {}
+
+    removed = 0
+
+    # 1. Delete every file we placed (DLLs, loader exes, .ini configs,
+    #    marker files, etc.). Skip anything that's now a directory
+    #    (defensive — a manifest shouldn't list dirs in `files`).
+    for rel in data.get("files", []):
+        cand = (game_dir / rel)
+        try:
+            if cand.is_file():
+                _clear_readonly(cand)
+                cand.unlink()
+                removed += 1
+        except OSError:
+            pass
+
+    # 2. rmtree every directory we placed (steam_settings/ in V1, plus
+    #    the per-DLL steam_settings/ that GBE drops next to api DLLs).
+    for rel in data.get("dirs", []):
+        cand = game_dir / rel
+        if cand.is_dir():
+            try:
+                shutil.rmtree(cand, ignore_errors=True)
+                removed += 1
+            except OSError:
+                pass
+
+    # 3. Restore originals from .bak. Uses rglob so it catches any .bak
+    #    not explicitly listed in the manifest (forward-compatible with
+    #    older manifest schemas).
+    removed += _restore_from_backups(game_dir)
+
+    # 4. Drop the manifest so the new install gets a clean slate.
+    try:
+        manifest_path.unlink()
+    except OSError:
+        pass
+
+    return removed
+
+
+def _write_install_manifest(
+    game_dir: Path,
+    app_id: str,
+    mode: str,
+    stats: dict,
+    extras: list[Path] | None = None,
+) -> None:
+    """
+    Record everything this install placed in game_dir so the NEXT
+    install can revert it cleanly. Writes _gamegen_install.json at
+    the game-folder root. Best-effort — failure here doesn't break
+    the current install, only cleanup-on-reinstall.
+
+    `extras` is for files that exist on disk but aren't in stats
+    (e.g., the renamed V1 loader exe — renamed AFTER deploy returned).
+    """
+    try:
+        files: list[str] = []
+        # stats['touched'] is a list of Path objects we wrote during
+        # the deploy. Includes DLLs, .ini, steam_appid.txt, etc.
+        for p in list(stats.get("touched", []) or []) + list(extras or []):
+            try:
+                rel = Path(p).resolve().relative_to(game_dir.resolve())
+                files.append(rel.as_posix())
+            except (ValueError, OSError):
+                continue
+
+        # Discover steam_settings/ dirs we placed. Recorded separately
+        # because the deploy stats only track files, not the parent
+        # directory.
+        dirs: list[str] = []
+        for ss in game_dir.rglob("steam_settings"):
+            if ss.is_dir():
+                try:
+                    dirs.append(ss.resolve().relative_to(game_dir.resolve()).as_posix())
+                except (ValueError, OSError):
+                    pass
+
+        manifest = {
+            "schema": 1,
+            "appId": app_id,
+            "mode": mode,
+            "installedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "files": sorted(set(files)),
+            "dirs": sorted(set(dirs)),
+        }
+        (game_dir / _INSTALL_MANIFEST_NAME).write_text(
+            json.dumps(manifest, indent=2), encoding="utf-8"
+        )
+    except (OSError, ValueError):
+        pass  # non-fatal
 
 
 def _rollback_deploy(stats: dict, game_dir: Path) -> None:
@@ -1875,6 +2003,14 @@ def main() -> None:
         relaunch_elevated()
         return  # control never reaches here
 
+    # 3b. Revert any prior GameGen activation. If the user already ran
+    #     an installer here (e.g., the previous activation broke and
+    #     they're re-activating), undo it before deploying — otherwise
+    #     stale steam_settings / loader exes / mode-specific configs
+    #     from the old install fight the new one and the game stays
+    #     broken. No-op when there's no manifest + no .bak files.
+    _revert_previous_install(game_dir)
+
     # 4. Detect payload layout. Three formats supported, in priority order:
     #      (a) Thin zip with payload-manifest.json — installer downloads
     #          the primary mode's files from the bot's HTTP endpoint.
@@ -2020,6 +2156,7 @@ def main() -> None:
     #    backup paths) — the user just wants to know it worked and what
     #    to click next. Everything is logged to the daemon-thread template
     #    upload anyway, so staff still has visibility on the bot side.
+    renamed: Path | None = None  # widened so the manifest write below sees it
     if mode == "coldclientloader":
         # V1 polish: rename "start-<Game>.exe" → "<Game>.exe" so it looks
         # like a native game binary, then drop a desktop shortcut that uses
@@ -2052,6 +2189,17 @@ def main() -> None:
         play_headline = f"Run \"{main_exe}\" from the game folder.\n(Not from Steam.)"
     else:  # gbe
         play_headline = "Launch the game from Steam\nlike you normally would."
+
+    # 7b. Drop the install manifest. Must happen AFTER the V1 rename so
+    #     the renamed loader exe is included in `files` — otherwise the
+    #     next re-install would leave a stale "<Game>.exe" behind.
+    _write_install_manifest(
+        game_dir,
+        app_id,
+        mode,
+        stats,
+        extras=[renamed] if renamed else None,
+    )
 
     # Big, prominent HOW TO PLAY block. Banner is repeated and the
     # instruction is centered and surrounded by whitespace so the user
