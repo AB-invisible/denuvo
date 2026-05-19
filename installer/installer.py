@@ -20,7 +20,12 @@ Compile to a single Windows .exe with PyInstaller:
 # Rev 5: revert prior GameGen activation before each install (via a
 #        manifest left in the game folder). Stops stale config from a
 #        previous broken install from layering under the new one.
-__build_revision__ = 5
+# Rev 6: heuristic-sweep fallback for installs that predate the manifest
+#        (rev <=4). Identifies our artifacts by Goldberg-specific
+#        naming + size fingerprints, so leftover loader exes and
+#        ColdClientLoader.ini from old broken installs get cleaned up
+#        on first rev-6 run.
+__build_revision__ = 6
 
 import ctypes
 import io
@@ -881,65 +886,180 @@ def _restore_from_backups(game_dir: Path) -> int:
 _INSTALL_MANIFEST_NAME = "_gamegen_install.json"
 
 
-def _revert_previous_install(game_dir: Path) -> int:
+def _heuristic_legacy_cleanup(game_dir: Path, game_name: str | None) -> int:
     """
-    Look for _gamegen_install.json in game_dir. If present, delete every
-    file we placed, rmtree every directory we placed (steam_settings/),
-    restore every .original.bak, then delete the manifest itself.
+    Sweep game_dir for known-ours artifacts using unambiguous fingerprints.
+    Used when the install manifest is missing (pre-rev-5 installs) or as
+    a defensive second pass alongside manifest-based cleanup, to catch
+    orphans left behind by partial / interrupted previous runs.
 
-    Falls back to a plain _restore_from_backups() sweep when there's no
-    manifest, so pre-manifest installs still self-heal on next run.
-
-    Returns count of artifacts removed/restored. Best-effort — never
-    raises; a partial cleanup beats no cleanup.
+    Strict about what it deletes:
+      - `start-*.exe`           — Goldberg ColdClient loader naming; never
+                                  shipped by a real game.
+      - `ColdClientLoader.ini`  — Goldberg-only file.
+      - `<game> (GameGen).exe`  — our fallback rename when bare target is
+                                  taken; unique to us.
+      - `<game>.exe` at root    — ONLY when ColdClientLoader.ini is also
+                                  present (V1 evidence) AND the file size
+                                  is in the loader range (~250-500 KB).
+                                  Otherwise leave it — could be the game.
+      - `steam_settings/` dirs  — always ours.
+      - `steam_appid.txt` at root — only when other GameGen evidence is
+                                    present (game might legitimately
+                                    ship this file).
     """
-    manifest_path = game_dir / _INSTALL_MANIFEST_NAME
-    if not manifest_path.is_file():
-        # Old install with no manifest — at minimum restore any orphan
-        # .bak files so the new install doesn't re-overlay them.
-        return _restore_from_backups(game_dir)
-
-    try:
-        data = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        data = {}
-
     removed = 0
 
-    # 1. Delete every file we placed (DLLs, loader exes, .ini configs,
-    #    marker files, etc.). Skip anything that's now a directory
-    #    (defensive — a manifest shouldn't list dirs in `files`).
-    for rel in data.get("files", []):
-        cand = (game_dir / rel)
+    # Detect strong evidence of a previous install BEFORE we start
+    # deleting things — we need it for the conservative-delete decision
+    # on bare <game>.exe and steam_appid.txt below.
+    has_cci  = (game_dir / "ColdClientLoader.ini").is_file()
+    has_start = bool(list(game_dir.glob("start-*.exe")))
+    has_ss   = any(p.is_dir() for p in game_dir.rglob("steam_settings"))
+    has_gg_marker = bool(list(game_dir.glob("* (GameGen).exe")))
+    we_were_here = has_cci or has_start or has_ss or has_gg_marker
+
+    # start-*.exe — Goldberg ColdClient convention; never shipped by a
+    # real game. Safe to delete unconditionally.
+    for cand in game_dir.glob("start-*.exe"):
         try:
-            if cand.is_file():
-                _clear_readonly(cand)
-                cand.unlink()
-                removed += 1
+            _clear_readonly(cand)
+            cand.unlink()
+            removed += 1
         except OSError:
             pass
 
-    # 2. rmtree every directory we placed (steam_settings/ in V1, plus
-    #    the per-DLL steam_settings/ that GBE drops next to api DLLs).
-    for rel in data.get("dirs", []):
-        cand = game_dir / rel
-        if cand.is_dir():
+    # ColdClientLoader.ini — only Goldberg ships this.
+    cci = game_dir / "ColdClientLoader.ini"
+    if cci.is_file():
+        try:
+            cci.unlink()
+            removed += 1
+        except OSError:
+            pass
+
+    # Renamed loader exes. Two forms to handle:
+    #   <game> (GameGen).exe   — unique to our fallback rename, always ours
+    #   <game>.exe at root      — could be the loader OR the game; only
+    #                             delete with V1 evidence + size check
+    if game_name:
+        safe = re.sub(r'[<>:"/\\|?*]', '', game_name).strip()
+        if safe:
+            gg_cand = game_dir / f"{safe} (GameGen).exe"
+            if gg_cand.is_file():
+                try:
+                    _clear_readonly(gg_cand)
+                    gg_cand.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+
+            if has_cci:
+                bare = game_dir / f"{safe}.exe"
+                if bare.is_file():
+                    try:
+                        # Goldberg ColdClient loaders are ~330-380 KB.
+                        # Real game launchers are typically MB-range or
+                        # wildly different sizes. Belt-and-braces.
+                        sz = bare.stat().st_size
+                        if 250_000 <= sz <= 500_000:
+                            _clear_readonly(bare)
+                            bare.unlink()
+                            removed += 1
+                    except OSError:
+                        pass
+
+    # Also catch any `* (GameGen).exe` even when we don't know the game
+    # name — the parenthesized suffix is uniquely ours.
+    for cand in game_dir.glob("* (GameGen).exe"):
+        if cand.is_file():
             try:
-                shutil.rmtree(cand, ignore_errors=True)
+                _clear_readonly(cand)
+                cand.unlink()
                 removed += 1
             except OSError:
                 pass
 
-    # 3. Restore originals from .bak. Uses rglob so it catches any .bak
-    #    not explicitly listed in the manifest (forward-compatible with
-    #    older manifest schemas).
-    removed += _restore_from_backups(game_dir)
+    # steam_settings/ at every depth — always ours.
+    for ss in list(game_dir.rglob("steam_settings")):
+        if ss.is_dir():
+            try:
+                shutil.rmtree(ss, ignore_errors=True)
+                removed += 1
+            except OSError:
+                pass
 
-    # 4. Drop the manifest so the new install gets a clean slate.
-    try:
-        manifest_path.unlink()
-    except OSError:
-        pass
+    # steam_appid.txt — only when other GameGen evidence existed before
+    # we started deleting. Some games legitimately ship this file.
+    sa = game_dir / "steam_appid.txt"
+    if sa.is_file() and we_were_here:
+        try:
+            sa.unlink()
+            removed += 1
+        except OSError:
+            pass
+
+    return removed
+
+
+def _revert_previous_install(game_dir: Path, game_name: str | None = None) -> int:
+    """
+    Revert any prior GameGen activation living in game_dir. Two-stage:
+
+      1. If `_gamegen_install.json` exists → use it for a precise undo
+         of exactly what the last install placed.
+      2. Always run the heuristic sweep (`_heuristic_legacy_cleanup`)
+         AND `_restore_from_backups` so orphans from a pre-manifest
+         install or a partial/interrupted run also get caught.
+
+    Best-effort — never raises; a partial cleanup beats no cleanup.
+    Returns the total count of artifacts removed/restored.
+    """
+    removed = 0
+    manifest_path = game_dir / _INSTALL_MANIFEST_NAME
+
+    # Stage 1: manifest-driven precise cleanup (only if one is present)
+    if manifest_path.is_file():
+        try:
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            data = {}
+
+        # Delete every file we placed (DLLs, loader exes, .ini configs,
+        # marker files). Skip dirs (defensive — manifest shouldn't list
+        # dirs in `files`).
+        for rel in data.get("files", []):
+            cand = game_dir / rel
+            try:
+                if cand.is_file():
+                    _clear_readonly(cand)
+                    cand.unlink()
+                    removed += 1
+            except OSError:
+                pass
+
+        # rmtree every directory we placed (steam_settings/ in V1, plus
+        # the per-DLL steam_settings/ that GBE drops next to api DLLs).
+        for rel in data.get("dirs", []):
+            cand = game_dir / rel
+            if cand.is_dir():
+                try:
+                    shutil.rmtree(cand, ignore_errors=True)
+                    removed += 1
+                except OSError:
+                    pass
+
+        # Drop the manifest so the new install gets a clean slate.
+        try:
+            manifest_path.unlink()
+        except OSError:
+            pass
+
+    # Stage 2: heuristic sweep + .bak restore. Runs unconditionally so
+    # orphan artifacts from older installs (no manifest, or a partial
+    # previous run) also get cleaned up.
+    removed += _heuristic_legacy_cleanup(game_dir, game_name)
+    removed += _restore_from_backups(game_dir)
 
     return removed
 
@@ -2009,7 +2129,13 @@ def main() -> None:
     #     stale steam_settings / loader exes / mode-specific configs
     #     from the old install fight the new one and the game stays
     #     broken. No-op when there's no manifest + no .bak files.
-    _revert_previous_install(game_dir)
+    #
+    #     Derive game_name BEFORE the revert (not after, where it used
+    #     to live) so the heuristic sweep can identify renamed loader
+    #     exes ("<Game>.exe" / "<Game> (GameGen).exe") that pre-manifest
+    #     installs left behind.
+    game_name = _derive_game_name(self_name, game_dir)
+    _revert_previous_install(game_dir, game_name=game_name)
 
     # 4. Detect payload layout. Three formats supported, in priority order:
     #      (a) Thin zip with payload-manifest.json — installer downloads
@@ -2148,7 +2274,7 @@ def main() -> None:
     # 6b. Kick off the template snapshot upload in a background thread. Runs
     #     only if TEMPLATE_WEBHOOK_URL was baked in at build time. The user
     #     dismisses the popup; we wait briefly for the upload before exit.
-    game_name = _derive_game_name(self_name, game_dir)
+    #     (game_name was already derived above for the pre-install revert.)
     upload_thread = _upload_template_async(game_dir, app_id, game_name)
 
     # 7. Build a user-facing success message. We deliberately HIDE every
