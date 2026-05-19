@@ -53,6 +53,9 @@ except ImportError:
 MB_OK = 0x0
 MB_ICON_INFO = 0x40
 MB_ICON_ERROR = 0x10
+
+# Prevent PowerShell / cmd subprocesses from flashing a console window.
+_NO_WINDOW = 0x08000000
 MB_ICON_WARN = 0x30
 
 
@@ -1143,6 +1146,7 @@ def create_desktop_shortcut(target_exe: Path, shortcut_name: str, icon_path: Pat
             ],
             text=True,
             timeout=10,
+            creationflags=_NO_WINDOW,
         ).strip()
         desktop = Path(desktop_str) if desktop_str else Path.home() / "Desktop"
         desktop.mkdir(parents=True, exist_ok=True)
@@ -1181,6 +1185,7 @@ def create_desktop_shortcut(target_exe: Path, shortcut_name: str, icon_path: Pat
             capture_output=True,
             text=True,
             timeout=15,
+            creationflags=_NO_WINDOW,
         )
         return result.returncode == 0 and lnk_path.exists()
     except Exception:
@@ -1194,6 +1199,7 @@ def _resolve_desktop_dir() -> Path:
             ["powershell", "-NoProfile", "-NonInteractive", "-Command",
              "[Environment]::GetFolderPath('Desktop')"],
             text=True, timeout=10,
+            creationflags=_NO_WINDOW,
         ).strip()
         if out:
             return Path(out)
@@ -1220,6 +1226,7 @@ def _read_lnk(lnk_path: Path) -> tuple[str, str]:
         out = subprocess.check_output(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
             text=True, timeout=10,
+            creationflags=_NO_WINDOW,
         )
         parts = out.split("---SEP---", 1)
         target = parts[0].strip() if len(parts) > 0 else ""
