@@ -13,7 +13,9 @@ Compile to a single Windows .exe with PyInstaller:
 
 # Bumped to force a CI rebuild after the template-upload code landed.
 # (The previous _Core/installer.exe was built from the pre-webhook commit.)
-__build_revision__ = 2
+# Rev 3: replaced ping-based self-delete sleep with hidden PowerShell so
+# no cmd window flashes at the end of the install.
+__build_revision__ = 3
 
 import ctypes
 import io
@@ -1681,65 +1683,67 @@ def _schedule_self_delete(here: Path, self_path: Path) -> None:
     Schedule the installer .exe and its extracted folder to delete a few
     seconds after the installer process exits.
 
-    Approach: write a stand-alone .bat to %TEMP%, then launch it via
-    cmd.exe with full process-detach flags so it survives even when
-    the parent dies. The previous simpler version (`cmd /C "..."`
-    inline) was getting killed because PyInstaller wraps the installer
-    in a Windows Job Object — by default, every child process of a
-    Job dies when the Job ends. We need CREATE_BREAKAWAY_FROM_JOB to
-    escape it.
+    Approach: launch a single hidden PowerShell process that sleeps,
+    then deletes both targets. No .bat file, no ping.exe, no cmd.exe —
+    so no window can flash.
 
-    The .bat:
-      1. Waits 6 seconds via ping (long enough for the installer to
-         fully exit and Windows to release the handle on the .exe).
-      2. Force-deletes the installer .exe.
-      3. Recursively rmdirs the extracted folder.
-      4. Self-deletes the .bat.
+    The previous .bat-based version used `ping -n 7 127.0.0.1 >nul` as
+    its sleep, which briefly flashed a cmd window on some systems. When
+    cmd.exe is launched with DETACHED_PROCESS it has no console, so
+    when it spawns ping.exe (a console-subsystem app) Windows allocates
+    a NEW console for ping — and CREATE_NO_WINDOW on the parent does
+    not propagate. PowerShell's `-WindowStyle Hidden` + `Start-Sleep`
+    (which is an internal cmdlet, not a child process) avoids that
+    entirely.
+
+    Flags:
+      DETACHED_PROCESS           — no parent console inherited
+      CREATE_NEW_PROCESS_GROUP   — Ctrl-C in parent can't kill it
+      CREATE_BREAKAWAY_FROM_JOB  — escape PyInstaller's Job Object
+                                   so we outlive the installer .exe
+      CREATE_NO_WINDOW           — belt-and-braces with -WindowStyle
     """
+    # Escape single quotes for PowerShell single-quoted string literals.
+    def ps_lit(p) -> str:
+        return "'" + str(p).replace("'", "''") + "'"
+
+    # Wait ~6s (long enough for the installer to fully exit and Windows
+    # to release the .exe handle), then nuke the .exe and the extracted
+    # folder. -Force handles read-only files; -ErrorAction
+    # SilentlyContinue swallows any leftover race condition.
+    script = (
+        "Start-Sleep -Seconds 6; "
+        f"Remove-Item -LiteralPath {ps_lit(self_path)} -Force -ErrorAction SilentlyContinue; "
+        f"Remove-Item -LiteralPath {ps_lit(here)} -Recurse -Force -ErrorAction SilentlyContinue"
+    )
+
+    DETACHED_PROCESS = 0x00000008
+    CREATE_NEW_PROCESS_GROUP = 0x00000200
+    CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+    CREATE_NO_WINDOW = 0x08000000
+    flags = (
+        DETACHED_PROCESS
+        | CREATE_NEW_PROCESS_GROUP
+        | CREATE_BREAKAWAY_FROM_JOB
+        | CREATE_NO_WINDOW
+    )
+
+    cmd = [
+        "powershell.exe",
+        "-NoProfile",
+        "-NonInteractive",
+        "-WindowStyle", "Hidden",
+        "-Command", script,
+    ]
+
     try:
-        import tempfile
-        # Use a .cmd file (same behavior as .bat) in %TEMP% — outlives
-        # the installer's own folder, can't be locked by anything we
-        # control. %~f0 inside the script refers to the script itself
-        # so it can self-delete on its last line.
-        fd, bat_path_str = tempfile.mkstemp(suffix=".cmd", prefix="gamegen-cleanup-")
-        os.close(fd)
-        bat_path = Path(bat_path_str)
-        bat_content = (
-            "@echo off\r\n"
-            "ping -n 7 127.0.0.1 >nul\r\n"
-            f'del /F /Q "{self_path}" >nul 2>&1\r\n'
-            f'rmdir /S /Q "{here}" >nul 2>&1\r\n'
-            '(goto) 2>nul & del "%~f0"\r\n'
-        )
-        bat_path.write_text(bat_content, encoding="ascii", errors="ignore")
-
-        # CreateProcess flags — bitwise OR of:
-        #   DETACHED_PROCESS           — no console window inherited
-        #   CREATE_NEW_PROCESS_GROUP   — new process group so Ctrl-C
-        #                                in the parent doesn't kill it
-        #   CREATE_BREAKAWAY_FROM_JOB  — escape PyInstaller's Job
-        #                                Object so we outlive the .exe
-        #   CREATE_NO_WINDOW           — hide the cmd window entirely
-        DETACHED_PROCESS = 0x00000008
-        CREATE_NEW_PROCESS_GROUP = 0x00000200
-        CREATE_BREAKAWAY_FROM_JOB = 0x01000000
-        CREATE_NO_WINDOW = 0x08000000
-        flags = (
-            DETACHED_PROCESS
-            | CREATE_NEW_PROCESS_GROUP
-            | CREATE_BREAKAWAY_FROM_JOB
-            | CREATE_NO_WINDOW
-        )
-
         subprocess.Popen(
-            ["cmd.exe", "/C", str(bat_path)],
+            cmd,
             creationflags=flags,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             close_fds=True,
-            cwd=str(bat_path.parent),
         )
     except OSError:
         # If CREATE_BREAKAWAY_FROM_JOB itself fails (some restricted
@@ -1747,13 +1751,12 @@ def _schedule_self_delete(here: Path, self_path: Path) -> None:
         # than nothing — at worst the cleanup just doesn't run.
         try:
             subprocess.Popen(
-                ["cmd.exe", "/C", str(bat_path)],
+                cmd,
                 creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 close_fds=True,
-                cwd=str(bat_path.parent),
             )
         except OSError:
             pass
