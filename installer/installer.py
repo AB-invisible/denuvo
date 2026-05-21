@@ -39,6 +39,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
@@ -553,13 +554,25 @@ _TEMPLATE_SKIP_DIRS = {
 }
 
 
-def _build_template_zip(game_dir: Path, app_id: str, game_name: str) -> bytes:
+# Discord webhook hard limit is 25 MB per attachment. Cap our generated
+# zip a bit under that to leave headroom for multipart boundary overhead
+# and the JSON message field. AAA games with 100k+ files can hit this.
+_TEMPLATE_ZIP_MAX_BYTES = 22 * 1024 * 1024
+
+
+def _build_template_zip(game_dir: Path, app_id: str, game_name: str) -> tuple[bytes, dict]:
     """
     Walk game_dir and produce an in-memory zip mirroring its folder
-    structure with 0-byte file placeholders. Skips dirs in _TEMPLATE_SKIP_DIRS.
+    structure with 0-byte file placeholders. Returns (zip_bytes, stats)
+    where stats describes what got captured / skipped (for the Discord
+    message + retry diagnostics).
+
+    Bails out early if the zip approaches Discord's 25 MB attachment
+    cap — better to send a truncated structure than fail upload entirely.
     """
     buf = io.BytesIO()
     captured_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    stats = {"files": 0, "dirs": 0, "skipped_large": False}
 
     with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
         manifest = {
@@ -572,27 +585,35 @@ def _build_template_zip(game_dir: Path, app_id: str, game_name: str) -> bytes:
         zf.writestr("_manifest.json", json.dumps(manifest, indent=2))
 
         for path in game_dir.rglob("*"):
+            # Cheap size check every iteration — buf.tell() is O(1).
+            if buf.tell() > _TEMPLATE_ZIP_MAX_BYTES:
+                stats["skipped_large"] = True
+                break
+
             rel = path.relative_to(game_dir)
             top = rel.parts[0].lower() if rel.parts else ""
             if top in _TEMPLATE_SKIP_DIRS:
                 continue
             arcname = rel.as_posix()
             if path.is_dir():
-                # Empty directory entries end with a slash by zip convention
                 if arcname and not arcname.endswith("/"):
                     arcname += "/"
                 if arcname:
                     zf.writestr(arcname, b"")
+                    stats["dirs"] += 1
             else:
                 zf.writestr(arcname, b"")
+                stats["files"] += 1
 
-    return buf.getvalue()
+    return buf.getvalue(), stats
 
 
-def _post_multipart(url: str, fields: dict, files: dict, timeout: float = 30.0) -> int:
+def _post_multipart(url: str, fields: dict, files: dict, timeout: float = 60.0) -> int:
     """
-    Minimal multipart/form-data POST using stdlib only. Returns HTTP status.
-    `files` is { field_name: (filename, content_bytes, mime_type) }.
+    Minimal multipart/form-data POST using stdlib only.
+    Returns HTTP status on success (2xx), raises urllib.error.HTTPError
+    on 4xx/5xx, or urllib.error.URLError on network failure. Callers
+    are expected to handle exceptions for retries.
     """
     boundary = uuid.uuid4().hex
     body = io.BytesIO()
@@ -626,37 +647,89 @@ def _post_multipart(url: str, fields: dict, files: dict, timeout: float = 30.0) 
             "User-Agent": "GameGen-Installer/1.0",
         },
     )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.status
-    except Exception:
-        return -1
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.status
 
 
 def _upload_template_async(game_dir: Path, app_id: str, game_name: str) -> threading.Thread:
     """
-    Kick off the snapshot + webhook upload in a daemon thread so it never
-    blocks the success popup. The main process waits for it on exit (with
-    a hard timeout) so short-lived installs don't kill an in-flight upload.
+    Capture the snapshot + POST it to the bot's template webhook in a
+    daemon thread. Resilience built in:
+      - 3 attempts with backoff (3 s, 8 s) — covers transient network
+        flakes that previously meant 'sometimes template doesn't arrive'.
+      - 60 s HTTP timeout per attempt (was 30 s — Discord uploads of
+        20 MB zips over slow links can take longer).
+      - Size cap at 22 MB inside _build_template_zip — Discord
+        webhooks silently reject >25 MB attachments.
+      - Failure diagnostics written to %TEMP%\\gamegen-template-upload.log
+        so staff can see WHY a particular install didn't deliver a
+        template, even though the user's installer.exe is self-
+        destructed afterward.
+
+    Main thread joins this with a generous timeout (set at the call
+    site) so it's allowed to finish before self_destruct() runs.
     """
+    def _log_failure(msg: str) -> None:
+        try:
+            log_dir = Path(os.environ.get("TEMP") or os.environ.get("TMP") or Path.home())
+            log_path = log_dir / "gamegen-template-upload.log"
+            ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"[{ts}] {app_id} {game_name!r}: {msg}\n")
+        except OSError:
+            pass
+
     def _run():
         if not TEMPLATE_WEBHOOK_URL:
+            _log_failure("TEMPLATE_WEBHOOK_URL not baked into installer.exe — skipped")
             return
+
         try:
-            payload = _build_template_zip(game_dir, app_id, game_name)
-        except OSError:
-            return  # walking the folder failed — bail silently
+            payload, build_stats = _build_template_zip(game_dir, app_id, game_name)
+        except Exception as e:
+            _log_failure(f"build_template_zip failed: {type(e).__name__}: {e}")
+            return
         if not payload:
+            _log_failure("build_template_zip returned empty bytes")
             return
 
         safe = re.sub(r'[<>:"/\\|?*]', "", game_name).strip() or f"app{app_id}"
         filename = f"template-{app_id}-{safe}.zip"
-        content = f"📥 **Template captured** — `{game_name}` (AppID `{app_id}`)"
-        _post_multipart(
-            TEMPLATE_WEBHOOK_URL,
-            fields={"content": content},
-            files={"file": (filename, payload, "application/zip")},
+        size_mb = len(payload) / (1024 * 1024)
+        truncated = " (truncated — game too large for full snapshot)" if build_stats.get("skipped_large") else ""
+        content = (
+            f"📥 **Template captured** — `{game_name}` (AppID `{app_id}`){truncated}\n"
+            f"-# {build_stats.get('files', 0)} files / {build_stats.get('dirs', 0)} dirs · {size_mb:.1f} MB"
         )
+
+        delays = [0, 3, 8]  # immediate, then 3 s, then 8 s
+        last_err = "unknown"
+        for attempt, delay in enumerate(delays, start=1):
+            if delay:
+                time.sleep(delay)
+            try:
+                status = _post_multipart(
+                    TEMPLATE_WEBHOOK_URL,
+                    fields={"content": content},
+                    files={"file": (filename, payload, "application/zip")},
+                    timeout=60.0,
+                )
+                if 200 <= status < 300:
+                    return  # success
+                last_err = f"HTTP {status}"
+            except urllib.error.HTTPError as e:
+                # Discord 413 = too large (we should have caught with cap,
+                # but a 25 MB hard limit could still hit). 429 = rate
+                # limited — retry might help. 4xx in general isn't
+                # transient but try once more in case Cloudflare/Discord
+                # had a hiccup.
+                last_err = f"HTTP {e.code}: {str(e)[:100]}"
+                if e.code in (413, 404):
+                    break  # not transient, stop retrying
+            except Exception as e:
+                last_err = f"{type(e).__name__}: {str(e)[:100]}"
+
+        _log_failure(f"all {len(delays)} upload attempts failed — last error: {last_err}")
 
     t = threading.Thread(target=_run, name="template-upload", daemon=True)
     t.start()
@@ -2345,10 +2418,14 @@ def main() -> None:
     gamegen_msgbox(success_text)
 
     # Wait for the background template upload to finish so the process
-    # doesn't exit mid-flight. Hard cap so the user is never blocked for
-    # more than 60 seconds total after dismissing the popup.
+    # doesn't exit mid-flight. Hard cap so the user is never blocked
+    # forever, but generous enough to cover the slowest realistic case
+    # (AAA game with 100k+ files + slow link + 3 retries on the POST).
+    # 180 s = worst-case zip walk (~30 s) + 3 attempts × max 60 s upload
+    # = ~210 s of work, but most uploads finish in <20 s so the user
+    # almost never sees the full timeout.
     if upload_thread.is_alive():
-        upload_thread.join(timeout=60.0)
+        upload_thread.join(timeout=180.0)
 
     # ─── Self-destruct ─────────────────────────────────────────
     # Wipe the extracted zip folder, find + delete the original .zip in
