@@ -56,6 +56,31 @@ def log(msg):
     print(msg, flush=True)
 
 
+def _steampass_request(session_callable, *args, **kwargs):
+    """Wrap a steampass HTTP call with a single retry on transient
+    network errors. steampass.gg occasionally takes >15s to respond
+    (especially for product-credentials and email/code), and a bare
+    ReadTimeout would fail the entire token-gen run. Bumping the
+    timeout to 45s + one retry covers >99% of those cases.
+
+    Callers still supply timeout=... via kwargs; if absent, defaults
+    to 45s here.
+    """
+    kwargs.setdefault("timeout", 45)
+    last_exc = None
+    for attempt in (1, 2):
+        try:
+            return session_callable(*args, **kwargs)
+        except (requests.exceptions.ReadTimeout,
+                requests.exceptions.ConnectTimeout,
+                requests.exceptions.ConnectionError) as e:
+            last_exc = e
+            log(f"Steampass: transient network error on attempt {attempt} "
+                f"({type(e).__name__}: {str(e)[:120]}). "
+                f"{'Retrying...' if attempt == 1 else 'Giving up.'}")
+    raise last_exc
+
+
 def build_thin_zip(out, app_id, game_name, generation_mode, token_b64, steam_id, fake_mode, base_url):
     """
     Thin token zip that points the installer at a payload HTTP server for
@@ -541,10 +566,9 @@ class SteampassClient:
             return
 
         log("Steampass: no cached token — falling back to /auth/login (rate-limited!)")
-        resp = self.session.post(f"{STEAMPASS_API}/auth/login", json={
-            "login": self.login,
-            "password": self.password,
-        }, timeout=15)
+        resp = _steampass_request(self.session.post,
+            f"{STEAMPASS_API}/auth/login",
+            json={"login": self.login, "password": self.password})
         # Don't raise_for_status — surface the body so staff sees WHY it
         # failed (422 = email code required, 429 = rate-limited, 403 = IP ban).
         if resp.status_code >= 400:
@@ -566,10 +590,9 @@ class SteampassClient:
 
     def get_steam_credentials(self, product_uuid):
         """Get Steam username + password for a product."""
-        resp = self.session.get(
+        resp = _steampass_request(self.session.get,
             f"{STEAMPASS_API}/profile/product-credentials/{product_uuid}",
             params={"account_platform": 1},
-            timeout=15,
         )
         if not resp.ok:
             # Surface the actual API error message (credits exhausted, etc.)
@@ -587,10 +610,9 @@ class SteampassClient:
 
     def get_guard_code(self, product_uuid):
         """Request a Steam Guard authorization code."""
-        resp = self.session.post(
+        resp = _steampass_request(self.session.post,
             f"{STEAMPASS_API}/email/code/main",
             json={"uuid": product_uuid},
-            timeout=15,
         )
         if not resp.ok:
             # 422 here usually means: credits exhausted, UUID expired,

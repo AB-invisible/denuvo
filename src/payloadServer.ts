@@ -464,10 +464,23 @@ export function startPayloadServer(): void {
               .then(p => p.tokenDownload.update({ where: { token }, data: { claimedAt: new Date() } }))
               .catch(() => {});
           }
+          // Node's http module rejects any non-latin-1 char in header values
+          // ("Invalid character in header content"). If the zip name contains
+          // ™, ®, em-dashes, accents, or a curly quote (any character from a
+          // manually-added game name), passing it raw to Content-Disposition
+          // throws → /download responds "Internal error" instead of streaming
+          // the file. Build BOTH:
+          //   filename="<ascii fallback>"      (legacy clients, plain ASCII)
+          //   filename*=UTF-8''<percent-utf8>  (RFC 5987, real name)
+          // Browsers prefer filename* when present, so the user still sees
+          // the pretty name with the original characters.
+          const rawName = row.fileName || 'token.zip';
+          const asciiName = rawName.replace(/[^\x20-\x7E]/g, '_').replace(/"/g, '');
+          const utf8Name = encodeURIComponent(rawName);
           res.writeHead(200, {
             'Content-Type': 'application/zip',
             'Content-Length': stat.size.toString(),
-            'Content-Disposition': `attachment; filename="${row.fileName.replace(/"/g, '')}"`,
+            'Content-Disposition': `attachment; filename="${asciiName}"; filename*=UTF-8''${utf8Name}`,
             'Cache-Control': 'no-store',
             'X-Content-Type-Options': 'nosniff',
           });
