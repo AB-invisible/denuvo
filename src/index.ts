@@ -131,6 +131,7 @@ const commands = [
       { name: 'On — bot auto-generates after screenshot verifies', value: 'on' },
       { name: 'Off — staff must deliver tokens manually', value: 'off' },
     ))
+    .addStringOption(o => o.setName('game').setDescription('Limit toggle/status to a single game (omit for global)').setRequired(false).setAutocomplete(true))
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
     .setName('game')
@@ -412,7 +413,7 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 async function handleAutocomplete(interaction: any) {
-  if (interaction.commandName === 'stock' || interaction.commandName === 'exclude-auto' || interaction.commandName === 'test' || interaction.commandName === 'tokengen' || interaction.commandName === 'setmode' || interaction.commandName === 'getmode' || interaction.commandName === 'game' || interaction.commandName === 'removegame' || interaction.commandName === 'settokens') {
+  if (interaction.commandName === 'stock' || interaction.commandName === 'exclude-auto' || interaction.commandName === 'test' || interaction.commandName === 'tokengen' || interaction.commandName === 'setmode' || interaction.commandName === 'getmode' || interaction.commandName === 'game' || interaction.commandName === 'removegame' || interaction.commandName === 'settokens' || interaction.commandName === 'autogen') {
     const focusedValue = interaction.options.getFocused();
     const games = await prisma.game.findMany({
       where: { name: { contains: focusedValue, mode: 'insensitive' } },
@@ -902,16 +903,80 @@ async function handleChatCommand(interaction: any) {
     }
   } else if (interaction.commandName === 'autogen') {
     const state = interaction.options.getString('state');
+    const gameName = interaction.options.getString('game');
+
+    // ── Per-game path: scoped to one Game row's autoGenDisabled flag ──
+    if (gameName) {
+      const game = await prisma.game.findUnique({ where: { name: gameName } });
+      if (!game) return interaction.editReply({ content: `❌ **Not Found:** Game **${gameName}** does not exist.` });
+
+      const currentlyDisabled = (game as any).autoGenDisabled === true;
+
+      if (!state) {
+        // Per-game status check
+        await interaction.editReply({
+          content: `🤖 **Auto-Gen for ${gameName}:** ${currentlyDisabled ? '🔴 **PAUSED (this game only)**' : '🟢 **ENABLED**'}\n\n` +
+            `*Use \`/autogen state:off game:${gameName}\` to pause just this game,*\n` +
+            `*or \`/autogen state:on game:${gameName}\` to resume it.*\n\n` +
+            `_Note: the global \`/autogen\` flag still applies — if it's paused globally, this game also won't auto-gen regardless of its per-game setting._`
+        });
+        return;
+      }
+
+      const enable = state === 'on';
+      const shouldDisable = !enable;
+      if (shouldDisable === currentlyDisabled) {
+        await interaction.editReply({
+          content: `ℹ️ Auto-gen for **${gameName}** is already ${enable ? '🟢 enabled' : '🔴 paused'}. No change.`
+        });
+        return;
+      }
+
+      await prisma.game.update({
+        where: { id: game.id },
+        data: { autoGenDisabled: shouldDisable } as any,
+      });
+
+      await interaction.editReply({
+        content: enable
+          ? `🟢 **Auto-Gen Resumed for ${gameName}.** Tickets on this game will auto-generate tokens again after screenshot verification.`
+          : `🔴 **Auto-Gen Paused for ${gameName}.** New tickets on this game will still verify screenshots, but staff must deliver tokens manually (via \`/tokengen\` or by uploading a zip).`
+      });
+
+      if (interaction.guild) {
+        await logAction(
+          interaction.guild,
+          enable ? '🟢 Per-Game Auto-Gen Resumed' : '🔴 Per-Game Auto-Gen Paused',
+          `Staff ${interaction.user} ${enable ? 'enabled' : 'paused'} auto-gen for **${gameName}** (AppID \`${game.appId}\`).`,
+          enable ? 0x57F287 : 0xED4245
+        );
+      }
+      return;
+    }
+
+    // ── Global path: unchanged behavior ──
     const setting = await prisma.metadata.findUnique({ where: { key: 'autoGenEnabled' } });
     const currentlyEnabled = setting?.value !== 'false';
 
     if (!state) {
-      // Status check
+      // Global status check — also surface per-game paused list so admins
+      // can see at a glance which games have been individually disabled.
+      const pausedGames = await prisma.game.findMany({
+        where: { autoGenDisabled: true } as any,
+        select: { name: true } as any,
+        orderBy: { name: 'asc' },
+      });
+      const pausedList = pausedGames.length
+        ? `\n\n**Per-game pauses (${pausedGames.length}):** ${pausedGames.map((g: { name: string }) => `\`${g.name}\``).join(', ')}`
+        : '';
+
       await interaction.editReply({
         content: `🤖 **Auto-Generation Status:** ${currentlyEnabled ? '🟢 **ENABLED**' : '🔴 **PAUSED**'}\n\n` +
           `• **When enabled:** bot auto-generates tokens after AI screenshot verification\n` +
           `• **When paused:** screenshots still get verified, but staff must deliver tokens manually\n\n` +
-          `Use \`/autogen state:off\` to pause, \`/autogen state:on\` to resume.`
+          `Use \`/autogen state:off\` to pause globally, \`/autogen state:on\` to resume.\n` +
+          `Use \`/autogen state:off game:<name>\` to pause one game only.` +
+          pausedList
       });
       return;
     }
@@ -919,7 +984,7 @@ async function handleChatCommand(interaction: any) {
     const enable = state === 'on';
     if (enable === currentlyEnabled) {
       await interaction.editReply({
-        content: `ℹ️ Auto-generation is already ${enable ? '🟢 enabled' : '🔴 paused'}. No change.`
+        content: `ℹ️ Auto-generation is already ${enable ? '🟢 enabled' : '🔴 paused'} globally. No change.`
       });
       return;
     }
@@ -932,15 +997,15 @@ async function handleChatCommand(interaction: any) {
 
     await interaction.editReply({
       content: enable
-        ? `🟢 **Auto-Generation Resumed.** Bot will now auto-generate tokens after screenshot verification.`
-        : `🔴 **Auto-Generation Paused.** New tickets will still verify screenshots, but staff must deliver tokens manually (via \`/tokengen\` or by uploading a zip in the ticket channel).`
+        ? `🟢 **Auto-Generation Resumed (Global).** Bot will now auto-generate tokens after screenshot verification.`
+        : `🔴 **Auto-Generation Paused (Global).** New tickets will still verify screenshots, but staff must deliver tokens manually (via \`/tokengen\` or by uploading a zip in the ticket channel).`
     });
 
     if (interaction.guild) {
       await logAction(
         interaction.guild,
-        enable ? '🟢 Auto-Gen Resumed' : '🔴 Auto-Gen Paused',
-        `Staff ${interaction.user} ${enable ? 'enabled' : 'paused'} automatic token generation.`,
+        enable ? '🟢 Auto-Gen Resumed (Global)' : '🔴 Auto-Gen Paused (Global)',
+        `Staff ${interaction.user} ${enable ? 'enabled' : 'paused'} automatic token generation globally.`,
         enable ? 0x57F287 : 0xED4245
       );
     }
@@ -1405,19 +1470,29 @@ client.on(Events.MessageCreate, async (message) => {
         }
 
         // ─── AUTO-GENERATE TOKEN (skipped if /autogen is paused) ───
+        // Two independent gates:
+        //   - Global: Metadata key "autoGenEnabled". Pauses every game.
+        //   - Per-game: Game.autoGenDisabled. Pauses just this game.
+        // Either being "off" routes the ticket to manual staff delivery.
         const autoGenSetting = await prisma.metadata.findUnique({ where: { key: 'autoGenEnabled' } });
-        const autoGenEnabled = autoGenSetting?.value !== 'false';
+        const globallyEnabled = autoGenSetting?.value !== 'false';
+        const gamePaused = (ticket.game as any).autoGenDisabled === true;
+        const autoGenEnabled = globallyEnabled && !gamePaused;
 
         if (!autoGenEnabled) {
+          const scope = !globallyEnabled ? 'globally' : `for **${ticket.game.name}**`;
           const pausedEmbed = new EmbedBuilder()
             .setTitle('⏸️ Auto-Generation Paused')
-            .setDescription(`Screenshot verified successfully for **${ticket.game.name}**.\n\nAuto-generation is currently paused by staff. A team member will deliver your token manually.`)
+            .setDescription(`Screenshot verified successfully for **${ticket.game.name}**.\n\nAuto-generation is currently paused ${scope}. A team member will deliver your token manually.`)
             .setColor(0xFEE75C)
             .setTimestamp();
           await (message.channel as TextChannel).send({ embeds: [pausedEmbed] });
-          await (message.channel as TextChannel).send({ content: `<@&${CONFIG.STAFF_ROLE_ID}> Auto-gen is paused — manual delivery needed for **${ticket.game.name}** (AppID \`${ticket.game.appId}\`).` });
+          await (message.channel as TextChannel).send({ content: `<@&${CONFIG.STAFF_ROLE_ID}> Auto-gen is paused ${scope} — manual delivery needed for **${ticket.game.name}** (AppID \`${ticket.game.appId}\`).` });
           if (guild) {
-            await logAction(guild, '⏸️ Auto-Gen Skipped (Paused)', `Screenshot verified for **${ticket.game.name}** in <#${message.channelId}>. Auto-gen is paused — staff needs to deliver manually.`, 0xFEE75C);
+            const logTitle = !globallyEnabled
+              ? '⏸️ Auto-Gen Skipped (Global Pause)'
+              : '⏸️ Auto-Gen Skipped (Per-Game Pause)';
+            await logAction(guild, logTitle, `Screenshot verified for **${ticket.game.name}** in <#${message.channelId}>. Auto-gen paused ${scope} — staff needs to deliver manually.`, 0xFEE75C);
           }
           return; // Skip the rest of the auto-gen block
         }

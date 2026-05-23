@@ -17,6 +17,12 @@ model Game {
   donatorOnly     Boolean  @default(false)
   boosterOnly     Boolean  @default(false)
   excludeRegen    Boolean  @default(false)
+  // Per-game pause for auto token generation after AI screenshot verify.
+  // When true, the bot still verifies the user's screenshot but routes the
+  // ticket to staff for manual delivery instead of running headless_token.py.
+  // Independent of the global `autoGenEnabled` metadata flag — either one
+  // being "off" is enough to bypass auto-gen for a ticket on this game.
+  autoGenDisabled Boolean  @default(false)
   steampassUuid   String?  // steampass.gg product UUID for headless token generation
   // Generation mode for token zips. Valid values:
   //   "gbe"               -> flat GBE Normal (steam_api64.dll + steamclient64.dll + steam_settings)
