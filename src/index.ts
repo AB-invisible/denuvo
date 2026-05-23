@@ -55,6 +55,19 @@ const commands = [
     .setDescription('Manage user cooldowns')
     .addSubcommand(sub => sub.setName('remove').setDescription('Remove cooldown from a user').addUserOption(o => o.setName('user').setDescription('The user to remove cooldown from').setRequired(true)))
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+  // Top-level convenience aliases for /game delete and /stock set so admins
+  // don't have to remember the subcommand path.
+  new SlashCommandBuilder()
+    .setName('removegame')
+    .setDescription('Remove a manually-added game from the panel (alias of /game delete)')
+    .addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true))
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+  new SlashCommandBuilder()
+    .setName('settokens')
+    .setDescription('Set how many tokens are left for a game (alias of /stock set)')
+    .addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true))
+    .addIntegerOption(o => o.setName('amount').setDescription('Number of tokens to set').setRequired(true).setMinValue(0))
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
     .setName('mycooldown')
     .setDescription('Check your current security cooldown status'),
@@ -373,7 +386,7 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 async function handleAutocomplete(interaction: any) {
-  if (interaction.commandName === 'stock' || interaction.commandName === 'exclude-auto' || interaction.commandName === 'test' || interaction.commandName === 'tokengen' || interaction.commandName === 'setmode' || interaction.commandName === 'getmode' || interaction.commandName === 'game') {
+  if (interaction.commandName === 'stock' || interaction.commandName === 'exclude-auto' || interaction.commandName === 'test' || interaction.commandName === 'tokengen' || interaction.commandName === 'setmode' || interaction.commandName === 'getmode' || interaction.commandName === 'game' || interaction.commandName === 'removegame' || interaction.commandName === 'settokens') {
     const focusedValue = interaction.options.getFocused();
     const games = await prisma.game.findMany({
       where: { name: { contains: focusedValue, mode: 'insensitive' } },
@@ -471,6 +484,50 @@ async function handleChatCommand(interaction: any) {
       } else {
         await interaction.editReply({ content: '✅ **Dashboard Switch:** Maintenance mode activated.' });
       }
+    }
+  } else if (interaction.commandName === 'settokens') {
+    // Top-level alias for /stock set — same behavior, fewer keystrokes.
+    const gameName = interaction.options.getString('game')!;
+    const amount = interaction.options.getInteger('amount')!;
+    const game = await prisma.game.findUnique({ where: { name: gameName } });
+    if (!game) return interaction.editReply({ content: `❌ **Not Found:** Game **${gameName}** does not exist.` });
+    await updateStock(gameName, 'set', amount);
+    await refreshAllPanels();
+    await interaction.editReply({ content: `✅ **Tokens updated:** **${gameName}** now has \`${amount}\` token(s).` });
+    if (interaction.guild) {
+      await logAction(interaction.guild, '📊 Tokens Set',
+        `Staff ${interaction.user} set token count for **${gameName}** to \`${amount}\` (via \`/settokens\`).`,
+        0x5865F2);
+    }
+  } else if (interaction.commandName === 'removegame') {
+    // Top-level alias for /game delete — same safety rules: only deletes
+    // manually-added games, refuses if active tickets exist.
+    const gameName = interaction.options.getString('game')!;
+    const game = await prisma.game.findUnique({ where: { name: gameName } });
+    if (!game) return interaction.editReply({ content: `❌ **Not Found:** **${gameName}** doesn't exist.` });
+    if (!(game as any).manuallyAdded) {
+      return interaction.editReply({
+        content: `❌ **Cannot Remove:** **${gameName}** comes from \`denuvo.json\` — it's not safe to delete here because the next sync would re-create it.\n` +
+          `*To remove it permanently, edit \`denuvo.json\` and remove its entry. Or use \`/game state game:${gameName} state:off\` to just hide it.*`
+      });
+    }
+    const activeTickets = await prisma.ticket.count({
+      where: { gameId: game.id, status: { in: ['OPEN', 'CLAIMED'] } }
+    });
+    if (activeTickets > 0) {
+      return interaction.editReply({
+        content: `❌ **Cannot Remove:** **${gameName}** has ${activeTickets} active ticket(s). Close them first.`
+      });
+    }
+    await prisma.restock.deleteMany({ where: { gameId: game.id } });
+    await prisma.subscription.deleteMany({ where: { gameId: game.id } });
+    await prisma.game.delete({ where: { id: game.id } });
+    await refreshAllPanels();
+    await interaction.editReply({ content: `🗑️ **Removed:** **${gameName}** has been deleted from the panel.` });
+    if (interaction.guild) {
+      await logAction(interaction.guild, '🗑️ Game Removed',
+        `Staff ${interaction.user} permanently removed manually-added game **${gameName}** (AppID \`${game.appId}\`) via \`/removegame\`.`,
+        0xED4245);
     }
   } else if (interaction.commandName === 'stock') {
     const sub = interaction.options.getSubcommand() as 'add' | 'remove' | 'set' | 'clear';
