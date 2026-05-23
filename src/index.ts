@@ -961,13 +961,15 @@ async function handleChatCommand(interaction: any) {
     if (!state) {
       // Global status check — also surface per-game paused list so admins
       // can see at a glance which games have been individually disabled.
+      // Drop `select:` — the `as any` cast on it confuses TS into typing
+      // the map callback as a discriminated union and rejecting `.name`.
+      // Fetching the full row is harmless; we only read `.name`.
       const pausedGames = await prisma.game.findMany({
         where: { autoGenDisabled: true } as any,
-        select: { name: true } as any,
         orderBy: { name: 'asc' },
       });
       const pausedList = pausedGames.length
-        ? `\n\n**Per-game pauses (${pausedGames.length}):** ${pausedGames.map((g: { name: string }) => `\`${g.name}\``).join(', ')}`
+        ? `\n\n**Per-game pauses (${pausedGames.length}):** ${pausedGames.map((g: any) => `\`${g.name}\``).join(', ')}`
         : '';
 
       await interaction.editReply({
