@@ -290,6 +290,32 @@ async function applyVouchTimeoutStrike(ticketId: number, userId: string, channel
   await refreshAllPanels();
 }
 
+/**
+ * Hard-delete a Game row and everything that FKs into it, in dependency
+ * order. The Ticket → Game FK is RESTRICT, so we must clear ALL tickets
+ * (closed ones included) before the Game row will drop. PendingVerification
+ * FKs to Ticket the same way, so it goes first.
+ *
+ * Caller is responsible for checking that there are no active (OPEN /
+ * CLAIMED) tickets and that the game is safe to remove (e.g. manuallyAdded).
+ */
+async function purgeGameCascade(gameId: number) {
+  // 1. PendingVerification rows for this game's tickets — usually empty for
+  //    closed tickets (verification flow clears it on success/failure) but
+  //    a crashed gen can leave orphans.
+  await prisma.pendingVerification.deleteMany({
+    where: { ticket: { gameId } },
+  });
+  // 2. Tickets (audit history is sacrificed; the game row is going away).
+  await prisma.ticket.deleteMany({ where: { gameId } });
+  // 3. Pending restocks.
+  await prisma.restock.deleteMany({ where: { gameId } });
+  // 4. Subscriptions.
+  await prisma.subscription.deleteMany({ where: { gameId } });
+  // 5. The game itself.
+  await prisma.game.delete({ where: { id: gameId } });
+}
+
 async function rehydrateVerificationTimers() {
   console.log('[Boot] Rehydrating session timers...');
   const openTickets = await prisma.ticket.findMany({
@@ -519,9 +545,7 @@ async function handleChatCommand(interaction: any) {
         content: `❌ **Cannot Remove:** **${gameName}** has ${activeTickets} active ticket(s). Close them first.`
       });
     }
-    await prisma.restock.deleteMany({ where: { gameId: game.id } });
-    await prisma.subscription.deleteMany({ where: { gameId: game.id } });
-    await prisma.game.delete({ where: { id: game.id } });
+    await purgeGameCascade(game.id);
     await refreshAllPanels();
     await interaction.editReply({ content: `🗑️ **Removed:** **${gameName}** has been deleted from the panel.` });
     if (interaction.guild) {
@@ -999,11 +1023,11 @@ async function handleChatCommand(interaction: any) {
         });
       }
 
-      // Clean up related records first to satisfy foreign-key constraints
-      await prisma.restock.deleteMany({ where: { gameId: game.id } });
-      await prisma.subscription.deleteMany({ where: { gameId: game.id } });
-      // Closed tickets keep gameId — leave them for audit history
-      await prisma.game.delete({ where: { id: game.id } });
+      // Hard-delete everything that FKs into Game (closed tickets included
+      // — Ticket.gameId is RESTRICT, so the Game row won't drop otherwise).
+      // Trade-off: ticket audit history for this game is sacrificed. For
+      // manually-added games (the only ones we delete) that's acceptable.
+      await purgeGameCascade(game.id);
 
       await refreshAllPanels();
       await interaction.editReply({ content: `🗑️ **Deleted:** **${gameName}** removed from catalog.` });
