@@ -65,7 +65,20 @@ Compile to a single Windows .exe with PyInstaller:
 #        multi-mode retry will land in rev 12. /test exercises the
 #        full verifier by re-execing this binary with --simulate-game
 #        as a fake AAA game that allocates 2 GB and waits.
-__build_revision__ = 11
+# Rev 12: simulator subprocess hardening — rev 11 launched the
+#        --simulate-game subprocess with sys.argv[0] + DETACHED_PROCESS
+#        which sometimes returned a dead PID immediately (verifier saw
+#        "exited after 0s with 1 MB"). Fixes:
+#        - Use sys.executable (reliable PyInstaller path) not argv[0].
+#        - Drop DETACHED_PROCESS (only meaningful for console apps; we
+#          ship --noconsole), keep CREATE_NEW_PROCESS_GROUP + CREATE_NO_WINDOW.
+#        - Fallback allocation targets (1.7 GB → 1.6 GB → 1.55 GB) in
+#          case the user is on a low-RAM machine.
+#        - 8-second startup grace period in the monitor: poll RAM but
+#          don't flag "exited" during the subprocess bootstrap window.
+#        - Simulator logs every step to %TEMP%\\gamegen-simulate.log
+#          so /test failures are diagnosable without console output.
+__build_revision__ = 12
 
 import ctypes
 import io
@@ -135,23 +148,68 @@ def msgbox(text: str, title: str = "GameGen Activator", flags: int = MB_OK | MB_
 # real user would see — including the RAM-monitor loop running against
 # a real subprocess — without needing the game installed.
 _SIMULATE_GAME_FLAG = "--simulate-game"
-_SIMULATE_GAME_RAM_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB
-_SIMULATE_GAME_LIFETIME_S = 240                     # outlives default verify timeout
+# Try 1.7 GB first (comfortable margin over the 1.5 GB threshold). Falls
+# back smaller if the bytearray allocation throws MemoryError. Each step
+# is still above the threshold so verification stays meaningful even on
+# low-RAM machines.
+_SIMULATE_GAME_RAM_TARGETS_BYTES = [
+    1700 * 1024 * 1024,   # 1.7 GB
+    1600 * 1024 * 1024,   # 1.6 GB
+    1550 * 1024 * 1024,   # 1.55 GB — bare minimum to cross the threshold
+]
+_SIMULATE_GAME_LIFETIME_S = 240   # outlives the default verify timeout
+# Heartbeat log for the simulator subprocess. PyInstaller --noconsole
+# builds have no usable stderr, so test failures are otherwise opaque.
+# Lives in %TEMP% so it's easy to find and not in the user's way.
+_SIMULATE_LOG_PATH = Path(os.environ.get("TEMP") or os.path.expanduser("~")) / "gamegen-simulate.log"
+
+
+def _simlog(msg: str) -> None:
+    """Append one line to the simulator log. Best-effort, never raises."""
+    try:
+        with open(_SIMULATE_LOG_PATH, "a", encoding="utf-8") as f:
+            ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            f.write(f"[{ts}] pid={os.getpid()} {msg}\n")
+    except OSError:
+        pass
 
 
 def _run_simulated_game() -> None:
-    """Allocate ~2 GB working set and wait. Only called from --simulate-game."""
+    """Allocate ~1.7 GB working set and wait. Only called from --simulate-game.
+
+    Resilient by design: falls back through smaller allocation targets if
+    bytearray raises MemoryError, and always sleeps long enough for the
+    parent's verifier to either observe RAM growth or time out cleanly.
+    Every step logs to %TEMP%\\gamegen-simulate.log so /test failures
+    can be diagnosed without the PyInstaller noconsole stderr black hole.
+    """
+    _simlog(f"simulator started, argv={sys.argv}, executable={sys.executable}")
+    held = None
+    for target in _SIMULATE_GAME_RAM_TARGETS_BYTES:
+        mb = target // (1024 * 1024)
+        try:
+            _simlog(f"trying bytearray({mb} MB)")
+            buf = bytearray(target)
+            _simlog(f"alloc succeeded, touching {len(buf) // 4096} pages")
+            for i in range(0, len(buf), 4096):
+                buf[i] = 1
+            held = buf
+            _simlog(f"committed {mb} MB working set")
+            break
+        except MemoryError:
+            _simlog(f"MemoryError at {mb} MB, trying smaller")
+            continue
+        except Exception as e:
+            _simlog(f"unexpected error: {type(e).__name__}: {e}")
+            break
+    if held is None:
+        _simlog("WARN: all allocation attempts failed — sleeping anyway")
+    _simlog(f"sleeping {_SIMULATE_GAME_LIFETIME_S}s")
     try:
-        buf = bytearray(_SIMULATE_GAME_RAM_BYTES)
-        # Touch every page so Windows actually commits the memory instead of
-        # lazy-mapping zero pages (which wouldn't count toward working set).
-        for i in range(0, len(buf), 4096):
-            buf[i] = 1
         time.sleep(_SIMULATE_GAME_LIFETIME_S)
-    except Exception:
-        # Last-ditch: keep the process alive long enough for the verifier
-        # to give up gracefully even if allocation failed (low-RAM machine).
-        time.sleep(_SIMULATE_GAME_LIFETIME_S)
+    except Exception as e:
+        _simlog(f"sleep interrupted: {type(e).__name__}: {e}")
+    _simlog("simulator exiting normally")
 
 
 # ─── RAM-based activation verification ──────────────────────────
@@ -236,16 +294,33 @@ def _kill_process_tree(pid: int) -> None:
 
 
 def _monitor_game_process(pid: int, threshold_mb: int = _VERIFY_RAM_THRESHOLD_MB,
-                          timeout_s: int = _VERIFY_TIMEOUT_S) -> dict:
+                          timeout_s: int = _VERIFY_TIMEOUT_S,
+                          startup_grace_s: int = 8) -> dict:
     """Watch `pid`. Return outcome dict with keys: outcome, peak_mb, elapsed_s.
 
     Outcomes:
       success   — working set crossed threshold; game is genuinely loading data
       failed    — process exited before crossing threshold (likely Denuvo reject)
       timeout   — neither happened within timeout (slow loader; ambiguous)
+
+    `startup_grace_s` is a short initial wait before the first "did it
+    exit?" check. Real games and the simulator both take a beat to spin
+    up — without it we sometimes catch them mid-bootstrap and flag a
+    false failure with elapsed_s=0.
     """
     start = time.time()
     peak_mb = 0
+    # Initial grace period: poll RAM but don't bail on "process gone" yet.
+    grace_deadline = start + startup_grace_s
+    while time.time() < grace_deadline:
+        ram = _get_process_working_set_mb(pid)
+        if ram is not None:
+            peak_mb = max(peak_mb, ram)
+            if peak_mb >= threshold_mb:
+                return {"outcome": "success", "peak_mb": peak_mb,
+                        "elapsed_s": int(time.time() - start)}
+        time.sleep(1)
+
     while True:
         ram = _get_process_working_set_mb(pid)
         if ram is not None:
@@ -311,12 +386,17 @@ def _verify_activation(game_dir: Path, mode: str, game_name: str,
     the full monitor loop against a real subprocess that mimics game RAM.
     """
     if test_mode:
-        launch_target = Path(sys.argv[0])
+        # Re-exec THIS installer.exe with --simulate-game so the parent
+        # verifier exercises the full monitor loop against a real
+        # subprocess. sys.executable is the reliable PyInstaller path —
+        # sys.argv[0] can be a relative or stripped form on some launches.
+        launch_target = Path(sys.executable)
         launch_args = [str(launch_target), _SIMULATE_GAME_FLAG]
+        _simlog(f"verifier launching simulator: {launch_args}")
         pre_text = (
             f"[TEST MODE] Simulating activation verification for {game_name} ({mode}).\n\n"
             "A simulated 'game' will be launched (a hidden helper process that\n"
-            "allocates ~2 GB of RAM, mimicking a real loaded AAA game). The\n"
+            "allocates ~1.7 GB of RAM, mimicking a real loaded AAA game). The\n"
             "verifier will observe its working set the same way it would for\n"
             "a real game and report success/failure based on the same signal.\n\n"
             "This is what a real user would experience after a real install,\n"
@@ -346,18 +426,28 @@ def _verify_activation(game_dir: Path, mode: str, game_name: str,
         return {"outcome": "cancelled", "peak_mb": 0, "elapsed_s": 0,
                 "launched_exe": launch_target, "cancelled": True}
 
-    # Launch detached so closing the installer doesn't kill the game.
-    # CREATE_NEW_PROCESS_GROUP keeps it independent for kill-on-result later.
+    # Launch with CREATE_NEW_PROCESS_GROUP so the game/simulator survives
+    # if the installer dies, and so we can kill it cleanly via taskkill /T.
+    # _NO_WINDOW suppresses any stray console flash for the simulator
+    # (the installer itself is --noconsole so it has no console to share).
+    # DETACHED_PROCESS was wrong here — it's only meaningful for console
+    # processes, and combined with --noconsole sometimes caused the
+    # subprocess to fail to start cleanly. CREATE_NEW_PROCESS_GROUP +
+    # _NO_WINDOW is what we actually want.
     CREATE_NEW_PROCESS_GROUP = 0x00000200
-    DETACHED_PROCESS = 0x00000008
+    creationflags = CREATE_NEW_PROCESS_GROUP
+    if test_mode:
+        creationflags |= _NO_WINDOW
     try:
         proc = subprocess.Popen(
             launch_args,
             cwd=str(launch_target.parent),
-            creationflags=CREATE_NEW_PROCESS_GROUP | (DETACHED_PROCESS if test_mode else 0),
+            creationflags=creationflags,
             close_fds=True,
         )
+        _simlog(f"verifier spawned subprocess pid={proc.pid} target={launch_target}")
     except OSError as e:
+        _simlog(f"verifier Popen failed: {e}")
         return {"outcome": "failed", "peak_mb": 0, "elapsed_s": 0,
                 "launched_exe": launch_target, "cancelled": False,
                 "error": f"Failed to launch: {e}"}
