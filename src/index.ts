@@ -778,6 +778,15 @@ async function handleChatCommand(interaction: any) {
         new ButtonBuilder().setCustomId('works_no').setLabel('No, it doesn\'t work').setStyle(ButtonStyle.Danger)
       );
 
+      // Persistent (never-expiring + re-runnable) when /tokengen is
+      // run OUTSIDE a ticket channel — staff use case for testing /
+      // sharing / ad-hoc gen. Inside a ticket we keep single-use
+      // enforcement so a real customer can't re-install with the
+      // same key after vouching. Declared OUTSIDE the try block below
+      // because the post-delivery logAction call reads it for the
+      // staff-log summary line.
+      const persistent = !ticketHere;
+
       try {
         let delivered: any;
         // Always route through uploadFile so the user gets a self-hosted
@@ -791,12 +800,6 @@ async function handleChatCommand(interaction: any) {
               .setColor(0xFEE75C)
               .setTimestamp()
           ] });
-          // Persistent (never-expiring + re-runnable) when /tokengen is
-          // run OUTSIDE a ticket channel — staff use case for testing /
-          // sharing / ad-hoc gen. Inside a ticket we keep single-use
-          // enforcement so a real customer can't re-install with the
-          // same key after vouching.
-          const persistent = !ticketHere;
           const upload = await uploadFile(zipPath, '72h', installerKey, { ticketHash, expectedHmac, appIdBound }, persistent);
           const hostedEmbed = createTokenDeliveryEmbed(
             game.name,
