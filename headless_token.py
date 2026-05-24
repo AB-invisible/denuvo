@@ -230,6 +230,12 @@ def build_thin_zip(out, app_id, game_name, generation_mode, token_b64, steam_id,
     # Steam emulator. No separate loader.exe — user just runs the game's
     # normal binary. Goldberg's coldloader.dll reads coldloader.ini for
     # the app id.
+    #
+    # V2 deliberately does NOT ship steam_api64.dll or steamclient64.dll.
+    # The game's own copies stay in place and coldloader.dll intercepts
+    # their calls at runtime via hooks; replacing them puts two emulators
+    # in the same process competing for the same call sites and breaks
+    # activation. (See installer.py rev 12 notes.)
     v2_entries = []
     for fname, dst_name in (
         # version.dll is the most universally supported hijack proxy.
@@ -237,8 +243,6 @@ def build_thin_zip(out, app_id, game_name, generation_mode, token_b64, steam_id,
         # can per-game override later — version.dll covers ~90% of cases.
         ("version.dll",                "version.dll"),
         ("coldloader.dll",             "coldloader.dll"),
-        ("steam_api64.dll",            "steam_api64.dll"),
-        ("steamclient64.dll",          "steamclient64.dll"),
         ("GameOverlayRenderer64.dll",  "GameOverlayRenderer64.dll"),
     ):
         e = _entry(CORE_DIR / fname, f"/payload/v2/{fname}", dst_name)

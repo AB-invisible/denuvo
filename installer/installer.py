@@ -63,7 +63,19 @@ Compile to a single Windows .exe with PyInstaller:
 #        had to add the code-level backstop after several "the installer
 #        deleted my game" tickets. Bails before key validation so the
 #        user keeps their zip and can re-extract elsewhere.
-__build_revision__ = 11
+# Rev 12: V2 (coldloader) deploy_v2 rewrite. Two bugs fixed:
+#        1. Was dropping Goldberg's steam_api64.dll + steamclient64.dll
+#           on top of the game's own — V2's runtime-hook design conflicts
+#           with that, and we'd get two emulators fighting over the same
+#           call sites. Game's own DLLs now stay untouched.
+#        2. coldloader.ini was downloaded but never copied across to
+#           the game folder, so coldloader.dll ran with no app_id config.
+#           Added to the deploy list.
+#        Result: V2 install is now version.dll + coldloader.dll +
+#        coldloader.ini + (optional) GameOverlayRenderer64.dll +
+#        steam_settings/ + steam_appid.txt next to the main exe.
+#        Nothing else touched.
+__build_revision__ = 12
 
 import ctypes
 import io
@@ -1466,71 +1478,69 @@ def deploy_v2(
     """
     Deploy a V2 (coldloader) payload — DLL-hijack mode.
 
-    The payload contains:
-      version.dll                  ← hijack proxy; sits next to game's exe
-      coldloader.dll               ← loaded by version.dll, runs the emu
-      steam_api64.dll              ← Goldberg flat; replaces game's own
-      steamclient64.dll            ← Goldberg flat
-      GameOverlayRenderer64.dll
-      coldloader.ini               ← has the app id; lives next to coldloader.dll
-    plus shared_settings/ for the ticket + configs.
+    V2's whole design is "runtime hooks, not DLL replacement." The game's
+    own steam_api64.dll and steamclient64.dll stay UNTOUCHED — coldloader.dll
+    intercepts the calls those DLLs make and provides the emulator
+    responses transparently. Replacing the game's Steam DLLs with
+    Goldberg's flat versions would put two emulators in the same process
+    fighting for the same hook points, which breaks activation.
 
-    Placement strategy:
-      - Hijack DLL + coldloader.dll + coldloader.ini + steamclient64.dll
-        + GameOverlayRenderer64.dll → next to the game's MAIN EXE. That's
-        where Windows looks for proxy DLLs when the exe starts; if the
-        hijack isn't there, the emu never loads.
-      - steam_api64.dll replacement + steam_settings/ + steam_appid.txt
-        → next to the game's existing steam_api64.dll (Engine path for
-        UE games, game root for flat games). Same logic as deploy_gbe.
+    Drops next to the game's main exe (Windows' DLL search order checks
+    the .exe's directory first, so the hijack always wins):
+
+      version.dll                  hijack proxy — Windows auto-loads it
+      coldloader.dll               emulator core, loaded by version.dll
+      coldloader.ini               app_id config that coldloader.dll reads
+      GameOverlayRenderer64.dll    optional Goldberg overlay (cosmetic)
+      steam_appid.txt              fallback for game's own SteamAPI_Init
+      steam_settings/              encrypted ticket + Goldberg configs
+
+    Does NOT drop:
+      steam_api64.dll              game's own stays — coldloader intercepts
+      steamclient64.dll            game's own stays — coldloader intercepts
 
     There's no separate loader exe; the user just launches the game's
     own .exe directly. The hijack DLL pulls in the emu transparently.
     """
-    stats = {"copied": 0, "backed_up": 0, "touched": [], "api_locations": 0}
+    stats = {"copied": 0, "backed_up": 0, "touched": []}
 
-    # 1. Find the game's main exe so we know where to drop the hijack.
+    # 1. Find the game's main exe so we know where to drop the hijack DLL.
     main_exe = _scan_shipping_exe(game_dir) or _find_launchable_exe(game_dir)
     hijack_dir = main_exe.parent if main_exe else game_dir
 
-    # 2. Drop hijack DLL + coldloader.dll + coldloader.ini +
-    #    steamclient64.dll + overlay next to the main exe.
-    # NOTE: steam_api64.dll is deliberately NOT placed here unless the
-    # game also keeps its existing steam_api64.dll at this same location
-    # (handled by step 3 below).
-    hijack_filenames = (
+    # 2. Drop coldloader's own files next to the main exe.
+    #    coldloader.ini was missing from this list in rev <=11 — bot
+    #    downloads it into payload_root but the installer never copied
+    #    it across, so coldloader.dll ran without its app_id config.
+    v2_filenames = (
         "version.dll",
         "coldloader.dll",
-        "steamclient64.dll",
+        "coldloader.ini",
         "GameOverlayRenderer64.dll",
     )
-    for fname in hijack_filenames:
+    for fname in v2_filenames:
         src = payload_root / fname
         if not src.is_file():
             continue
         dst = hijack_dir / fname
         _backup_and_overwrite(src, dst, stats)
 
-    # 3. Replace every existing steam_api64.dll with Goldberg's flat
-    #    version and drop steam_settings/ + steam_appid.txt next to each.
-    goldberg_api = payload_root / "steam_api64.dll"
-    api_locations = _find_existing_locations(game_dir, "steam_api64.dll")
-    if not api_locations and goldberg_api.is_file():
-        # Game has no steam_api64.dll. Drop one next to the hijack so
-        # coldloader.dll can find it via standard DLL search.
-        api_locations = [hijack_dir / "steam_api64.dll"]
-
-    if goldberg_api.is_file():
-        for api_loc in api_locations:
-            _backup_and_overwrite(goldberg_api, api_loc, stats)
-            stats["api_locations"] += 1
-            try:
-                if shared_settings and shared_settings.is_dir():
-                    _place_steam_settings(shared_settings, api_loc.parent, stats=stats)
-                (api_loc.parent / "steam_appid.txt").write_text(app_id, encoding="utf-8")
-                stats["touched"].append(api_loc.parent / "steam_appid.txt")
-            except OSError:
-                pass
+    # 3. steam_settings/ + steam_appid.txt next to the main exe (i.e.
+    #    next to coldloader.dll — that's what reads them). The game's
+    #    own steam_api64.dll also looks for steam_appid.txt as a
+    #    fallback if its own init lookup fails, so dropping one here
+    #    helps even when coldloader's hooks are doing the heavy lifting.
+    if shared_settings and shared_settings.is_dir():
+        try:
+            _place_steam_settings(shared_settings, hijack_dir, stats=stats)
+        except OSError:
+            pass
+    try:
+        appid_target = hijack_dir / "steam_appid.txt"
+        appid_target.write_text(app_id, encoding="utf-8")
+        stats["touched"].append(appid_target)
+    except OSError:
+        pass
 
     return stats
 
