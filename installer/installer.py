@@ -39,7 +39,14 @@ Compile to a single Windows .exe with PyInstaller:
 #        the simulated install look misleading. Flat is the realistic
 #        baseline; UE-specific Engine/ placement is exercised by real
 #        installs, not by /test inspection.
-__build_revision__ = 8
+# Rev 9: GBE-mode steamclient64.dll always placed next to the main game
+#        exe (UE shipping exe or largest non-junk root exe), in addition
+#        to the previous "next to every steam_api64.dll" pattern. UE
+#        games keep steam_api64.dll deep under Engine/Binaries/ThirdParty/
+#        Steamworks/.../Win64/ — dropping steamclient64.dll only there
+#        misses the directory Windows checks first when game code calls
+#        LoadLibrary("steamclient64.dll") via standard DLL search order.
+__build_revision__ = 9
 
 import ctypes
 import io
@@ -526,13 +533,53 @@ def deploy_gbe(
                 pass
 
     if goldberg_client:
-        # Prefer to replace every existing steamclient64.dll the game ships.
-        # If none exist, drop one next to each steam_api64.dll (some games
-        # load it lazily relative to api64.dll).
-        targets = client_locations or [a.parent / "steamclient64.dll" for a in api_locations]
-        for client_loc in targets:
+        # steamclient64.dll placement is trickier than steam_api64.dll.
+        # The game's process loads it via Windows' standard DLL search,
+        # which checks the .exe's own directory first — NOT wherever
+        # steam_api64.dll happens to sit. For UE games steam_api64.dll
+        # lives under Engine/Binaries/ThirdParty/Steamworks/.../Win64/,
+        # which is far from where <Game>-Shipping.exe lives, so a
+        # steamclient64.dll dropped there is invisible to game code
+        # that calls LoadLibrary("steamclient64.dll") directly.
+        #
+        # Three-pass placement:
+        #   1. Replace every existing steamclient64.dll the game already
+        #      ships (preserves the in-place override behavior).
+        #   2. Drop one next to each steam_api64.dll (Goldberg's own
+        #      steam_api64.dll loads steamclient64.dll as a sibling
+        #      relative to itself).
+        #   3. ALWAYS drop one next to the main game .exe — UE shipping
+        #      exe first (Engine/Binaries/Win64/<Game>-Shipping.exe),
+        #      else the largest non-junk .exe at the game root. This
+        #      is the canonical Goldberg placement and is what games
+        #      that probe steamclient64.dll via the standard DLL search
+        #      order expect.
+        seen: set[Path] = set()
+
+        # Pass 1 + 2: union of existing locations + sibling-of-api locations.
+        for client_loc in list(client_locations) + [a.parent / "steamclient64.dll" for a in api_locations]:
+            try:
+                resolved = client_loc.resolve()
+            except OSError:
+                resolved = client_loc
+            if resolved in seen:
+                continue
+            seen.add(resolved)
             _backup_and_overwrite(goldberg_client, client_loc, stats)
             stats["client_locations"] += 1
+
+        # Pass 3: next to the main game exe. Shipping exe wins for UE;
+        # largest non-junk .exe otherwise.
+        main_exe = _scan_shipping_exe(game_dir) or _find_launchable_exe(game_dir)
+        if main_exe:
+            main_exe_client = main_exe.parent / "steamclient64.dll"
+            try:
+                resolved = main_exe_client.resolve()
+            except OSError:
+                resolved = main_exe_client
+            if resolved not in seen:
+                _backup_and_overwrite(goldberg_client, main_exe_client, stats)
+                stats["client_locations"] += 1
 
     return stats
 
