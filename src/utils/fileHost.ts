@@ -123,12 +123,19 @@ async function uploadToLitterboxRaw(filePath: string, expiry: LitterboxExpiry): 
  * Upload a file to the best available host. Tries gofile.io first
  * (preserves filename); falls back to litterbox.catbox.moe if gofile
  * is unreachable.
+ *
+ * `persistent` (optional): only honored on the self-hosted path. When
+ * true, the self-hosted link never expires and the installer key
+ * never gets consumed — used by /tokengen runs outside a ticket so
+ * staff can re-issue or re-install at will. External hosts (gofile /
+ * litterbox) ignore this flag — they have their own expiry policies.
  */
 export async function uploadFile(
   filePath: string,
   litterboxExpiry: LitterboxExpiry = '72h',
   installerKey?: string,
   bindings?: { ticketHash?: string; expectedHmac?: string; appIdBound?: number },
+  persistent: boolean = false,
 ): Promise<UploadResult> {
   if (!fs.existsSync(filePath)) {
     throw new Error(`File not found: ${filePath}`);
@@ -141,19 +148,21 @@ export async function uploadFile(
     throw new Error(`File exceeds 1 GB safety limit: ${(stat.size / 1024 / 1024).toFixed(1)} MB`);
   }
 
-  // Preferred: self-hosted 30-minute link via the bot's /download endpoint.
+  // Preferred: self-hosted link via the bot's /download endpoint.
   // Lazy-imported so a module-load-time failure in downloadHost (e.g.
   // Prisma client init explosion) can't cascade up and prevent fileHost
   // from loading at all. If it throws, we silently fall back to gofile.
   try {
     const { createDownloadLink } = await import('./downloadHost');
-    const link = await createDownloadLink(filePath, undefined, installerKey, bindings);
+    const link = await createDownloadLink(filePath, undefined, installerKey, bindings, persistent);
     if (link) {
       return {
         url: link.url,
         provider: 'gamegen',
         isDirect: true,
-        expiryText: `Link expires in ${link.expiresInMinutes} minutes — download soon`,
+        expiryText: persistent
+          ? 'Link is permanent (staff /tokengen — no expiry, re-runnable)'
+          : `Link expires in ${link.expiresInMinutes} minutes — download soon`,
       };
     }
     console.warn('[fileHost] createDownloadLink returned null (no PUBLIC_URL?) — falling back to gofile');

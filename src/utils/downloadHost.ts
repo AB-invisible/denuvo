@@ -20,6 +20,12 @@ import fs from 'fs';
 import path from 'path';
 
 const LINK_TTL_MS = 30 * 60 * 1000; // 30 minutes
+// `persistent` links (staff /tokengen outside a ticket) get this far-future
+// expiresAt so the download endpoint + cleanup sweep treat them as alive
+// effectively forever, without us having to add nullable-expiresAt handling
+// to every consumer. Year 2125-ish is well past anything we'd realistically
+// keep around.
+const PERSISTENT_TTL_MS = 100 * 365 * 24 * 60 * 60 * 1000;
 
 // Lazy-load Prisma so an import-time failure in @prisma/client doesn't
 // cascade up the import chain and prevent the whole bot from starting.
@@ -69,12 +75,20 @@ export function downloadStorageDir(): string {
  * already embedded inside the zip's payload-manifest.json as `_sig`.
  * We store it in the same DB row so the bot's
  * POST /installer-validate/<key> endpoint can verify + mark consumed.
+ *
+ * `persistent` (optional, default false): when true, the link's
+ * expiresAt is set ~100 years out so the download stays alive forever,
+ * AND /installer-validate skips the consume flip so the installer can
+ * be re-run multiple times. Used by /tokengen runs OUTSIDE a ticket
+ * channel — staff testing / sharing / ad-hoc generation. Inside a
+ * ticket the caller leaves this false so single-use kicks in.
  */
 export async function createDownloadLink(
   srcZipPath: string,
   ticketId?: number,
   installerKey?: string,
   bindings?: { ticketHash?: string; expectedHmac?: string; appIdBound?: number },
+  persistent: boolean = false,
 ): Promise<SelfHostedLink | null> {
   const baseUrl = resolveBaseUrl();
   if (!baseUrl) {
@@ -100,7 +114,7 @@ export async function createDownloadLink(
   }
 
   const size = (await fs.promises.stat(storedPath)).size;
-  const expiresAt = new Date(Date.now() + LINK_TTL_MS);
+  const expiresAt = new Date(Date.now() + (persistent ? PERSISTENT_TTL_MS : LINK_TTL_MS));
 
   const prisma = await getPrisma();
   await prisma.tokenDownload.create({
@@ -115,13 +129,18 @@ export async function createDownloadLink(
       fileSize: size,
       expiresAt,
       ticketId: ticketId ?? null,
-    },
+      // Cast so TS doesn't complain until prisma generate picks up the
+      // new column. Schema-side default(false) covers the migration
+      // window; this just gives us per-call override.
+      ...(persistent ? { persistent: true } : {}),
+    } as any,
   });
 
   return {
     url: `${baseUrl}/download/${token}`,
     expiresAt,
-    expiresInMinutes: 30,
+    // -1 = caller should render "permanent" instead of a minute count.
+    expiresInMinutes: persistent ? -1 : 30,
   };
 }
 

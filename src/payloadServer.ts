@@ -370,7 +370,12 @@ export function startPayloadServer(): void {
             res.end('Activation key expired.');
             return;
           }
-          if (row.consumed) {
+          // Persistent rows skip the single-use check entirely — they
+          // were created by /tokengen outside a ticket and are meant
+          // to be re-runnable indefinitely. row.consumed only matters
+          // for normal ticket-scoped tokens.
+          const isPersistent = (row as any).persistent === true;
+          if (row.consumed && !isPersistent) {
             res.writeHead(410, { 'Content-Type': 'text/plain' });
             res.end('Activation key already used.');
             return;
@@ -415,9 +420,14 @@ export function startPayloadServer(): void {
             }
           }
 
+          // For persistent rows: bump consumedAt for audit but DON'T
+          // flip `consumed` — staff /tokengen tokens stay re-runnable.
+          // For normal rows: flip both so any further validation 410s.
           await prisma.tokenDownload.update({
             where: { token: row.token },
-            data: { consumed: true, consumedAt: new Date() },
+            data: isPersistent
+              ? { consumedAt: new Date() }
+              : { consumed: true, consumedAt: new Date() },
           });
           res.writeHead(200, { 'Content-Type': 'text/plain' });
           res.end('ok');

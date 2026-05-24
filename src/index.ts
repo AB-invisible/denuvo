@@ -791,7 +791,13 @@ async function handleChatCommand(interaction: any) {
               .setColor(0xFEE75C)
               .setTimestamp()
           ] });
-          const upload = await uploadFile(zipPath, '72h', installerKey, { ticketHash, expectedHmac, appIdBound });
+          // Persistent (never-expiring + re-runnable) when /tokengen is
+          // run OUTSIDE a ticket channel — staff use case for testing /
+          // sharing / ad-hoc gen. Inside a ticket we keep single-use
+          // enforcement so a real customer can't re-install with the
+          // same key after vouching.
+          const persistent = !ticketHere;
+          const upload = await uploadFile(zipPath, '72h', installerKey, { ticketHash, expectedHmac, appIdBound }, persistent);
           const hostedEmbed = createTokenDeliveryEmbed(
             game.name,
             ticketHere?.userId || interaction.user.id,
@@ -827,7 +833,8 @@ async function handleChatCommand(interaction: any) {
           await logAction(interaction.guild, '🛠️ /tokengen Delivered',
             `Staff ${interaction.user} generated a token via **/tokengen** for **${game.name}** (AppID \`${game.appId}\`, ${zipMB.toFixed(1)} MB).\n` +
             `**Stock Deducted:** \`${deduct ? 'YES' : 'NO'}\`\n` +
-            `**In ticket channel:** ${ticketHere ? `<#${interaction.channelId}>` : 'no — posted in a regular channel'}`,
+            `**In ticket channel:** ${ticketHere ? `<#${interaction.channelId}>` : 'no — posted in a regular channel'}\n` +
+            `**Link:** ${persistent ? '🔓 **Persistent** (never expires, installer re-runnable)' : '⏱️ Single-use (expires + consumed on first install)'}`,
             0x57F287);
         }
       } catch (sendErr) {
