@@ -54,7 +54,16 @@ Compile to a single Windows .exe with PyInstaller:
 #        Engine/Binaries/ThirdParty/Steamworks/.../Win64/steamclient64.dll
 #        copy was dead weight cluttering the install. Keep two passes:
 #        replace existing in-place, then drop one next to the main exe.
-__build_revision__ = 10
+# Rev 11: defensive guard — refuse to run if payload_root is inside a
+#        Steam library (path contains "\\steamapps\\common\\"). Users
+#        keep extracting the token zip directly into their game folder
+#        and running the installer from there; self_destruct() then
+#        wipes the folder it was launched from — i.e. the game. The
+#        delivery embed warns about this in big letters but we still
+#        had to add the code-level backstop after several "the installer
+#        deleted my game" tickets. Bails before key validation so the
+#        user keeps their zip and can re-extract elsewhere.
+__build_revision__ = 11
 
 import ctypes
 import io
@@ -289,6 +298,30 @@ def payload_root() -> Path:
     folder containing the V1 payload (steam_settings/, dlls, ini, loader).
     """
     return Path(sys.argv[0]).resolve().parent
+
+
+def _is_inside_steam_library(p: Path) -> bool:
+    """True if `p` lives anywhere under a Steam library's steamapps/common/
+    tree. Catches every standard layout — default Steam install at
+    `C:\\Program Files (x86)\\Steam\\steamapps\\common\\`, custom libraries
+    on other drives (`D:\\SteamLibrary\\steamapps\\common\\`), portable
+    Steam installs, etc.
+
+    Used by main() to refuse to run if the user extracted the token zip
+    on top of their game folder. Running from there would have
+    self_destruct() wipe the user's game files at the end of install.
+
+    Substring check on the normalized posix-style path is intentional:
+    no `Path.parents` walk, no Steam library enumeration. The "...
+    steamapps/common/..." pattern is canonical and present in every
+    real Steam game folder; nothing legitimate lives outside that
+    structure but matches it accidentally.
+    """
+    try:
+        s = str(p).replace("\\", "/").lower()
+    except Exception:
+        return False
+    return "/steamapps/common/" in s
 
 
 # Files commonly already present in a game install. When we're about to
@@ -2271,6 +2304,31 @@ def main() -> None:
     here = payload_root()
     self_name = Path(sys.argv[0]).name
     self_path = Path(sys.argv[0]).resolve()
+
+    # ─── Foot-gun guard: refuse to run from inside a Steam game folder ──
+    # If the user extracted the zip on top of their game folder, our
+    # self_destruct() at the end would wipe the directory the installer
+    # was launched from — i.e. the game itself. Bail BEFORE key
+    # validation so the zip stays usable and the user can re-extract
+    # somewhere safe without re-opening a ticket.
+    if _is_inside_steam_library(here):
+        gamegen_msgbox(
+            "⚠️  STOP — Wrong Folder\n\n"
+            "This installer is sitting inside a Steam game folder:\n\n"
+            f"{here}\n\n"
+            "You extracted the token zip into the game folder. If this\n"
+            "installer ran, it would clean up its own folder when it's\n"
+            "done — and that would DELETE YOUR GAME FILES.\n\n"
+            "Nothing has been touched yet. To fix:\n\n"
+            "  1. Close this popup (the installer will exit safely).\n"
+            "  2. Move (or re-extract) the Token folder to your Desktop.\n"
+            "  3. Open the new Desktop folder and double-click\n"
+            f"     \"{self_name}\" from there.\n\n"
+            "The installer finds your game on Steam automatically —\n"
+            "you don't need to put anything in the game folder yourself.",
+            icon=MB_ICON_ERROR,
+        )
+        sys.exit(1)
 
     # ─── Phase 0: validate the per-zip activation key ────────────────
     # Before reading appid, finding Steam, anything — we POST our `_sig`
