@@ -25,7 +25,13 @@ Compile to a single Windows .exe with PyInstaller:
 #        naming + size fingerprints, so leftover loader exes and
 #        ColdClientLoader.ini from old broken installs get cleaned up
 #        on first rev-6 run.
-__build_revision__ = 6
+# Rev 7: test-mode support. When payload-manifest.json has _test_mode=true
+#        (set by Python's fake_mode path that /test triggers), skip key
+#        validation + Steam library lookup. Deploy into a fake game folder
+#        on the user's Desktop and open it in Explorer so staff can inspect
+#        what would have shipped to a real user, without needing the game
+#        installed.
+__build_revision__ = 7
 
 import ctypes
 import io
@@ -74,6 +80,82 @@ MB_ICON_WARN = 0x30
 
 def msgbox(text: str, title: str = "GameGen Activator", flags: int = MB_OK | MB_ICON_INFO) -> None:
     ctypes.windll.user32.MessageBoxW(None, text, title, flags)
+
+
+# ─── /test command: fake game folder for visual inspection ──
+def _safe_folder_name(name: str) -> str:
+    """Strip filesystem-unsafe chars from a game name for folder use."""
+    cleaned = re.sub(r'[<>:"/\\|?*]', '', name).strip()
+    return cleaned or "Game"
+
+
+def create_test_game_dir(app_id: str, game_name: str) -> Path:
+    """
+    Build a fake "game folder" on the user's Desktop so the /test command's
+    installer has somewhere realistic to deploy into without touching their
+    real Steam library.
+
+    The fake structure mirrors what real games ship — enough that all three
+    deploy paths (deploy_gbe, deploy_v1, deploy_v2) find their target files:
+
+      <Desktop>/GameGen_Test_<Game>_<appid>/
+        <game>.exe                                            (flat-game main exe)
+        steam_api64.dll                                       (flat-game GBE/V2 target)
+        Engine/Binaries/Win64/<Game>-Shipping.exe            (UE shipping exe)
+        Engine/Binaries/ThirdParty/Steamworks/Steamv158/Win64/
+          steam_api64.dll                                     (UE GBE/V2 target)
+        README - TEST MODE.txt                                (orientation note)
+
+    Placeholders are ~4 KB of zeros — non-empty (won't trip the 0-byte
+    scrub) and recognizable in Explorer as "this is a fake binary."
+
+    If the folder already exists from a previous test run, it gets nuked
+    first so staff always sees a clean canvas of just-this-run artifacts.
+    """
+    desktop = Path(os.path.expanduser("~")) / "Desktop"
+    if not desktop.is_dir():
+        # Some locked-down Windows installs put Desktop under OneDrive or
+        # a roaming profile path. Fall back to %USERPROFILE% root.
+        desktop = Path(os.path.expanduser("~"))
+
+    safe = _safe_folder_name(game_name)
+    test_root = desktop / f"GameGen_Test_{safe}_{app_id}"
+
+    # Wipe previous test artifacts so each run is hermetic.
+    if test_root.exists():
+        shutil.rmtree(test_root, ignore_errors=True)
+    test_root.mkdir(parents=True, exist_ok=True)
+
+    # 4 KB of zeros — large enough to look like a binary in Explorer's
+    # size column, never small enough to be mistaken for a 0-byte template
+    # artifact by our own scrub logic.
+    placeholder = b"\x00" * 4096
+
+    def _drop(rel_path: str) -> None:
+        target = test_root / rel_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(placeholder)
+
+    _drop(f"{safe}.exe")
+    _drop("steam_api64.dll")
+    _drop(f"Engine/Binaries/Win64/{safe}-Shipping.exe")
+    _drop("Engine/Binaries/ThirdParty/Steamworks/Steamv158/Win64/steam_api64.dll")
+
+    (test_root / "README - TEST MODE.txt").write_text(
+        "GameGen — /test mode\n"
+        "────────────────────\n\n"
+        f"This folder is a SIMULATED install of '{game_name}' (AppID {app_id}).\n"
+        "Nothing here is a real game binary — every .exe and .dll is a\n"
+        "4 KB placeholder, just so the installer's deploy paths have\n"
+        "something to find and overwrite.\n\n"
+        "Everything else in this folder was placed by the installer:\n"
+        "the V1/V2/GBE binaries, ColdClientLoader.ini, steam_settings/,\n"
+        "renamed loader exe, shortcut, etc. — exactly what would land\n"
+        "inside a real user's game folder.\n\n"
+        "Safe to delete this whole folder when you're done inspecting.\n",
+        encoding="utf-8",
+    )
+    return test_root
 
 
 # ─── Steam library discovery ─────────────────────────────────
@@ -2126,8 +2208,17 @@ def main() -> None:
     # bot says no (or the network can't reach the bot after 3 retries),
     # NUKE every copy of the zip and the installer itself, then exit.
     # This is the choke point that makes the installer single-use.
+    #
+    # /test command exemption: when `_test_mode` is set in the manifest
+    # (Python's fake_mode path emits this flag), skip validation so the
+    # same test zip can be re-run by staff multiple times for inspection.
+    # The flag is admin-only by virtue of where it's set; even a forged
+    # flag in a real zip can't bypass single-use enforcement (the real
+    # consequence is the test-mode branch below deploys to a fake folder
+    # on the Desktop instead of the real game, which is a no-op).
     manifest = _detect_thin_manifest(here)
-    if manifest:
+    test_mode = bool(manifest and manifest.get("_test_mode"))
+    if manifest and not test_mode:
         ok, reason = _validate_installer_key(manifest)
         if not ok:
             gamegen_msgbox(
@@ -2172,19 +2263,26 @@ def main() -> None:
         sys.exit(1)
 
     # 2. Locate the installed game folder via Steam's own manifest data.
-    game_dir = find_game_folder(app_id)
-    if not game_dir:
-        gamegen_msgbox(
-            f"Couldn't find the game for App ID {app_id} in any Steam library.\n\n"
-            f"Make sure the game is installed via Steam first, then run this again.",
-            icon=MB_ICON_ERROR,
-        )
-        sys.exit(1)
+    #    In test mode, skip Steam entirely and build a fake folder on the
+    #    Desktop so the installer has something predictable to deploy into.
+    if test_mode:
+        game_name_for_test = (manifest or {}).get("game_name") or f"App {app_id}"
+        game_dir = create_test_game_dir(app_id, game_name_for_test)
+    else:
+        game_dir = find_game_folder(app_id)
+        if not game_dir:
+            gamegen_msgbox(
+                f"Couldn't find the game for App ID {app_id} in any Steam library.\n\n"
+                f"Make sure the game is installed via Steam first, then run this again.",
+                icon=MB_ICON_ERROR,
+            )
+            sys.exit(1)
 
     # 3. Probe write access. Steam libraries usually allow per-user writes,
     #    but some users install Steam under Program Files — that path needs
     #    elevation. Re-launch ourselves under UAC if we can't write.
-    if not can_write_to(game_dir):
+    #    (Desktop is per-user; test mode never needs elevation.)
+    if not test_mode and not can_write_to(game_dir):
         if is_admin():
             gamegen_msgbox(
                 f"Even with administrator rights, the installer couldn't write to:\n\n"
@@ -2348,7 +2446,9 @@ def main() -> None:
     #     only if TEMPLATE_WEBHOOK_URL was baked in at build time. The user
     #     dismisses the popup; we wait briefly for the upload before exit.
     #     (game_name was already derived above for the pre-install revert.)
-    upload_thread = _upload_template_async(game_dir, app_id, game_name)
+    #     Skipped in test mode — the fake folder isn't a real game install
+    #     and uploading its structure would pollute the template catalog.
+    upload_thread = None if test_mode else _upload_template_async(game_dir, app_id, game_name)
 
     # 7. Build a user-facing success message. We deliberately HIDE every
     #    technical detail (mode name, files-copied count, .ini fixups,
@@ -2404,6 +2504,35 @@ def main() -> None:
     # instruction is centered and surrounded by whitespace so the user
     # can't miss it. MessageBoxW renders monospace-ish — alignment lands.
     horizontal = "━" * 38
+    if test_mode:
+        # /test mode: show the fake folder location, open Explorer at it,
+        # and don't pretend it's "ready to play" — staff wants to inspect.
+        success_text = (
+            f"🧪  TEST MODE — simulated install of {game_name}\n"
+            "\n"
+            f"{horizontal}\n"
+            "         WHAT TO INSPECT\n"
+            f"{horizontal}\n"
+            "\n"
+            "Nothing was deployed to your real Steam library.\n"
+            "Files were placed inside this fake game folder:\n"
+            "\n"
+            f"{game_dir}\n"
+            "\n"
+            "Explorer will open it now so you can see exactly\n"
+            "what would have shipped to a real user.\n"
+            "\n"
+            f"{horizontal}\n"
+        )
+        gamegen_msgbox(success_text)
+        try:
+            os.startfile(str(game_dir))
+        except OSError:
+            pass
+        # No template upload, no self-destruct in test mode — staff might
+        # want to re-run the same zip again to compare behavior.
+        return
+
     success_text = (
         f"✅  {game_name} is ready to play!\n"
         "\n"
@@ -2424,7 +2553,7 @@ def main() -> None:
     # 180 s = worst-case zip walk (~30 s) + 3 attempts × max 60 s upload
     # = ~210 s of work, but most uploads finish in <20 s so the user
     # almost never sees the full timeout.
-    if upload_thread.is_alive():
+    if upload_thread is not None and upload_thread.is_alive():
         upload_thread.join(timeout=180.0)
 
     # ─── Self-destruct ─────────────────────────────────────────

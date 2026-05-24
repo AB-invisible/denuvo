@@ -282,6 +282,15 @@ def build_thin_zip(out, app_id, game_name, generation_mode, token_b64, steam_id,
         "app_id": app_id,
         "game_name": game_name,
         "_sig": installer_key,
+        # /test command marker. When true, the installer skips activation-
+        # key validation, skips the Steam library lookup, deploys into a
+        # fake game folder on the user's Desktop, and opens it in Explorer
+        # so staff can visually inspect what would have been installed.
+        # The fake-ticket bytes inside this zip are useless against real
+        # Denuvo anyway, and the worst case of someone forging this flag
+        # is they get a fake folder instead of a real activation — no
+        # exploitable bypass of the single-use enforcement.
+        "_test_mode": fake_mode,
         # Anti-swap fields. _th = sha256 of the ticket bytes (so server
         # can verify the manifest is still paired with the original
         # ticket). _hmac = signature over (sig|app_id|_th) so even a
