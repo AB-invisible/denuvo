@@ -18,6 +18,12 @@ import requests
 from pathlib import Path
 
 # ─── CONFIG ───────────────────────────────────────
+# Templates are CONSULTED when present (the installer's capture webhook
+# grows _Template/ over time for troubleshooting), but every game without
+# a template falls back to a fully dynamic generate_steam_settings() —
+# so no game ever fails for "no template", and bad templates can be
+# deleted without breaking gen. See _resolve_steam_settings() for the
+# precedence + 0-byte scrub that defends against capture-artifact crashes.
 PROJECT_ROOT = Path(__file__).resolve().parent
 TEMPLATE_DIR = PROJECT_ROOT / "_Template"
 TICKETS_DIR  = PROJECT_ROOT / "Generated_Tokens"
@@ -56,32 +62,55 @@ def log(msg):
     print(msg, flush=True)
 
 
-def _copy_template_steam_settings(tpl_ss, ss_dir):
-    """Copy a template's steam_settings/ into the output dir, then scrub any
-    0-byte files left behind.
+def _resolve_steam_settings(out_dir, app_id, steam_id):
+    """Populate out_dir/steam_settings/ using the best available source.
 
-    The template-upload webhook in installer.py captures FOLDER STRUCTURE
-    using 0-byte placeholder files, and those occasionally end up committed
-    into a template (most commonly in steam_settings/load_dlls/, which is
-    Goldberg's auto-LoadLibrary folder). When the zip ships a 0-byte
-    GameOverlayRenderer64.dll inside load_dlls/, ColdClientLoader hits it
-    at startup with STATUS_INVALID_IMAGE_FORMAT (0xC0000020) and the game
-    never launches — that's the RE:Requiem activation failure.
+    Precedence:
+      1. _Template/<app_id>/**/steam_settings/  — if a template exists and
+         has a steam_settings/ subtree, copy it (then scrub 0-byte capture
+         artifacts that would crash Goldberg's load_dlls/ auto-loader).
+         This preserves any hand-curated achievements/icons/sounds the
+         template carries.
+      2. Otherwise, dynamic generation via generate_steam_settings() — a
+         working baseline (ticket-injection-ready configs, comprehensive
+         steam_interfaces.txt, DLC list from appdetails, depots from
+         steamcmd.net). Enough for every Denuvo activation; no overlay
+         icons but the game runs.
 
-    Defense-in-depth: after copying the template, walk the destination and
-    nuke any 0-byte file. Real Goldberg config + DLLs are never empty.
+    `inject_ticket()` runs after this regardless, so the freshly-generated
+    encrypted ticket + account_steamid always land in configs.user.ini
+    even when the template had a pre-baked one.
     """
-    shutil.copytree(tpl_ss, ss_dir, dirs_exist_ok=True)
-    scrubbed = 0
-    for f in Path(ss_dir).rglob("*"):
-        if f.is_file() and f.stat().st_size == 0:
-            try:
-                f.unlink()
-                scrubbed += 1
-            except OSError as e:
-                log(f"WARN: couldn't remove 0-byte template artifact {f}: {e}")
-    if scrubbed:
-        log(f"Template: scrubbed {scrubbed} zero-byte capture artifact(s) from steam_settings/")
+    ss_dir = out_dir / "steam_settings"
+    ss_dir.mkdir(parents=True, exist_ok=True)
+
+    tpl_dir = TEMPLATE_DIR / app_id
+    tpl_ss = None
+    if tpl_dir.exists():
+        cand = list(tpl_dir.rglob("steam_settings"))
+        tpl_ss = cand[0] if cand else None
+
+    if tpl_ss and tpl_ss.is_dir():
+        log(f"steam_settings/: using template _Template/{app_id}/{tpl_ss.relative_to(tpl_dir)}")
+        shutil.copytree(tpl_ss, ss_dir, dirs_exist_ok=True)
+        # Defensive 0-byte scrub: the capture webhook writes 0-byte
+        # placeholders, and one in steam_settings/load_dlls/ would crash
+        # ColdClientLoader at startup with STATUS_INVALID_IMAGE_FORMAT.
+        # Real Goldberg config + DLLs are never empty, so deleting any
+        # 0-byte file is always safe.
+        scrubbed = 0
+        for f in ss_dir.rglob("*"):
+            if f.is_file() and f.stat().st_size == 0:
+                try:
+                    f.unlink()
+                    scrubbed += 1
+                except OSError as e:
+                    log(f"WARN: couldn't remove 0-byte template artifact {f}: {e}")
+        if scrubbed:
+            log(f"steam_settings/: scrubbed {scrubbed} zero-byte capture artifact(s)")
+    else:
+        log(f"steam_settings/: no template for AppID {app_id}, generating dynamically")
+        generate_steam_settings(out_dir, app_id, steam_id)
 
 
 def _steampass_request(session_callable, *args, **kwargs):
@@ -128,20 +157,9 @@ def build_thin_zip(out, app_id, game_name, generation_mode, token_b64, steam_id,
     """
     out.mkdir(parents=True, exist_ok=True)
 
-    # ── Shared steam_settings/ (same as multi-mode build) ──
+    # ── Shared steam_settings/ ──
+    _resolve_steam_settings(out, app_id, steam_id)
     ss_dir = out / "steam_settings"
-    ss_dir.mkdir(exist_ok=True)
-    tpl_dir = TEMPLATE_DIR / app_id
-    tpl_ss = None
-    if tpl_dir.exists():
-        cand = list(tpl_dir.rglob("steam_settings"))
-        tpl_ss = cand[0] if cand else None
-    if tpl_ss and tpl_ss.is_dir():
-        log(f"Using bundled steam_settings from _Template/{app_id}/{tpl_ss.relative_to(tpl_dir)}")
-        _copy_template_steam_settings(tpl_ss, ss_dir)
-    else:
-        log("No bundled template — generating steam_settings/ via Steam API")
-        generate_steam_settings(out, app_id, steam_id)
     (ss_dir / "steam_appid.txt").write_text(str(app_id))
     stray = out / "steam_appid.txt"
     if stray.exists():
@@ -381,24 +399,8 @@ def build_multi_mode_zip(out, app_id, game_name, generation_mode, token_b64, ste
     out.mkdir(parents=True, exist_ok=True)
 
     # ── Shared steam_settings/ ──
+    _resolve_steam_settings(out, app_id, steam_id)
     ss_dir = out / "steam_settings"
-    ss_dir.mkdir(exist_ok=True)
-
-    tpl_dir = TEMPLATE_DIR / app_id
-    tpl_ss = None
-    if tpl_dir.exists():
-        cand = list(tpl_dir.rglob("steam_settings"))
-        tpl_ss = cand[0] if cand else None
-
-    if tpl_ss and tpl_ss.is_dir():
-        log(f"Using bundled steam_settings from _Template/{app_id}/{tpl_ss.relative_to(tpl_dir)}")
-        _copy_template_steam_settings(tpl_ss, ss_dir)
-    else:
-        log("No bundled template — generating steam_settings/ via Steam API")
-        # generate_steam_settings drops both ss/ and a stray out/steam_appid.txt;
-        # we delete the latter so each mode places its own appid file.
-        generate_steam_settings(out, app_id, steam_id)
-
     (ss_dir / "steam_appid.txt").write_text(str(app_id))
     stray = out / "steam_appid.txt"
     if stray.exists():
@@ -546,19 +548,6 @@ def bundle_installer(out_dir, game_name, mode):
     )
     log(f"Bundled installer: {installer_name}")
     return installer_name
-
-
-# ─── TEMPLATE VALIDATION ─────────────────────────
-def get_template_status(app_id):
-    """Check if a template exists and looks valid."""
-    tpl_dir = TEMPLATE_DIR / str(app_id)
-    if not tpl_dir.exists():
-        return "missing"
-    has_appid = any(tpl_dir.rglob("steam_appid.txt"))
-    if not has_appid:
-        return "corrupt"
-    has_settings = any(tpl_dir.rglob("steam_settings"))
-    return "ok" if has_settings else "corrupt"
 
 
 # ─── STEAMPASS API ────────────────────────────────
@@ -803,10 +792,33 @@ def generate_steam_settings(output_dir, app_id, steam_id=None):
         "RTrigTop=RBUMPER\n"
     )
 
-    # DLCs — templates use plain "unlock_all = 0" without enumerating DLCs
-    (ss / "configs.app.ini").write_text("[app::dlcs]\nunlock_all = 0")
+    # ── DLCs ──
+    # Enumerate DLCs from Steam's appdetails endpoint (no API key needed,
+    # public store data). Format Goldberg expects:
+    #   [app::dlcs]
+    #   unlock_all = 0
+    #   <dlc_appid> = <dlc name>
+    # When `unlock_all = 0` and DLCs are explicitly listed, Goldberg only
+    # returns "owned" for the listed IDs — same behavior the old
+    # _Template/<appid>/configs.app.ini files provided manually.
+    dlc_lines = ["[app::dlcs]", "unlock_all = 0"]
+    try:
+        r = requests.get(
+            f"https://store.steampowered.com/api/appdetails",
+            params={"appids": app_id, "filters": "basic"},
+            timeout=10,
+        )
+        d = (r.json().get(str(app_id), {}) or {}).get("data", {})
+        for dlc_id in (d.get("dlc") or []):
+            # Per-DLC name fetch is rate-limited (5 req/sec) and we want to
+            # avoid blowing the API budget on every gen — list IDs without
+            # names. Goldberg honors unlock-by-ID even when name is empty.
+            dlc_lines.append(f"{int(dlc_id)} =")
+    except Exception as e:
+        log(f"DLC enumeration failed (non-fatal, shipping with empty DLC list): {e}")
+    (ss / "configs.app.ini").write_text("\n".join(dlc_lines) + "\n")
 
-    # Depots
+    # ── Depots ──
     try:
         r = requests.get(
             f"https://api.steamcmd.net/v1/info/{app_id}", timeout=8)
@@ -815,11 +827,243 @@ def generate_steam_settings(output_dir, app_id, steam_id=None):
         depot_ids = [k for k in depots if k.isdigit()]
         if depot_ids:
             (ss / "depots.txt").write_text("\n".join(depot_ids))
-    except:
+    except Exception:
         pass
 
     (ss / "supported_languages.txt").write_text(
         "english\njapanese\nbrazilian\nschinese\ntchinese\n")
+
+    # ── Steam interfaces ──
+    # Goldberg uses steam_interfaces.txt to know which interface versions
+    # to expose. Most games are happy with whatever Goldberg picks by
+    # default; modern Denuvo titles (especially RE Engine / UE5) want
+    # explicit guarantees that specific Get*Interface_* calls succeed.
+    # Ship a curated modern superset — covers every version current
+    # Goldberg knows about for each interface family. Older versions are
+    # included so older games keep working; newer versions cover RE9 /
+    # any 2025+ release.
+    (ss / "steam_interfaces.txt").write_text(_STEAM_INTERFACES_MODERN)
+
+
+# Modern Goldberg interface superset — kept here as a module constant
+# (rather than per-game template files) so every game in the catalog
+# gets the same baseline. Curated from Goldberg's experimental client
+# headers + the union of every per-game steam_interfaces.txt that
+# previously lived under _Template/.
+_STEAM_INTERFACES_MODERN = """STEAMAPPS_INTERFACE_VERSION001
+STEAMAPPS_INTERFACE_VERSION002
+STEAMAPPS_INTERFACE_VERSION003
+STEAMAPPS_INTERFACE_VERSION004
+STEAMAPPS_INTERFACE_VERSION005
+STEAMAPPS_INTERFACE_VERSION006
+STEAMAPPS_INTERFACE_VERSION007
+STEAMAPPS_INTERFACE_VERSION008
+STEAMAPPLIST_INTERFACE_VERSION001
+STEAMAPPTICKET_INTERFACE_VERSION001
+SteamClient006
+SteamClient007
+SteamClient008
+SteamClient009
+SteamClient010
+SteamClient011
+SteamClient012
+SteamClient013
+SteamClient014
+SteamClient015
+SteamClient016
+SteamClient017
+SteamClient018
+SteamClient019
+SteamClient020
+SteamClient021
+SteamController003
+SteamController004
+SteamController005
+SteamController006
+SteamController007
+SteamController008
+SteamFriends001
+SteamFriends002
+SteamFriends003
+SteamFriends004
+SteamFriends005
+SteamFriends006
+SteamFriends007
+SteamFriends008
+SteamFriends009
+SteamFriends010
+SteamFriends011
+SteamFriends012
+SteamFriends013
+SteamFriends014
+SteamFriends015
+SteamFriends016
+SteamFriends017
+SteamFriends018
+SteamGameServerStats001
+SteamGameServer010
+SteamGameServer011
+SteamGameServer012
+SteamGameServer013
+SteamGameServer014
+SteamGameServer015
+STEAMHTMLSURFACE_INTERFACE_VERSION_001
+STEAMHTMLSURFACE_INTERFACE_VERSION_002
+STEAMHTMLSURFACE_INTERFACE_VERSION_003
+STEAMHTMLSURFACE_INTERFACE_VERSION_004
+STEAMHTMLSURFACE_INTERFACE_VERSION_005
+STEAMHTTP_INTERFACE_VERSION001
+STEAMHTTP_INTERFACE_VERSION002
+STEAMHTTP_INTERFACE_VERSION003
+SteamInput001
+SteamInput002
+SteamInput003
+SteamInput004
+SteamInput005
+SteamInput006
+STEAMINVENTORY_INTERFACE_V001
+STEAMINVENTORY_INTERFACE_V002
+STEAMINVENTORY_INTERFACE_V003
+SteamMatchMakingServers001
+SteamMatchMakingServers002
+SteamMatchMaking001
+SteamMatchMaking002
+SteamMatchMaking003
+SteamMatchMaking004
+SteamMatchMaking005
+SteamMatchMaking006
+SteamMatchMaking007
+SteamMatchMaking008
+SteamMatchMaking009
+SteamMatchGameSearch001
+SteamParties001
+SteamParties002
+STEAMMUSIC_INTERFACE_VERSION001
+STEAMMUSICREMOTE_INTERFACE_VERSION001
+SteamNetworkingMessages001
+SteamNetworkingMessages002
+SteamNetworkingSockets001
+SteamNetworkingSockets002
+SteamNetworkingSockets003
+SteamNetworkingSockets004
+SteamNetworkingSockets006
+SteamNetworkingSockets008
+SteamNetworkingSockets009
+SteamNetworkingSockets010
+SteamNetworkingSockets011
+SteamNetworkingSockets012
+SteamNetworkingUtils001
+SteamNetworkingUtils002
+SteamNetworkingUtils003
+SteamNetworkingUtils004
+SteamNetworking001
+SteamNetworking002
+SteamNetworking003
+SteamNetworking004
+SteamNetworking005
+SteamNetworking006
+STEAMPARENTALSETTINGS_INTERFACE_VERSION001
+STEAMREMOTEPLAY_INTERFACE_VERSION001
+STEAMREMOTEPLAY_INTERFACE_VERSION002
+STEAMREMOTEPLAY_INTERFACE_VERSION003
+STEAMREMOTESTORAGE_INTERFACE_VERSION001
+STEAMREMOTESTORAGE_INTERFACE_VERSION002
+STEAMREMOTESTORAGE_INTERFACE_VERSION003
+STEAMREMOTESTORAGE_INTERFACE_VERSION004
+STEAMREMOTESTORAGE_INTERFACE_VERSION005
+STEAMREMOTESTORAGE_INTERFACE_VERSION006
+STEAMREMOTESTORAGE_INTERFACE_VERSION007
+STEAMREMOTESTORAGE_INTERFACE_VERSION008
+STEAMREMOTESTORAGE_INTERFACE_VERSION009
+STEAMREMOTESTORAGE_INTERFACE_VERSION010
+STEAMREMOTESTORAGE_INTERFACE_VERSION011
+STEAMREMOTESTORAGE_INTERFACE_VERSION012
+STEAMREMOTESTORAGE_INTERFACE_VERSION013
+STEAMREMOTESTORAGE_INTERFACE_VERSION014
+STEAMREMOTESTORAGE_INTERFACE_VERSION015
+STEAMREMOTESTORAGE_INTERFACE_VERSION016
+STEAMSCREENSHOTS_INTERFACE_VERSION001
+STEAMSCREENSHOTS_INTERFACE_VERSION002
+STEAMSCREENSHOTS_INTERFACE_VERSION003
+STEAMTIMELINE_INTERFACE_V001
+STEAMTIMELINE_INTERFACE_V002
+STEAMTIMELINE_INTERFACE_V003
+STEAMTIMELINE_INTERFACE_V004
+STEAMUGC_INTERFACE_VERSION001
+STEAMUGC_INTERFACE_VERSION002
+STEAMUGC_INTERFACE_VERSION003
+STEAMUGC_INTERFACE_VERSION004
+STEAMUGC_INTERFACE_VERSION005
+STEAMUGC_INTERFACE_VERSION006
+STEAMUGC_INTERFACE_VERSION007
+STEAMUGC_INTERFACE_VERSION008
+STEAMUGC_INTERFACE_VERSION009
+STEAMUGC_INTERFACE_VERSION010
+STEAMUGC_INTERFACE_VERSION011
+STEAMUGC_INTERFACE_VERSION012
+STEAMUGC_INTERFACE_VERSION013
+STEAMUGC_INTERFACE_VERSION014
+STEAMUGC_INTERFACE_VERSION015
+STEAMUGC_INTERFACE_VERSION016
+STEAMUGC_INTERFACE_VERSION017
+STEAMUGC_INTERFACE_VERSION018
+STEAMUGC_INTERFACE_VERSION019
+STEAMUGC_INTERFACE_VERSION020
+STEAMUGC_INTERFACE_VERSION021
+SteamUser004
+SteamUser005
+SteamUser006
+SteamUser007
+SteamUser008
+SteamUser009
+SteamUser010
+SteamUser011
+SteamUser012
+SteamUser013
+SteamUser014
+SteamUser015
+SteamUser016
+SteamUser017
+SteamUser018
+SteamUser019
+SteamUser020
+SteamUser021
+SteamUser022
+SteamUser023
+STEAMUSERSTATS_INTERFACE_VERSION001
+STEAMUSERSTATS_INTERFACE_VERSION002
+STEAMUSERSTATS_INTERFACE_VERSION003
+STEAMUSERSTATS_INTERFACE_VERSION004
+STEAMUSERSTATS_INTERFACE_VERSION005
+STEAMUSERSTATS_INTERFACE_VERSION006
+STEAMUSERSTATS_INTERFACE_VERSION007
+STEAMUSERSTATS_INTERFACE_VERSION008
+STEAMUSERSTATS_INTERFACE_VERSION009
+STEAMUSERSTATS_INTERFACE_VERSION010
+STEAMUSERSTATS_INTERFACE_VERSION011
+STEAMUSERSTATS_INTERFACE_VERSION012
+STEAMUSERSTATS_INTERFACE_VERSION013
+SteamUtils001
+SteamUtils002
+SteamUtils003
+SteamUtils004
+SteamUtils005
+SteamUtils006
+SteamUtils007
+SteamUtils008
+SteamUtils009
+SteamUtils010
+STEAMVIDEO_INTERFACE_V001
+STEAMVIDEO_INTERFACE_V002
+STEAMVIDEO_INTERFACE_V003
+STEAMVIDEO_INTERFACE_V004
+STEAMVIDEO_INTERFACE_V005
+STEAMVIDEO_INTERFACE_V006
+STEAMVIDEO_INTERFACE_V007
+STEAMUNIFIEDMESSAGES_INTERFACE_VERSION001
+SteamMasterServerUpdater001
+SteamGameCoordinator001
+"""
 
 
 def _get_all_launch_configs(app_id):
@@ -1009,456 +1253,36 @@ def main(app_id, game_name, steampass_uuid, generation_mode="gbe"):
         log(f"Token generated (SteamID: {steam_id})")
 
     # ── Step 4: Build output zip ──
-    # Three possible code paths:
+    # Two paths:
     #   1. PUBLIC_URL set → thin zip + payload manifest (installer downloads
     #      Goldberg binaries from the bot's HTTP endpoint on demand).
-    #      Smallest user-facing zip (~2 MB).
-    #   2. GAMEGEN_LEGACY_OUTPUT=1 → original single-mode layout (for
-    #      emergency rollback if anything goes wrong).
-    #   3. Otherwise → multi-mode embedded zip (both payloads bundled, ~50 MB).
-    if os.environ.get("GAMEGEN_LEGACY_OUTPUT") != "1":
-        base_url = _public_base_url()
-        # Diagnostic: surface exactly what env vars Python saw and which
-        # zip layout we're about to build. Visible in Railway logs when
-        # something goes wrong with the env-var plumbing again.
-        pu = os.environ.get("PUBLIC_URL", "")
-        rd = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
-        log(f"Routing decision: PUBLIC_URL='{pu}' RAILWAY_PUBLIC_DOMAIN='{rd}' resolved_base_url='{base_url}'")
-        if base_url:
-            log(f"→ build_thin_zip (manifest mode, ~9 MB)")
-            zip_path = build_thin_zip(
-                out, app_id, game_name, generation_mode, token_b64, steam_id, fake_mode, base_url
-            )
-        else:
-            log("→ build_multi_mode_zip (embedded fallback, ~50 MB) — PUBLIC_URL not set")
-            zip_path = build_multi_mode_zip(
-                out, app_id, game_name, generation_mode, token_b64, steam_id, fake_mode
-            )
-        print(zip_path)
-        return
-
-    # ── Legacy single-mode flow (opt-in via env var) ──
-    if generation_mode == "gbe":
-        log("Building GBE output (preserves per-game folder structure, GBE files only)")
-        tpl_dir = TEMPLATE_DIR / app_id
-
-        # Files coldloader mode ships that GBE mode does NOT.
-        # These get removed from the output if the template includes them.
-        COLDLOADER_ONLY = {
-            "coldloader.dll", "coldloader.ini", "mktl.ini",
-            "GameOverlayRenderer64.dll",
-            "version.dll", "winmm.dll", "dinput8.dll", "dsound.dll", "xinput1_3.dll",
-            "steam_stubbed.dll", "steamclient.dll", "steamclient_extra_x64.dll",
-        }
-        # GBE-mode DLLs: shipped from _Core/ (universal GBE versions)
-        GBE_DLLS = {"steam_api64.dll", "steamclient64.dll"}
-
-        if tpl_dir.exists():
-            log(f"Using bundled template structure from _Template/{app_id}")
-            shutil.copytree(tpl_dir, out, dirs_exist_ok=True)
-
-            # Read manifest to know which paths have DLL placeholders
-            manifest_path = out / "_dll_manifest.json"
-            manifest = {}
-            if manifest_path.exists():
-                try:
-                    manifest = json.loads(manifest_path.read_text())
-                except Exception as e:
-                    log(f"  WARNING: bad manifest: {e}")
-                manifest_path.unlink(missing_ok=True)
-
-            # For every DLL placeholder in the manifest:
-            #   - If filename is a GBE DLL, inject the GBE version from _Core/ at that path
-            #   - Otherwise (it's a coldloader/proxy file), delete the placeholder
-            for rel_path in manifest.keys():
-                target = out / rel_path
-                name = Path(rel_path).name
-                if name in GBE_DLLS:
-                    src = CORE_DIR / name
-                    if src.exists():
-                        target.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(src, target)
-                        log(f"  GBE inject: {rel_path} <- _Core/{name}")
-                    else:
-                        log(f"  WARNING: missing _Core/{name}")
-                else:
-                    if target.exists():
-                        target.unlink()
-                        log(f"  Removed coldloader-only file: {rel_path}")
-
-            # Sweep: remove any coldloader-only files left in the output that
-            # weren't in the manifest (e.g. inline coldloader.ini from a template).
-            for p in list(out.rglob("*")):
-                if p.is_file() and p.name in COLDLOADER_ONLY:
-                    p.unlink()
-
-            # Clean up now-empty directories left behind by the removals
-            for d in sorted(out.rglob("*"), key=lambda p: len(str(p)), reverse=True):
-                if d.is_dir() and not any(d.iterdir()):
-                    d.rmdir()
-
-            # If the template didn't ship a steam_api64.dll placeholder, drop one
-            # at a reasonable location. Prefer Engine path if we detect UE; else root.
-            if not any(p.name == "steam_api64.dll" for p in out.rglob("*.dll")):
-                # Try to find an Engine/Binaries/.../Win64 folder in the template
-                engine_dirs = [p for p in out.rglob("*") if p.is_dir() and p.name == "Win64" and "Steamworks" in p.as_posix()]
-                target = (engine_dirs[0] / "steam_api64.dll") if engine_dirs else (out / "steam_api64.dll")
-                shutil.copy2(CORE_DIR / "steam_api64.dll", target)
-                log(f"  GBE inject (default path): {target.relative_to(out).as_posix()}")
-            if not any(p.name == "steamclient64.dll" for p in out.rglob("*.dll")):
-                shutil.copy2(CORE_DIR / "steamclient64.dll", out / "steamclient64.dll")
-                log("  GBE inject (default path): steamclient64.dll")
-        else:
-            # No bundled template — auto-gen GBE layout based on Steam API detection
-            log("No bundled template — auto-generating GBE layout from Steam API")
-            configs = _get_all_launch_configs(app_id)
-            ue = _detect_ue_structure(configs)
-            if ue:
-                _, exe_dir_path = ue
-                engine_api_dir = out / "Engine" / "Binaries" / "ThirdParty" / "Steamworks" / "Steamv157" / "Win64"
-                exe_dir = out / exe_dir_path
-                engine_api_dir.mkdir(parents=True, exist_ok=True)
-                exe_dir.mkdir(parents=True, exist_ok=True)
-                generate_steam_settings(engine_api_dir, app_id, steam_id)
-                shutil.copy2(CORE_DIR / "steam_api64.dll", engine_api_dir / "steam_api64.dll")
-                shutil.copy2(CORE_DIR / "steamclient64.dll", exe_dir / "steamclient64.dll")
-            else:
-                nested = _detect_nested_exe(configs)
-                exe_dir = out / nested if nested and nested not in ["ArtBookwithMiniSoundtrack", "Artbook/book", "2KLauncher"] else out
-                exe_dir.mkdir(parents=True, exist_ok=True)
-                generate_steam_settings(exe_dir, app_id, steam_id)
-                shutil.copy2(CORE_DIR / "steam_api64.dll", exe_dir / "steam_api64.dll")
-                shutil.copy2(CORE_DIR / "steamclient64.dll", exe_dir / "steamclient64.dll")
-
-        # Find the steam_settings folder (template put it somewhere) and inject ticket
-        ss_candidates = list(out.rglob("steam_settings"))
-        if not ss_candidates:
-            log("ERROR: no steam_settings/ in GBE output")
-            sys.exit(1)
-        ss_dir = ss_candidates[0]
-        inject_ticket(ss_dir / "configs.user.ini", token_b64, steam_id)
-        log(f"Injected ticket into {ss_dir.relative_to(out).as_posix()}/configs.user.ini")
-
-        # Ensure steam_appid.txt is alongside steam_api64.dll (so ColdClientLoader/etc work)
-        for api in out.rglob("steam_api64.dll"):
-            (api.parent / "steam_appid.txt").write_text(str(app_id))
-
-        bundle_installer(out, game_name, "gbe")
-
-        safe_name = re.sub(r'[<>:"/\\|?*]', '', game_name).strip()
-        prefix = "TEST" if fake_mode else "Token"
-        zip_base = str(TICKETS_DIR / f"{prefix} [{safe_name}]")
-        zip_path = shutil.make_archive(zip_base, 'zip', root_dir=str(out))
-        log(f"Zipped: {zip_path}")
-        shutil.rmtree(out, ignore_errors=True)
-        print(zip_path)
-        return
-
-    # ──────────────────────────────────────────────────────────────
-    # ColdClientLoader (V1) mode
-    # Per goldberg_emulator/steamclient_experimental README:
-    #   - User keeps their game's original steam_api64.dll
-    #   - We ship a launcher exe + steamclient(64).dll + ColdClientLoader.ini
-    #     + steam_settings/ (with ticket) — all in ONE folder
-    #   - GameOverlayRenderer(64).dll recommended (some games check for it)
-    #   - User runs the loader exe, which spawns the game with steamclient
-    #     hooked in
-    # ──────────────────────────────────────────────────────────────
-    if generation_mode == "coldclientloader":
-        log("Building ColdClientLoader V1 output...")
-        cc_src = CORE_DIR / "coldclientloader"
-        if not cc_src.exists():
-            log(f"ERROR: missing {cc_src}. Cannot build coldclientloader output.")
-            sys.exit(1)
-
-        # 1. Copy V1 base files (loader + steamclient + overlay) into output root.
-        # 32-bit loader intentionally NOT shipped — all our supported games are x64.
-        # The loader gets renamed to "start-<game>.exe" so the user sees a clear
-        # entry point instead of the generic "steamclient_loader_x64.exe".
-        safe_loader_name = re.sub(r'[<>:"/\\|?*]', '', game_name).strip()
-        if not safe_loader_name:
-            safe_loader_name = f"app{app_id}"
-        loader_out_name = f"start-{safe_loader_name}.exe"
-        loader_src = cc_src / "steamclient_loader_x64.exe"
-        if loader_src.exists():
-            shutil.copy2(loader_src, out / loader_out_name)
-        for fname in [
-            "steamclient.dll",
-            "steamclient64.dll",
-            "GameOverlayRenderer.dll",
-            "GameOverlayRenderer64.dll",
-        ]:
-            src = cc_src / fname
-            if src.exists():
-                shutil.copy2(src, out / fname)
-
-        # 2. steam_settings: from bundled template (preserves achievements,
-        #    images, configs) OR generated fresh from Steam API.
-        ss_dir = out / "steam_settings"
-        ss_dir.mkdir(parents=True, exist_ok=True)
-        tpl_dir = TEMPLATE_DIR / app_id
-        tpl_ss = None
-        if tpl_dir.exists():
-            cand = list(tpl_dir.rglob("steam_settings"))
-            tpl_ss = cand[0] if cand else None
-        if tpl_ss and tpl_ss.is_dir():
-            log(f"Copying steam_settings from _Template/{app_id}/{tpl_ss.relative_to(tpl_dir)}")
-            _copy_template_steam_settings(tpl_ss, ss_dir)
-        else:
-            log("No bundled steam_settings — generating from Steam API")
-            generate_steam_settings(out, app_id, steam_id)
-
-        # Always write steam_appid.txt inside steam_settings (loader reads it
-        # from there when AppId= is left empty in the ini)
-        (ss_dir / "steam_appid.txt").write_text(str(app_id))
-
-        # 3. Detect the game's main exe path (relative) from Steam launch configs.
-        # Priority order:
-        #   Pass 1: anything containing "-shipping" (e.g. APK2-Win64-Shipping.exe)
-        #           — UE/Unity shipping binary, the real entry point
-        #   Pass 2: anything containing "win64" / "win32" path segment but not
-        #           a known junk binary (launcher/artbook/etc)
-        #   Pass 3: first usable config that isn't junk
-        #   Pass 4: literally the first config if everything got filtered
-        configs = _get_all_launch_configs(app_id)
-        game_exe = "game.exe"  # fallback if Steam API has nothing
-        skip = {"artbook", "launcher", "2klauncher", "book", "crashreport", "redist", "vc_redist"}
-
-        def _is_junk(p: str) -> bool:
-            return any(s in p.lower() for s in skip)
-
-        chosen = None
-        # Pass 1: prefer -Shipping binaries (UE/Unity real game exe)
-        for c in configs:
-            if "-shipping" in c.lower() and not _is_junk(c):
-                chosen = c
-                break
-        # Pass 2: prefer binaries under Win64/Win32 path
-        if not chosen:
-            for c in configs:
-                low = c.lower()
-                if ("/win64/" in low.replace("\\", "/") or "/win32/" in low.replace("\\", "/")) and not _is_junk(c):
-                    chosen = c
-                    break
-        # Pass 3: first non-junk config
-        if not chosen:
-            for c in configs:
-                if not _is_junk(c):
-                    chosen = c
-                    break
-        # Pass 4: absolute fallback
-        if not chosen and configs:
-            chosen = configs[0]
-        if chosen:
-            # Normalize backslashes; relative path from loader (which sits
-            # at the game folder root) directly to the exe
-            game_exe = chosen.replace("\\", "/")
-            log(f"Picked Exe= from {len(configs)} Steam launch config(s): {game_exe}")
-
-        # 4. Write a fresh ColdClientLoader.ini with this game's specifics.
-        # ForceInjectSteamClient=1 is REQUIRED for Denuvo titles — many ship
-        # their own steamclient64.dll next to the exe, and without forced
-        # injection Windows loads the game's copy instead of Goldberg's.
-        # That makes Denuvo talk to real Steam → real Steam rejects the
-        # account → "Steam API not initialized".
-        # ForceInjectGameOverlayRenderer=1 because some Denuvo wrappers
-        # verify the overlay DLL is actually mapped into the process, not
-        # just present on disk.
-        ini = (
-            "# Generated by GameGen bot. ColdClientLoader v1 (Goldberg/Rat431).\n"
-            "[SteamClient]\n"
-            f"Exe={game_exe}\n"
-            "ExeRunDir=\n"
-            "ExeCommandLine=\n"
-            f"AppId={app_id}\n"
-            "SteamClientDll=steamclient.dll\n"
-            "SteamClient64Dll=steamclient64.dll\n"
-            "\n"
-            "[Injection]\n"
-            "ForceInjectSteamClient=1\n"
-            "ForceInjectGameOverlayRenderer=1\n"
-            "DllsToInjectFolder=\n"
-            "IgnoreInjectionError=1\n"
-            "IgnoreLoaderArchDifference=0\n"
-            "\n"
-            "[Persistence]\n"
-            "Mode=0\n"
-            "\n"
-            "[Debug]\n"
-            "ResumeByDebugger=0\n"
-        )
-        (out / "ColdClientLoader.ini").write_text(ini, encoding="utf-8")
-        log(f"Wrote ColdClientLoader.ini (Exe={game_exe}, AppId={app_id})")
-
-        # 5. Inject ticket into configs.user.ini
-        inject_ticket(ss_dir / "configs.user.ini", token_b64, steam_id)
-        log("Injected ticket into steam_settings/configs.user.ini")
-
-        # 6. Bundle the auto-installer + README
-        bundle_installer(out, game_name, "coldclientloader")
-
-        # 7. Zip
-        safe_name = re.sub(r'[<>:"/\\|?*]', '', game_name).strip()
-        prefix = "TEST" if fake_mode else "Token"
-        zip_base = str(TICKETS_DIR / f"{prefix} [{safe_name}]")
-        zip_path = shutil.make_archive(zip_base, 'zip', root_dir=str(out))
-        log(f"Zipped: {zip_path}")
-        shutil.rmtree(out, ignore_errors=True)
-        print(zip_path)
-        return
-
-    # ── Mode coldloader: original template-first flow ──
-    tpl_status = get_template_status(app_id)
-    use_template = (tpl_status == "ok")
-
-    if use_template:
-        tpl_dir = TEMPLATE_DIR / app_id
-        log(f"Using template from _Template/{app_id}")
-        shutil.copytree(tpl_dir, out, dirs_exist_ok=True)
-
-        # Templates ship DLLs as 0-byte placeholders + a _dll_manifest.json that maps
-        # each placeholder (relative path) to a specific variant in _Template/_dll_variants/.
-        # This keeps the bundle deduplicated while preserving per-game DLL versions.
-        manifest_path = out / "_dll_manifest.json"
-        variants_dir = TEMPLATE_DIR / "_dll_variants"
-        injected = 0
-        missing = []
-
-        if manifest_path.exists():
-            try:
-                manifest = json.loads(manifest_path.read_text())
-            except Exception as e:
-                manifest = {}
-                log(f"  WARNING: failed to parse _dll_manifest.json: {e}")
-
-            for rel_path, variant_name in manifest.items():
-                target = out / rel_path
-                src = variants_dir / variant_name
-                if src.exists() and src.stat().st_size > 0:
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(src, target)
-                    injected += 1
-                else:
-                    missing.append(f"{rel_path} (variant: {variant_name})")
-
-            # Don't ship the manifest in the user's zip
-            manifest_path.unlink(missing_ok=True)
-            log(f"  Injected {injected} DLL(s) from manifest variants")
-        else:
-            # Legacy fallback: any 0-byte *.dll → copy from _Core/ by filename
-            for dll_path in out.rglob("*.dll"):
-                core_src = CORE_DIR / dll_path.name
-                if core_src.exists():
-                    shutil.copy2(core_src, dll_path)
-                    injected += 1
-                else:
-                    missing.append(dll_path.name)
-            log(f"  Injected {injected} DLL(s) from _Core/ (no manifest)")
-
-        if missing:
-            log(f"  WARNING: missing variants/dlls: {sorted(set(missing))}")
-
-        # Find steam_settings dir (may be nested in exe subfolder)
-        ss_dirs = list(out.rglob("steam_settings"))
-        if ss_dirs:
-            ss_dir = ss_dirs[0]
-        else:
-            ss_dir = out / "steam_settings"
-            ss_dir.mkdir(parents=True, exist_ok=True)
-        log("  Template copied")
-    else:
-        log("No template found — generating from scratch...")
-        configs = _get_all_launch_configs(app_id)
-
-        # Check for UE game (split DLL placement)
-        ue = _detect_ue_structure(configs)
-        if ue:
-            game_path, exe_dir_path = ue
-            log(f"UE game detected: {exe_dir_path}")
-
-            # Define both target dirs up front
-            engine_api_dir = out / "Engine" / "Binaries" / "ThirdParty" / "Steamworks" / "Steamv157" / "Win64"
-            exe_dir = out / exe_dir_path
-            engine_api_dir.mkdir(parents=True, exist_ok=True)
-            exe_dir.mkdir(parents=True, exist_ok=True)
-
-            # Engine path: steam_appid.txt + steam_api64.dll + steam_settings/
-            generate_steam_settings(engine_api_dir, app_id, steam_id)
-
-            # Goldberg DLLs split correctly:
-            #   steam_api64.dll  → Engine path
-            #   steamclient64.dll → game Win64 path (matches templates)
-            copy_goldberg_dlls(engine_api_dir, exe_dir)
-
-            # Coldloader + overlay + version + steamclient → game Win64 path
-            copy_coldloader_files(exe_dir)
-
-            ss_dir = engine_api_dir / "steam_settings"
-            log("Generated UE template + DLLs")
-
-        else:
-            # Check for nested exe
-            nested = _detect_nested_exe(configs)
-            if nested and nested not in ["ArtBookwithMiniSoundtrack", "Artbook/book", "2KLauncher"]:
-                exe_dir = out / nested
-                log(f"Nested: {nested}")
-            else:
-                exe_dir = out
-                log("Flat structure")
-
-            exe_dir.mkdir(parents=True, exist_ok=True)
-            ss_dir = exe_dir / "steam_settings"
-            ss_dir.mkdir(parents=True, exist_ok=True)
-
-            generate_steam_settings(exe_dir, app_id, steam_id)
-            copy_coldloader_files(exe_dir)
-            copy_goldberg_dlls(exe_dir, exe_dir)
-            log("Generated steam_settings + DLLs")
-
-    # Write coldloader.ini next to every coldloader.dll in the output, with
-    # the correct appid. The custom 199 KB coldloader.dll (the only one we
-    # use) reads this file — without it, the loader errors with "appid not
-    # found". Runs for BOTH the template path and auto-gen path.
+    #      Smallest user-facing zip (~9 MB).
+    #   2. PUBLIC_URL not set → multi-mode embedded zip (both payloads
+    #      bundled, ~50 MB) as a self-contained fallback.
     #
-    # We deliberately do NOT write mktl.ini: only MKTL's own (different)
-    # coldloader.dll reads that, and we don't ship MKTL's coldloader.
-    cl_count = 0
-    for cl in out.rglob("coldloader.dll"):
-        (cl.parent / "coldloader.ini").write_text(
-            "[settings]\n"
-            f"appid = {app_id}\n"
-            "steamclient64 = steamclient64.dll\n"
-            "steamclient = steamclient.dll\n"
-            "cleanup_delay = 10\n",
-            encoding="utf-8"
+    # The third "GAMEGEN_LEGACY_OUTPUT=1" branch is gone — it copied a
+    # per-game folder structure from _Template/<appid>/ and then layered
+    # GBE files on top, but _Template/ no longer exists (everything is
+    # generated dynamically now). If you need single-mode output, use the
+    # thin zip path and /setmode'd game so only one mode actually gets
+    # downloaded.
+    base_url = _public_base_url()
+    pu = os.environ.get("PUBLIC_URL", "")
+    rd = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
+    log(f"Routing decision: PUBLIC_URL='{pu}' RAILWAY_PUBLIC_DOMAIN='{rd}' resolved_base_url='{base_url}'")
+    if base_url:
+        log(f"→ build_thin_zip (manifest mode, ~9 MB)")
+        zip_path = build_thin_zip(
+            out, app_id, game_name, generation_mode, token_b64, steam_id, fake_mode, base_url
         )
-        # Also delete any stale mktl.ini that may have been bundled in a
-        # template from earlier versions of this codebase.
-        stale = cl.parent / "mktl.ini"
-        if stale.exists():
-            stale.unlink()
-        cl_count += 1
-    if cl_count:
-        log(f"Wrote coldloader.ini next to {cl_count} coldloader.dll location(s) (appid={app_id})")
-
-    # Inject ticket into configs.user.ini (always — template or not)
-    inject_ticket(ss_dir / "configs.user.ini", token_b64, steam_id)
-    log("Injected ticket into configs.user.ini")
-
-    bundle_installer(out, game_name, "coldloader")
-
-    # ── Step 5: Zip with game name ──
-    safe_name = re.sub(r'[<>:"/\\|?*]', '', game_name).strip()
-    prefix = "TEST" if fake_mode else "Token"
-    zip_base = str(TICKETS_DIR / f"{prefix} [{safe_name}]")
-    zip_path = shutil.make_archive(zip_base, 'zip', root_dir=str(out))
-    log(f"Zipped: {zip_path}")
-
-    # Clean temp folder
-    shutil.rmtree(out, ignore_errors=True)
-
-    # OUTPUT: last line = zip path (tokenGenerator.ts reads this)
+    else:
+        log("→ build_multi_mode_zip (embedded fallback, ~50 MB) — PUBLIC_URL not set")
+        zip_path = build_multi_mode_zip(
+            out, app_id, game_name, generation_mode, token_b64, steam_id, fake_mode
+        )
     print(zip_path)
+    return
+
 
 
 if __name__ == "__main__":

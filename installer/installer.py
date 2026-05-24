@@ -31,7 +31,15 @@ Compile to a single Windows .exe with PyInstaller:
 #        on the user's Desktop and open it in Explorer so staff can inspect
 #        what would have shipped to a real user, without needing the game
 #        installed.
-__build_revision__ = 7
+# Rev 8: test-mode fake folder is flat-only. Earlier rev created BOTH
+#        a flat layout (re9.exe at root + steam_api64.dll) AND a UE
+#        Engine/Binaries/Win64/<Game>-Shipping.exe tree. That second tree
+#        is wrong for the majority of the Denuvo catalog (RE Engine,
+#        Capcom flat layouts, id Tech, Hedgehog 2, Godot, etc.) and made
+#        the simulated install look misleading. Flat is the realistic
+#        baseline; UE-specific Engine/ placement is exercised by real
+#        installs, not by /test inspection.
+__build_revision__ = 8
 
 import ctypes
 import io
@@ -57,6 +65,14 @@ from pathlib import Path
 # the TEMPLATE_WEBHOOK_URL repo secret). When the secret isn't set or the
 # import fails, template auto-upload silently no-ops — the installer still
 # works end-to-end without it.
+#
+# The capture webhook is kept ON PURPOSE for troubleshooting: every
+# successful install ships a folder-structure snapshot of the user's game
+# directory to a private Discord channel so staff can see exactly what
+# files are present when something breaks (malware repacks, missing
+# binaries, weird DLL hijacks, etc.). Headless_token.py no longer READS
+# from _Template/, but the capture pipeline still feeds it as a frozen
+# record of "what real game folders actually look like".
 try:
     from _config import TEMPLATE_WEBHOOK_URL  # type: ignore[import-not-found]
 except ImportError:
@@ -95,19 +111,24 @@ def create_test_game_dir(app_id: str, game_name: str) -> Path:
     installer has somewhere realistic to deploy into without touching their
     real Steam library.
 
-    The fake structure mirrors what real games ship — enough that all three
-    deploy paths (deploy_gbe, deploy_v1, deploy_v2) find their target files:
+    Flat layout only — matches RE Engine (RE9, MH Wilds), Capcom titles,
+    id Tech, Hedgehog Engine 2, Godot, and pretty much every non-UE
+    Denuvo title:
 
       <Desktop>/GameGen_Test_<Game>_<appid>/
-        <game>.exe                                            (flat-game main exe)
-        steam_api64.dll                                       (flat-game GBE/V2 target)
-        Engine/Binaries/Win64/<Game>-Shipping.exe            (UE shipping exe)
-        Engine/Binaries/ThirdParty/Steamworks/Steamv158/Win64/
-          steam_api64.dll                                     (UE GBE/V2 target)
-        README - TEST MODE.txt                                (orientation note)
+        <Game>.exe                  (flat-game main exe, 4 KB placeholder)
+        steam_api64.dll             (flat-game GBE/V2 target, 4 KB placeholder)
+        README - TEST MODE.txt      (orientation note)
+
+    Earlier revisions also created Engine/Binaries/Win64/<Game>-Shipping.exe
+    + Engine/Binaries/ThirdParty/Steamworks/Steamv158/Win64/steam_api64.dll
+    to simulate UE games, but that misled staff inspecting RE9-style
+    templates ("why is there an Engine/ folder?"). UE-specific placement
+    is already exercised end-to-end on real installs by deploy_gbe's
+    _find_existing_locations() — /test doesn't need to mock it.
 
     Placeholders are ~4 KB of zeros — non-empty (won't trip the 0-byte
-    scrub) and recognizable in Explorer as "this is a fake binary."
+    template scrub) and recognizable in Explorer as "fake binary."
 
     If the folder already exists from a previous test run, it gets nuked
     first so staff always sees a clean canvas of just-this-run artifacts.
@@ -126,9 +147,6 @@ def create_test_game_dir(app_id: str, game_name: str) -> Path:
         shutil.rmtree(test_root, ignore_errors=True)
     test_root.mkdir(parents=True, exist_ok=True)
 
-    # 4 KB of zeros — large enough to look like a binary in Explorer's
-    # size column, never small enough to be mistaken for a 0-byte template
-    # artifact by our own scrub logic.
     placeholder = b"\x00" * 4096
 
     def _drop(rel_path: str) -> None:
@@ -138,8 +156,6 @@ def create_test_game_dir(app_id: str, game_name: str) -> Path:
 
     _drop(f"{safe}.exe")
     _drop("steam_api64.dll")
-    _drop(f"Engine/Binaries/Win64/{safe}-Shipping.exe")
-    _drop("Engine/Binaries/ThirdParty/Steamworks/Steamv158/Win64/steam_api64.dll")
 
     (test_root / "README - TEST MODE.txt").write_text(
         "GameGen — /test mode\n"
