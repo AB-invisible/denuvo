@@ -289,10 +289,19 @@ export function createTokenDeliveryEmbed(
     .setDescription(
       `<@${userId}>, your activation token for **${gameName}** is ready!\n\n` +
       `━━━━━━━━━━━━━━━━━━━━━━\n` +
+      `🚨 **READ THIS FIRST — OR YOU WILL DELETE YOUR GAME**\n` +
+      `**DO NOT extract this zip into your game folder.**\n` +
+      `Extract to your **Desktop** or **Downloads** — somewhere SEPARATE from the game.\n` +
+      `The installer finds your game on its own. If you extract on top of the game folder,\n` +
+      `the installer's cleanup step will wipe your game files when it finishes.\n\n` +
+      `❌ \`...\\SteamLibrary\\steamapps\\common\\${safeName}\\...\`  ← **NEVER**\n` +
+      `✅ \`...\\Desktop\\Token [${safeName}]\\...\`  ← **do this**\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━\n` +
       `🚀 **HOW TO ACTIVATE — 3 STEPS**\n` +
       `${step1}\n` +
-      `2. Right-click → **Extract All...** (extract into its own folder).\n` +
-      `3. Double-click **\`Install ${safeName}.exe\`** and approve the UAC prompt.\n\n` +
+      `2. Right-click the zip → **Extract All...** and pick a folder on your **Desktop**.\n` +
+      `   **NOT inside your game folder.** Anywhere else is fine.\n` +
+      `3. Open that new folder and double-click **\`Install ${safeName}.exe\`** — approve UAC.\n\n` +
       `**What happens next:**\n` +
       `• The installer finds your game on Steam automatically and deploys the activation files.\n` +
       `• When it's done you'll see a confirmation popup with the exact thing to launch — ` +
