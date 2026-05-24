@@ -56,6 +56,34 @@ def log(msg):
     print(msg, flush=True)
 
 
+def _copy_template_steam_settings(tpl_ss, ss_dir):
+    """Copy a template's steam_settings/ into the output dir, then scrub any
+    0-byte files left behind.
+
+    The template-upload webhook in installer.py captures FOLDER STRUCTURE
+    using 0-byte placeholder files, and those occasionally end up committed
+    into a template (most commonly in steam_settings/load_dlls/, which is
+    Goldberg's auto-LoadLibrary folder). When the zip ships a 0-byte
+    GameOverlayRenderer64.dll inside load_dlls/, ColdClientLoader hits it
+    at startup with STATUS_INVALID_IMAGE_FORMAT (0xC0000020) and the game
+    never launches — that's the RE:Requiem activation failure.
+
+    Defense-in-depth: after copying the template, walk the destination and
+    nuke any 0-byte file. Real Goldberg config + DLLs are never empty.
+    """
+    shutil.copytree(tpl_ss, ss_dir, dirs_exist_ok=True)
+    scrubbed = 0
+    for f in Path(ss_dir).rglob("*"):
+        if f.is_file() and f.stat().st_size == 0:
+            try:
+                f.unlink()
+                scrubbed += 1
+            except OSError as e:
+                log(f"WARN: couldn't remove 0-byte template artifact {f}: {e}")
+    if scrubbed:
+        log(f"Template: scrubbed {scrubbed} zero-byte capture artifact(s) from steam_settings/")
+
+
 def _steampass_request(session_callable, *args, **kwargs):
     """Wrap a steampass HTTP call with a single retry on transient
     network errors. steampass.gg occasionally takes >15s to respond
@@ -110,7 +138,7 @@ def build_thin_zip(out, app_id, game_name, generation_mode, token_b64, steam_id,
         tpl_ss = cand[0] if cand else None
     if tpl_ss and tpl_ss.is_dir():
         log(f"Using bundled steam_settings from _Template/{app_id}/{tpl_ss.relative_to(tpl_dir)}")
-        shutil.copytree(tpl_ss, ss_dir, dirs_exist_ok=True)
+        _copy_template_steam_settings(tpl_ss, ss_dir)
     else:
         log("No bundled template — generating steam_settings/ via Steam API")
         generate_steam_settings(out, app_id, steam_id)
@@ -355,7 +383,7 @@ def build_multi_mode_zip(out, app_id, game_name, generation_mode, token_b64, ste
 
     if tpl_ss and tpl_ss.is_dir():
         log(f"Using bundled steam_settings from _Template/{app_id}/{tpl_ss.relative_to(tpl_dir)}")
-        shutil.copytree(tpl_ss, ss_dir, dirs_exist_ok=True)
+        _copy_template_steam_settings(tpl_ss, ss_dir)
     else:
         log("No bundled template — generating steam_settings/ via Steam API")
         # generate_steam_settings drops both ss/ and a stray out/steam_appid.txt;
@@ -1166,7 +1194,7 @@ def main(app_id, game_name, steampass_uuid, generation_mode="gbe"):
             tpl_ss = cand[0] if cand else None
         if tpl_ss and tpl_ss.is_dir():
             log(f"Copying steam_settings from _Template/{app_id}/{tpl_ss.relative_to(tpl_dir)}")
-            shutil.copytree(tpl_ss, ss_dir, dirs_exist_ok=True)
+            _copy_template_steam_settings(tpl_ss, ss_dir)
         else:
             log("No bundled steam_settings — generating from Steam API")
             generate_steam_settings(out, app_id, steam_id)
