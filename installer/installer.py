@@ -46,7 +46,15 @@ Compile to a single Windows .exe with PyInstaller:
 #        Steamworks/.../Win64/ — dropping steamclient64.dll only there
 #        misses the directory Windows checks first when game code calls
 #        LoadLibrary("steamclient64.dll") via standard DLL search order.
-__build_revision__ = 9
+# Rev 10: drop the "next to every steam_api64.dll" placement (Pass 2 in
+#        rev 9). Goldberg's steam_api64.dll loads steamclient64.dll via
+#        LoadLibrary("steamclient64.dll") — standard search order — so
+#        the only directory that actually matters is the game .exe's,
+#        which Rev 9's Pass 3 already covers. The deep
+#        Engine/Binaries/ThirdParty/Steamworks/.../Win64/steamclient64.dll
+#        copy was dead weight cluttering the install. Keep two passes:
+#        replace existing in-place, then drop one next to the main exe.
+__build_revision__ = 10
 
 import ctypes
 import io
@@ -533,31 +541,30 @@ def deploy_gbe(
                 pass
 
     if goldberg_client:
-        # steamclient64.dll placement is trickier than steam_api64.dll.
-        # The game's process loads it via Windows' standard DLL search,
-        # which checks the .exe's own directory first — NOT wherever
-        # steam_api64.dll happens to sit. For UE games steam_api64.dll
-        # lives under Engine/Binaries/ThirdParty/Steamworks/.../Win64/,
-        # which is far from where <Game>-Shipping.exe lives, so a
-        # steamclient64.dll dropped there is invisible to game code
-        # that calls LoadLibrary("steamclient64.dll") directly.
+        # steamclient64.dll placement: ONLY where the game process can
+        # actually find it via Windows' standard DLL search.
         #
-        # Three-pass placement:
+        # Goldberg's steam_api64.dll calls LoadLibrary("steamclient64.dll")
+        # at init, which resolves through:
+        #   1. The game .exe's own directory  ← Pass 2 below covers this
+        #   2. System dirs / PATH             ← out of scope
+        # NOT the directory steam_api64.dll happens to sit in. So for UE
+        # games, dropping a copy under Engine/Binaries/ThirdParty/Steamworks/
+        # .../Win64/ next to steam_api64.dll is dead weight — the file is
+        # never opened from there.
+        #
+        # Two-pass placement:
         #   1. Replace every existing steamclient64.dll the game already
-        #      ships (preserves the in-place override behavior).
-        #   2. Drop one next to each steam_api64.dll (Goldberg's own
-        #      steam_api64.dll loads steamclient64.dll as a sibling
-        #      relative to itself).
-        #   3. ALWAYS drop one next to the main game .exe — UE shipping
-        #      exe first (Engine/Binaries/Win64/<Game>-Shipping.exe),
-        #      else the largest non-junk .exe at the game root. This
-        #      is the canonical Goldberg placement and is what games
-        #      that probe steamclient64.dll via the standard DLL search
-        #      order expect.
+        #      ships (don't let the real Valve binary stay and handle
+        #      calls we want Goldberg to fake).
+        #   2. ALWAYS drop one next to the main game .exe — *-Shipping.exe
+        #      for UE games, else the largest non-junk .exe at the game
+        #      root. Canonical Goldberg placement; satisfies the standard
+        #      DLL search.
         seen: set[Path] = set()
 
-        # Pass 1 + 2: union of existing locations + sibling-of-api locations.
-        for client_loc in list(client_locations) + [a.parent / "steamclient64.dll" for a in api_locations]:
+        # Pass 1: replace every shipped copy in place.
+        for client_loc in client_locations:
             try:
                 resolved = client_loc.resolve()
             except OSError:
@@ -568,8 +575,8 @@ def deploy_gbe(
             _backup_and_overwrite(goldberg_client, client_loc, stats)
             stats["client_locations"] += 1
 
-        # Pass 3: next to the main game exe. Shipping exe wins for UE;
-        # largest non-junk .exe otherwise.
+        # Pass 2: next to the main game exe (UE shipping exe first,
+        # else the largest non-junk root exe).
         main_exe = _scan_shipping_exe(game_dir) or _find_launchable_exe(game_dir)
         if main_exe:
             main_exe_client = main_exe.parent / "steamclient64.dll"
