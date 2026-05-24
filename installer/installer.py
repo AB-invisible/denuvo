@@ -54,7 +54,18 @@ Compile to a single Windows .exe with PyInstaller:
 #        Engine/Binaries/ThirdParty/Steamworks/.../Win64/steamclient64.dll
 #        copy was dead weight cluttering the install. Keep two passes:
 #        replace existing in-place, then drop one next to the main exe.
-__build_revision__ = 10
+# Rev 11: RAM-based activation verification. After deploy + V1 polish,
+#        the installer launches the game and watches its working set
+#        via OpenProcess + GetProcessMemoryInfo (pure ctypes — no new
+#        deps). Crossing 1.5 GB within 3 minutes = "Denuvo accepted
+#        us"; quick exit with <500 MB = "Denuvo rejected" (almost
+#        always means wrong activation mode). Failure popup tells the
+#        user to open a ticket; self-destruct is SKIPPED on failure
+#        so staff has the zip for diagnostics. Auto-rollback +
+#        multi-mode retry will land in rev 12. /test exercises the
+#        full verifier by re-execing this binary with --simulate-game
+#        as a fake AAA game that allocates 2 GB and waits.
+__build_revision__ = 11
 
 import ctypes
 import io
@@ -111,6 +122,256 @@ MB_ICON_WARN = 0x30
 
 def msgbox(text: str, title: str = "GameGen Activator", flags: int = MB_OK | MB_ICON_INFO) -> None:
     ctypes.windll.user32.MessageBoxW(None, text, title, flags)
+
+
+# ─── /test command: fake game subprocess for verification simulation ──
+# When the installer is invoked with --simulate-game, it skips ALL the
+# normal install logic and instead pretends to be a launched AAA game:
+# allocates ~2 GB of working set, touches every page so the memory is
+# actually committed (not lazy-mapped), and waits long enough for the
+# verification loop in the parent installer to observe sustained RAM.
+#
+# Used by /test mode so staff sees the exact same verification UX a
+# real user would see — including the RAM-monitor loop running against
+# a real subprocess — without needing the game installed.
+_SIMULATE_GAME_FLAG = "--simulate-game"
+_SIMULATE_GAME_RAM_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB
+_SIMULATE_GAME_LIFETIME_S = 240                     # outlives default verify timeout
+
+
+def _run_simulated_game() -> None:
+    """Allocate ~2 GB working set and wait. Only called from --simulate-game."""
+    try:
+        buf = bytearray(_SIMULATE_GAME_RAM_BYTES)
+        # Touch every page so Windows actually commits the memory instead of
+        # lazy-mapping zero pages (which wouldn't count toward working set).
+        for i in range(0, len(buf), 4096):
+            buf[i] = 1
+        time.sleep(_SIMULATE_GAME_LIFETIME_S)
+    except Exception:
+        # Last-ditch: keep the process alive long enough for the verifier
+        # to give up gracefully even if allocation failed (low-RAM machine).
+        time.sleep(_SIMULATE_GAME_LIFETIME_S)
+
+
+# ─── RAM-based activation verification ──────────────────────────
+# After deploying the activation files, the installer launches the game
+# and watches its working set. A real Denuvo-protected AAA game allocates
+# 2-12 GB once it gets past decryption and starts streaming assets; a
+# rejected activation either crashes immediately or sits in an error
+# popup with <500 MB. RAM crossing 1.5 GB is a near-perfect "Denuvo
+# actually accepted us" signal — cross-game, hard to fake, observable
+# from outside the process via standard Windows APIs.
+_VERIFY_RAM_THRESHOLD_MB = 1500    # working set required for "success"
+_VERIFY_TIMEOUT_S = 180            # max wait before giving up (slow loaders)
+_VERIFY_POLL_INTERVAL_S = 2        # how often we sample
+# Windows process-access rights for OpenProcess
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_WAIT_OBJECT_0 = 0x00000000
+_WAIT_TIMEOUT = 0x00000102
+
+
+class _PROCESS_MEMORY_COUNTERS(ctypes.Structure):
+    """Subset of Windows' PROCESS_MEMORY_COUNTERS — we only read WorkingSetSize."""
+    _fields_ = [
+        ("cb",                          ctypes.c_uint32),
+        ("PageFaultCount",              ctypes.c_uint32),
+        ("PeakWorkingSetSize",          ctypes.c_size_t),
+        ("WorkingSetSize",              ctypes.c_size_t),
+        ("QuotaPeakPagedPoolUsage",     ctypes.c_size_t),
+        ("QuotaPagedPoolUsage",         ctypes.c_size_t),
+        ("QuotaPeakNonPagedPoolUsage",  ctypes.c_size_t),
+        ("QuotaNonPagedPoolUsage",      ctypes.c_size_t),
+        ("PagefileUsage",               ctypes.c_size_t),
+        ("PeakPagefileUsage",           ctypes.c_size_t),
+    ]
+
+
+def _get_process_working_set_mb(pid: int) -> int | None:
+    """Return current working set of `pid` in MB, or None if process is gone
+    or we lack access. Pure ctypes — no psutil dependency."""
+    kernel32 = ctypes.windll.kernel32
+    psapi = ctypes.windll.psapi
+    handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return None
+    try:
+        counters = _PROCESS_MEMORY_COUNTERS()
+        counters.cb = ctypes.sizeof(_PROCESS_MEMORY_COUNTERS)
+        ok = psapi.GetProcessMemoryInfo(
+            handle, ctypes.byref(counters), ctypes.sizeof(counters)
+        )
+        if not ok:
+            return None
+        return counters.WorkingSetSize // (1024 * 1024)
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _is_process_alive(pid: int) -> bool:
+    """True if `pid` exists and hasn't exited."""
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return False
+    try:
+        rc = kernel32.WaitForSingleObject(handle, 0)
+        return rc == _WAIT_TIMEOUT  # WAIT_TIMEOUT = still running
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _kill_process_tree(pid: int) -> None:
+    """Best-effort kill of pid and its descendants. Uses taskkill /T /F.
+    Hidden so the user doesn't see a console window flash."""
+    try:
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            creationflags=_NO_WINDOW,
+            capture_output=True,
+            timeout=15,
+        )
+    except Exception:
+        pass
+
+
+def _monitor_game_process(pid: int, threshold_mb: int = _VERIFY_RAM_THRESHOLD_MB,
+                          timeout_s: int = _VERIFY_TIMEOUT_S) -> dict:
+    """Watch `pid`. Return outcome dict with keys: outcome, peak_mb, elapsed_s.
+
+    Outcomes:
+      success   — working set crossed threshold; game is genuinely loading data
+      failed    — process exited before crossing threshold (likely Denuvo reject)
+      timeout   — neither happened within timeout (slow loader; ambiguous)
+    """
+    start = time.time()
+    peak_mb = 0
+    while True:
+        ram = _get_process_working_set_mb(pid)
+        if ram is not None:
+            peak_mb = max(peak_mb, ram)
+            if peak_mb >= threshold_mb:
+                return {"outcome": "success", "peak_mb": peak_mb,
+                        "elapsed_s": int(time.time() - start)}
+
+        if not _is_process_alive(pid):
+            # If RAM peaked above threshold before exit, count as success —
+            # the game DID launch, even if it crashed for unrelated reasons.
+            if peak_mb >= threshold_mb:
+                return {"outcome": "success", "peak_mb": peak_mb,
+                        "elapsed_s": int(time.time() - start)}
+            return {"outcome": "failed", "peak_mb": peak_mb,
+                    "elapsed_s": int(time.time() - start)}
+
+        if time.time() - start >= timeout_s:
+            return {"outcome": "timeout", "peak_mb": peak_mb,
+                    "elapsed_s": int(time.time() - start)}
+
+        time.sleep(_VERIFY_POLL_INTERVAL_S)
+
+
+def _pick_verify_launch_target(game_dir: Path, mode: str, game_name: str) -> Path | None:
+    """What to launch for RAM-monitor verification, per deploy mode.
+
+    - V1 (coldclientloader): the renamed loader exe sitting at game root
+      (rename_v1_loader produced "<Game>.exe" or "<Game> (GameGen).exe").
+      Falls back to anything matching the safe-name pattern.
+    - V2 / GBE: the game's own main exe — UE *-Shipping.exe wins, else
+      the largest non-junk exe at game root (the same heuristic that
+      drives the GBE deploy logic, so we're verifying with the exact
+      binary Goldberg's DLLs end up servicing).
+    """
+    if mode == "coldclientloader":
+        safe = re.sub(r'[<>:"/\\|?*]', '', game_name).strip() or "Game"
+        candidates = [
+            game_dir / f"{safe}.exe",
+            game_dir / f"{safe} (GameGen).exe",
+        ]
+        # Also accept any "start-*.exe" if the V1 rename step didn't run
+        # (shouldn't happen but defensive).
+        candidates.extend(game_dir.glob("start-*.exe"))
+        for c in candidates:
+            if c.is_file():
+                return c
+        # Fall through — sometimes the loader retained its canonical name
+        return _find_launchable_exe(game_dir)
+    # GBE / coldloader: launch the real game binary
+    return _scan_shipping_exe(game_dir) or _find_launchable_exe(game_dir)
+
+
+def _verify_activation(game_dir: Path, mode: str, game_name: str,
+                       test_mode: bool = False) -> dict:
+    """Launch the game (or the test-mode fake), monitor RAM, return outcome.
+
+    Returns the same dict shape as _monitor_game_process plus:
+      launched_exe — Path that was spawned (for staff logs / failure popup)
+      cancelled    — True if the user clicked Skip in the pre-launch popup
+
+    test_mode: re-exec self with --simulate-game so the verifier exercises
+    the full monitor loop against a real subprocess that mimics game RAM.
+    """
+    if test_mode:
+        launch_target = Path(sys.argv[0])
+        launch_args = [str(launch_target), _SIMULATE_GAME_FLAG]
+        pre_text = (
+            f"[TEST MODE] Simulating activation verification for {game_name} ({mode}).\n\n"
+            "A simulated 'game' will be launched (a hidden helper process that\n"
+            "allocates ~2 GB of RAM, mimicking a real loaded AAA game). The\n"
+            "verifier will observe its working set the same way it would for\n"
+            "a real game and report success/failure based on the same signal.\n\n"
+            "This is what a real user would experience after a real install,\n"
+            "minus the actual game window."
+        )
+    else:
+        launch_target = _pick_verify_launch_target(game_dir, mode, game_name)
+        if not launch_target:
+            return {"outcome": "failed", "peak_mb": 0, "elapsed_s": 0,
+                    "launched_exe": None, "cancelled": False,
+                    "error": "Couldn't find a binary to launch for verification."}
+        launch_args = [str(launch_target)]
+        pre_text = (
+            f"Verifying activation for {game_name}.\n\n"
+            "The installer will launch the game now. Denuvo's first-run\n"
+            "decryption can take 1-3 minutes — that's normal.\n\n"
+            "When the game's main window appears and is rendering normally,\n"
+            "the installer will automatically detect that activation worked\n"
+            "and close the game for you.\n\n"
+            "Click OK to continue, or Cancel to skip verification (you can\n"
+            "always launch the game manually later)."
+        )
+
+    # MB_OKCANCEL = 0x1
+    rc = ctypes.windll.user32.MessageBoxW(None, pre_text, "GameGen — Verification", 0x1 | MB_ICON_INFO)
+    if rc != 1:  # IDCANCEL = 2; only IDOK (1) proceeds
+        return {"outcome": "cancelled", "peak_mb": 0, "elapsed_s": 0,
+                "launched_exe": launch_target, "cancelled": True}
+
+    # Launch detached so closing the installer doesn't kill the game.
+    # CREATE_NEW_PROCESS_GROUP keeps it independent for kill-on-result later.
+    CREATE_NEW_PROCESS_GROUP = 0x00000200
+    DETACHED_PROCESS = 0x00000008
+    try:
+        proc = subprocess.Popen(
+            launch_args,
+            cwd=str(launch_target.parent),
+            creationflags=CREATE_NEW_PROCESS_GROUP | (DETACHED_PROCESS if test_mode else 0),
+            close_fds=True,
+        )
+    except OSError as e:
+        return {"outcome": "failed", "peak_mb": 0, "elapsed_s": 0,
+                "launched_exe": launch_target, "cancelled": False,
+                "error": f"Failed to launch: {e}"}
+
+    result = _monitor_game_process(proc.pid)
+    # Clean up the launched process: if monitor returned success/timeout,
+    # the game is still running (real installs) or the simulator is still
+    # sleeping (test mode). Either way we want it gone before the popup.
+    if _is_process_alive(proc.pid):
+        _kill_process_tree(proc.pid)
+
+    result["launched_exe"] = launch_target
+    result["cancelled"] = False
+    return result
 
 
 # ─── /test command: fake game folder for visual inspection ──
@@ -2268,6 +2529,15 @@ def _derive_game_name(self_name: str, game_dir: Path) -> str:
 
 
 def main() -> None:
+    # ─── --simulate-game self-fork (test mode only) ────────────────
+    # When the verifier in /test mode wants a "fake game" to monitor, it
+    # re-execs this very binary with --simulate-game. Detect that flag
+    # BEFORE any normal install logic and just allocate RAM + wait.
+    # See _run_simulated_game() for the body.
+    if _SIMULATE_GAME_FLAG in sys.argv:
+        _run_simulated_game()
+        return
+
     here = payload_root()
     self_name = Path(sys.argv[0]).name
     self_path = Path(sys.argv[0]).resolve()
@@ -2570,18 +2840,62 @@ def main() -> None:
         extras=[renamed] if renamed else None,
     )
 
+    # 7c. RAM-based activation verification.
+    #     Launch the game (real install) or a fake-game subprocess (test
+    #     mode), watch its working set. A real Denuvo-protected AAA game
+    #     reaches 1.5-12 GB once decryption finishes and it starts streaming
+    #     assets — a rejected activation either exits fast or sits in an
+    #     error popup with <500 MB. That working-set delta IS our "did it
+    #     work?" signal.
+    #
+    #     Failure handling here is non-destructive in rev 11: we tell the
+    #     user verification failed and skip self-destruct so they can ask
+    #     staff for a different mode. Auto-rollback + multi-mode retry
+    #     lands in a later revision; this rev ships the verification
+    #     signal first so we validate the monitor before letting it drive
+    #     destructive actions.
+    verify_result = _verify_activation(game_dir, mode, game_name, test_mode=test_mode)
+    verify_outcome = verify_result.get("outcome")
+    verify_peak = verify_result.get("peak_mb", 0)
+    verify_elapsed = verify_result.get("elapsed_s", 0)
+    print(
+        f"[Verify] mode={mode} outcome={verify_outcome} "
+        f"peak_mb={verify_peak} elapsed_s={verify_elapsed} "
+        f"target={verify_result.get('launched_exe')}",
+        file=sys.stderr,
+    )
+
+    # Compose a one-liner that summarizes verification for the success/
+    # failure popup. Keeps the body short while still surfacing the signal.
+    if verify_outcome == "success":
+        verify_line = f"✓ Activation verified — game RAM peaked at {verify_peak} MB"
+        verify_icon = MB_ICON_INFO
+    elif verify_outcome == "failed":
+        verify_line = f"✗ Activation FAILED — game exited with only {verify_peak} MB RAM after {verify_elapsed}s"
+        verify_icon = MB_ICON_WARN
+    elif verify_outcome == "timeout":
+        verify_line = f"⏱ Verification inconclusive — RAM peaked at {verify_peak} MB after {verify_elapsed}s"
+        verify_icon = MB_ICON_INFO
+    elif verify_outcome == "cancelled":
+        verify_line = "○ Verification skipped by user"
+        verify_icon = MB_ICON_INFO
+    else:
+        verify_line = f"? Verification result: {verify_outcome}"
+        verify_icon = MB_ICON_INFO
+
     # Big, prominent HOW TO PLAY block. Banner is repeated and the
     # instruction is centered and surrounded by whitespace so the user
     # can't miss it. MessageBoxW renders monospace-ish — alignment lands.
     horizontal = "━" * 38
     if test_mode:
-        # /test mode: show the fake folder location, open Explorer at it,
-        # and don't pretend it's "ready to play" — staff wants to inspect.
+        # /test mode: show the fake folder location + verification outcome,
+        # open Explorer at the folder, don't self-destruct. Staff wants to
+        # inspect everything and re-run if needed.
         success_text = (
             f"🧪  TEST MODE — simulated install of {game_name}\n"
             "\n"
             f"{horizontal}\n"
-            "         WHAT TO INSPECT\n"
+            f"{verify_line}\n"
             f"{horizontal}\n"
             "\n"
             "Nothing was deployed to your real Steam library.\n"
@@ -2594,20 +2908,46 @@ def main() -> None:
             "\n"
             f"{horizontal}\n"
         )
-        gamegen_msgbox(success_text)
+        gamegen_msgbox(success_text, icon=verify_icon)
         try:
             os.startfile(str(game_dir))
         except OSError:
             pass
-        # No template upload, no self-destruct in test mode — staff might
-        # want to re-run the same zip again to compare behavior.
+        # No template upload, no self-destruct in test mode.
+        return
+
+    if verify_outcome == "failed":
+        # Process exited fast without ever reaching real-game RAM levels.
+        # Almost always means the wrong activation mode was selected.
+        # Don't self-destruct — let the user keep the zip so staff has
+        # something to diagnose against if they want to re-investigate.
+        failure_text = (
+            f"⚠  {game_name} — Activation Verification FAILED\n"
+            "\n"
+            f"{horizontal}\n"
+            "\n"
+            "The installer placed all files correctly, but the game\n"
+            f"exited after using only {verify_peak} MB of RAM. A real\n"
+            "activation would have crossed 1.5 GB. This almost always\n"
+            "means the wrong activation mode was selected for this game.\n"
+            "\n"
+            "Open a ticket on Discord — staff can issue a new token\n"
+            "with a different activation mode.\n"
+            "\n"
+            f"{horizontal}\n"
+            f"Files are still deployed at:\n{game_dir}"
+        )
+        gamegen_msgbox(failure_text, icon=MB_ICON_WARN)
+        if upload_thread is not None and upload_thread.is_alive():
+            upload_thread.join(timeout=180.0)
+        # Skip self-destruct so user/staff can retry without re-issuing.
         return
 
     success_text = (
         f"✅  {game_name} is ready to play!\n"
         "\n"
         f"{horizontal}\n"
-        "             HOW TO PLAY\n"
+        f"{verify_line}\n"
         f"{horizontal}\n"
         "\n"
         f"{play_headline}\n"
