@@ -242,16 +242,30 @@ def build_thin_zip(out, app_id, game_name, generation_mode, token_b64, steam_id,
     # later (the GBE flat one we have in _Core/ would conflict with
     # coldloader's hooks if used here).
     v2_entries = []
-    for fname, dst_name in (
-        # version.dll is the most universally supported hijack proxy.
-        # If a specific game needs winmm.dll or dinput8.dll instead, we
-        # can per-game override later — version.dll covers ~90% of cases.
-        ("version.dll",                "version.dll"),
-        ("coldloader.dll",             "coldloader.dll"),
-        ("steamclient64.dll",          "steamclient64.dll"),
-        ("GameOverlayRenderer64.dll",  "GameOverlayRenderer64.dll"),
-    ):
-        e = _entry(CORE_DIR / fname, f"/payload/v2/{fname}", dst_name)
+    # Hijack proxy + coldloader emulator core + overlay — these all live
+    # at _Core/ root and the payload server serves them from there.
+    # version.dll is the most universally supported hijack proxy. If a
+    # specific game needs winmm.dll or dinput8.dll instead, we can
+    # per-game override later — version.dll covers ~90% of cases.
+    for fname in ("version.dll", "coldloader.dll", "GameOverlayRenderer64.dll"):
+        e = _entry(CORE_DIR / fname, f"/payload/v2/{fname}", fname)
+        if e:
+            v2_entries.append(e)
+
+    # steamclient64.dll is special — V2 needs the FULL experimental
+    # Goldberg variant (~21 MB) that lives in _Core/coldclientloader/,
+    # NOT the small ~112 KB stub at _Core/steamclient64.dll. coldloader.dll
+    # relays intercepted steamclient calls to a real steamclient64.dll
+    # implementation; the stub doesn't have those internals so the relay
+    # fails silently and the game errors out. The /payload/v1/ URL
+    # already maps to _Core/coldclientloader/ on the payload server, so
+    # we reuse that route here — no payloadServer.ts change needed.
+    if cc_src.exists():
+        e = _entry(
+            cc_src / "steamclient64.dll",
+            "/payload/v1/steamclient64.dll",
+            "steamclient64.dll",
+        )
         if e:
             v2_entries.append(e)
     v2_ini_content = (
