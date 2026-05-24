@@ -78,7 +78,13 @@ Compile to a single Windows .exe with PyInstaller:
 #          don't flag "exited" during the subprocess bootstrap window.
 #        - Simulator logs every step to %TEMP%\\gamegen-simulate.log
 #          so /test failures are diagnosable without console output.
-__build_revision__ = 12
+# Rev 13: smaller footprint — drop threshold from 1.5 GB → 1 GB and
+#        simulator allocation from 1.7 GB → 1.2 GB. Real Denuvo
+#        rejection screens sit at 100-500 MB working set, so a 1 GB
+#        threshold still has a 2x safety margin while making /test
+#        less alarming in Task Manager. Real game detection unaffected
+#        (any modern AAA crosses 1 GB very early in its load sequence).
+__build_revision__ = 13
 
 import ctypes
 import io
@@ -140,7 +146,7 @@ def msgbox(text: str, title: str = "GameGen Activator", flags: int = MB_OK | MB_
 # ─── /test command: fake game subprocess for verification simulation ──
 # When the installer is invoked with --simulate-game, it skips ALL the
 # normal install logic and instead pretends to be a launched AAA game:
-# allocates ~2 GB of working set, touches every page so the memory is
+# allocates ~1.2 GB of working set, touches every page so the memory is
 # actually committed (not lazy-mapped), and waits long enough for the
 # verification loop in the parent installer to observe sustained RAM.
 #
@@ -148,14 +154,14 @@ def msgbox(text: str, title: str = "GameGen Activator", flags: int = MB_OK | MB_
 # real user would see — including the RAM-monitor loop running against
 # a real subprocess — without needing the game installed.
 _SIMULATE_GAME_FLAG = "--simulate-game"
-# Try 1.7 GB first (comfortable margin over the 1.5 GB threshold). Falls
-# back smaller if the bytearray allocation throws MemoryError. Each step
-# is still above the threshold so verification stays meaningful even on
-# low-RAM machines.
+# Try 1.2 GB first (comfortable margin over the 1 GB threshold). Falls
+# back smaller if the bytearray allocation throws MemoryError on a
+# low-RAM machine. Each step still crosses the threshold so verification
+# stays meaningful.
 _SIMULATE_GAME_RAM_TARGETS_BYTES = [
-    1700 * 1024 * 1024,   # 1.7 GB
-    1600 * 1024 * 1024,   # 1.6 GB
-    1550 * 1024 * 1024,   # 1.55 GB — bare minimum to cross the threshold
+    1200 * 1024 * 1024,   # 1.2 GB — primary target
+    1100 * 1024 * 1024,   # 1.1 GB
+    1050 * 1024 * 1024,   # 1.05 GB — bare minimum to cross threshold
 ]
 _SIMULATE_GAME_LIFETIME_S = 240   # outlives the default verify timeout
 # Heartbeat log for the simulator subprocess. PyInstaller --noconsole
@@ -175,7 +181,7 @@ def _simlog(msg: str) -> None:
 
 
 def _run_simulated_game() -> None:
-    """Allocate ~1.7 GB working set and wait. Only called from --simulate-game.
+    """Allocate ~1.2 GB working set and wait. Only called from --simulate-game.
 
     Resilient by design: falls back through smaller allocation targets if
     bytearray raises MemoryError, and always sleeps long enough for the
@@ -217,10 +223,12 @@ def _run_simulated_game() -> None:
 # and watches its working set. A real Denuvo-protected AAA game allocates
 # 2-12 GB once it gets past decryption and starts streaming assets; a
 # rejected activation either crashes immediately or sits in an error
-# popup with <500 MB. RAM crossing 1.5 GB is a near-perfect "Denuvo
-# actually accepted us" signal — cross-game, hard to fake, observable
-# from outside the process via standard Windows APIs.
-_VERIFY_RAM_THRESHOLD_MB = 1500    # working set required for "success"
+# popup with <500 MB. RAM crossing 1 GB is a clean "Denuvo actually
+# accepted us" signal — cross-game, hard to fake, observable from
+# outside the process via standard Windows APIs. The 500 MB → 1 GB
+# gap between rejection screens and the threshold is wide enough that
+# false positives are extremely unlikely.
+_VERIFY_RAM_THRESHOLD_MB = 1000    # working set required for "success"
 _VERIFY_TIMEOUT_S = 180            # max wait before giving up (slow loaders)
 _VERIFY_POLL_INTERVAL_S = 2        # how often we sample
 # Windows process-access rights for OpenProcess
@@ -396,7 +404,7 @@ def _verify_activation(game_dir: Path, mode: str, game_name: str,
         pre_text = (
             f"[TEST MODE] Simulating activation verification for {game_name} ({mode}).\n\n"
             "A simulated 'game' will be launched (a hidden helper process that\n"
-            "allocates ~1.7 GB of RAM, mimicking a real loaded AAA game). The\n"
+            "allocates ~1.2 GB of RAM, mimicking a real loaded AAA game). The\n"
             "verifier will observe its working set the same way it would for\n"
             "a real game and report success/failure based on the same signal.\n\n"
             "This is what a real user would experience after a real install,\n"
@@ -3018,7 +3026,7 @@ def main() -> None:
             "\n"
             "The installer placed all files correctly, but the game\n"
             f"exited after using only {verify_peak} MB of RAM. A real\n"
-            "activation would have crossed 1.5 GB. This almost always\n"
+            "activation would have crossed 1 GB. This almost always\n"
             "means the wrong activation mode was selected for this game.\n"
             "\n"
             "Open a ticket on Discord — staff can issue a new token\n"
