@@ -75,7 +75,16 @@ Compile to a single Windows .exe with PyInstaller:
 #        coldloader.ini + (optional) GameOverlayRenderer64.dll +
 #        steam_settings/ + steam_appid.txt next to the main exe.
 #        Nothing else touched.
-__build_revision__ = 12
+# Rev 13: partial revert of rev 12 — restore steamclient64.dll to V2's
+#        deploy. coldloader.dll's hooks RELAY intercepted steamclient
+#        calls to a real Goldberg steamclient64.dll, so we need ours
+#        next to it. Also covers games that haven't been launched yet
+#        (their own steamclient64.dll may not exist on disk because
+#        Steam unpacks Steamworks DLLs lazily on first run). steam_api64.dll
+#        stays untouched per rev 12 — that question is still open (the
+#        right fix needs a stubbed/experimental Goldberg variant we
+#        don't have in _Core/ yet).
+__build_revision__ = 13
 
 import ctypes
 import io
@@ -1491,13 +1500,20 @@ def deploy_v2(
       version.dll                  hijack proxy — Windows auto-loads it
       coldloader.dll               emulator core, loaded by version.dll
       coldloader.ini               app_id config that coldloader.dll reads
+      steamclient64.dll            Goldberg's — coldloader.dll relays
+                                   intercepted steamclient calls to it
       GameOverlayRenderer64.dll    optional Goldberg overlay (cosmetic)
       steam_appid.txt              fallback for game's own SteamAPI_Init
       steam_settings/              encrypted ticket + Goldberg configs
 
     Does NOT drop:
-      steam_api64.dll              game's own stays — coldloader intercepts
-      steamclient64.dll            game's own stays — coldloader intercepts
+      steam_api64.dll              game's own stays untouched. Some games
+                                   preload it lazily on first launch, so
+                                   it might not even exist on disk yet —
+                                   if that turns out to break activation
+                                   in practice we'll add a fallback drop
+                                   (using the stubbed/experimental Goldberg
+                                   variant, NOT the GBE flat one) here.
 
     There's no separate loader exe; the user just launches the game's
     own .exe directly. The hijack DLL pulls in the emu transparently.
@@ -1516,6 +1532,7 @@ def deploy_v2(
         "version.dll",
         "coldloader.dll",
         "coldloader.ini",
+        "steamclient64.dll",
         "GameOverlayRenderer64.dll",
     )
     for fname in v2_filenames:
