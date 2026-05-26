@@ -128,6 +128,41 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
       // Metadata table issue is non-fatal — proceed without cached token.
     }
 
+    // ── Look up cached Steam session for this UUID ──
+    // Eliminates 1 or 2 steampass calls per gen if found. Skipped for
+    // FAKE (test) UUIDs since those don't talk to real Steam.
+    let cachedSteamLogin = '';
+    let cachedSteamPassword = '';
+    let cachedRefreshToken = '';
+    let cachedGuarded = true;
+    if (steampassUuid && steampassUuid !== 'FAKE') {
+      try {
+        const session = await (prisma as any).steamSession.findUnique({
+          where: { steampassUuid },
+        });
+        if (session) {
+          cachedSteamLogin = (session.steamLogin || '').trim();
+          cachedSteamPassword = (session.steamPassword || '').trim();
+          cachedRefreshToken = (session.refreshToken || '').trim();
+          cachedGuarded = session.guarded !== false;
+          console.log(
+            `[TokenGen] Cached SteamSession for UUID ${steampassUuid.slice(0, 8)}…: ` +
+            `login=${cachedSteamLogin ? 'yes' : 'no'}, ` +
+            `refresh_token=${cachedRefreshToken ? 'yes' : 'no'}, ` +
+            `last=${session.lastLoginAt?.toISOString?.() || 'never'}, ` +
+            `source=${session.lastLoginSource || '-'}`
+          );
+        } else {
+          console.log(`[TokenGen] No SteamSession cache for UUID ${steampassUuid.slice(0, 8)}… (cold start)`);
+        }
+      } catch (e) {
+        // SteamSession lookup is best-effort. If the table doesn't exist
+        // yet (migration window) or any other error happens, fall back
+        // to the original "always hit steampass" behavior silently.
+        console.warn('[TokenGen] SteamSession lookup failed (proceeding without cache):', e);
+      }
+    }
+
     // Explicitly forward PUBLIC_URL / RAILWAY_PUBLIC_DOMAIN to Python.
     // The implicit { ...process.env } spread in buildPythonEnv() should
     // already carry these over, but we hit a case where Python's
@@ -150,6 +185,12 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
       // it to the child process. If not set, Python skips HMAC and the
       // bot operates in consumed-only mode.
       HMAC_SECRET: process.env.HMAC_SECRET || '',
+      // Cached Steam session — Python tries refresh_token first, falls
+      // back to cached creds, falls back to full steampass.
+      CACHED_STEAM_LOGIN: cachedSteamLogin,
+      CACHED_STEAM_PASSWORD: cachedSteamPassword,
+      CACHED_STEAM_REFRESH_TOKEN: cachedRefreshToken,
+      CACHED_STEAM_GUARDED: cachedGuarded ? 'true' : 'false',
       // Force-include the public URL bits so headless_token.py's
       // _public_base_url() can route to build_thin_zip instead of
       // falling back to the 50+ MB embedded multi-mode zip.
@@ -161,11 +202,21 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
       PYTHON_EXE,
       [HEADLESS_SCRIPT, String(appId), gameName, steampassUuid, generationMode],
       { timeout: 120_000, maxBuffer: 20 * 1024 * 1024, env },
-      (error, stdout, stderr) => {
+      async (error, stdout, stderr) => {
         const logs = stdout + (stderr ? `\n${stderr}` : '');
 
         if (error) {
           console.error(`[TokenGen:Headless] Process error for AppID ${appId}:`, error.message);
+          // Bump failure count on the SteamSession row so we don't keep
+          // hammering a dead account silently.
+          if (steampassUuid && steampassUuid !== 'FAKE') {
+            try {
+              await (prisma as any).steamSession.update({
+                where: { steampassUuid },
+                data: { failureCount: { increment: 1 }, lastFailureAt: new Date() },
+              });
+            } catch { /* row may not exist yet — fine */ }
+          }
           resolve({ zipPath: null, logs, installerKey });
           return;
         }
@@ -177,15 +228,17 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
         if (lastLine && fs.existsSync(lastLine)) {
           console.log(`[TokenGen:Headless] Success for AppID ${appId}: ${lastLine}`);
           // Read the sidecar .meta.json Python wrote next to the zip
-          // for HMAC bookkeeping. Deletes it once consumed so a leaked
-          // filesystem snapshot doesn't ship the secret material.
+          // for HMAC bookkeeping + Steam session cache update. Deletes
+          // it once consumed so a leaked filesystem snapshot doesn't
+          // ship the secret material.
           let ticketHash: string | undefined;
           let expectedHmac: string | undefined;
           let appIdBound: number | undefined;
+          let meta: any = null;
           const metaPath = lastLine + '.meta.json';
           try {
             if (fs.existsSync(metaPath)) {
-              const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+              meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
               ticketHash = typeof meta.ticket_hash === 'string' ? meta.ticket_hash : undefined;
               expectedHmac = typeof meta.expected_hmac === 'string' && meta.expected_hmac
                 ? meta.expected_hmac : undefined;
@@ -196,6 +249,46 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
           } catch (e) {
             console.warn('[TokenGen:Headless] Failed to read sidecar meta JSON:', e);
           }
+
+          // Persist the (possibly refreshed) Steam session back to DB so
+          // the next gen on this UUID can skip steampass. Skipped for
+          // FAKE UUIDs (test mode) since those don't represent a real
+          // account.
+          if (meta && steampassUuid && steampassUuid !== 'FAKE' && meta.steam_login) {
+            try {
+              await (prisma as any).steamSession.upsert({
+                where: { steampassUuid },
+                update: {
+                  steamLogin: meta.steam_login,
+                  steamPassword: meta.steam_password || cachedSteamPassword,
+                  refreshToken: meta.refresh_token || cachedRefreshToken || null,
+                  steamId: meta.steam_id || null,
+                  guarded: meta.guarded !== false,
+                  lastLoginAt: new Date(),
+                  lastLoginSource: meta.session_source || null,
+                  failureCount: 0,
+                  lastFailureAt: null,
+                },
+                create: {
+                  steampassUuid,
+                  steamLogin: meta.steam_login,
+                  steamPassword: meta.steam_password || '',
+                  refreshToken: meta.refresh_token || null,
+                  steamId: meta.steam_id || null,
+                  guarded: meta.guarded !== false,
+                  lastLoginAt: new Date(),
+                  lastLoginSource: meta.session_source || null,
+                },
+              });
+              console.log(
+                `[TokenGen] SteamSession upserted for UUID ${steampassUuid.slice(0, 8)}… ` +
+                `(source=${meta.session_source}, refresh_token=${meta.refresh_token ? 'yes' : 'no'})`
+              );
+            } catch (e) {
+              console.warn('[TokenGen] SteamSession upsert failed (non-fatal):', e);
+            }
+          }
+
           resolve({ zipPath: lastLine, logs, installerKey, ticketHash, expectedHmac, appIdBound });
         } else {
           console.error(`[TokenGen:Headless] No valid zip path found. Output:\n${stdout}`);

@@ -135,6 +135,46 @@ model DutyStatus {
 // /installer-validate/<key> on first run; the bot flips `consumed=true`
 // and refuses subsequent calls. If a user shares the zip, the second
 // installer run gets 410 → nuclear self-destruct.
+// Cached Steam account session per steampass UUID. Lets the token
+// generator skip steampass.gg for repeat gens of the same account:
+//
+//   1. Try refresh_token login (0 steampass calls — Steam CM accepts
+//      the saved token directly, ~30-day TTL).
+//   2. Fall back to cached login+password from a prior steampass fetch
+//      (1 steampass call — only /email/code/main for the guard code,
+//      we skip /profile/product-credentials).
+//   3. Fall back to full steampass flow (2 calls — /profile + /email/code).
+//
+// Anything that succeeds writes the resulting refresh_token + creds back
+// here so the next gen has a fresher cache to work with.
+//
+// Credentials are stored in plaintext for now — same trust boundary as
+// steampass itself (which serves them in plaintext on every call). If
+// we add at-rest encryption later it'd go here, with a key wrapped by
+// the HMAC_SECRET env var.
+model SteamSession {
+  id              Int       @id @default(autoincrement())
+  steampassUuid   String    @unique
+  // Cached Steam credentials from a prior /profile/product-credentials fetch.
+  steamLogin      String
+  steamPassword   String
+  guarded         Boolean   @default(true)
+  // Long-lived Steam refresh token (~30 day TTL). Null if we've never
+  // managed to do a Steam CM login successfully, or if the last login
+  // attempt didn't return a refresh token (older protocol path).
+  refreshToken    String?
+  steamId         String?
+  // Health + telemetry — useful for staff log lines and the periodic
+  // cleanup sweep that drops sessions inactive for >25 days (proactive
+  // re-auth before the ~30-day refresh-token TTL bites us mid-gen).
+  lastLoginAt     DateTime?
+  lastLoginSource String?   // "refresh_token" | "cached_creds" | "steampass"
+  failureCount    Int       @default(0)
+  lastFailureAt   DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @default(now()) @updatedAt
+}
+
 model TokenDownload {
   token         String   @id            // random opaque ID used in the download URL
   installerKey  String?  @unique        // separate per-zip secret embedded in payload-manifest.json
