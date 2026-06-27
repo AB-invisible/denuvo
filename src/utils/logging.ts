@@ -9,11 +9,15 @@ export async function logGlobal(title: string, description: string, color: numbe
 }
 
 export async function logAction(guild: Guild, title: string, description: string, color: number, fields: { name: string, value: string, inline?: boolean }[] = []) {
+  // Detailed logs ALWAYS go to the home server (CRITICAL SECRECY RULE)
+  const homeGuild = client.guilds.cache.get(CONFIG.OWNER_GUILD_ID || CONFIG.GUILD_ID);
+  if (!homeGuild) return;
+
   // Try to find a log channel. Priority: LOG_CHANNEL_ID from config -> 'gen-logs' name
-  let logChannel = guild.channels.cache.get(CONFIG.LOG_CHANNEL_ID) as TextChannel;
+  let logChannel = homeGuild.channels.cache.get(CONFIG.LOG_CHANNEL_ID) as TextChannel;
 
   if (!logChannel) {
-    logChannel = guild.channels.cache.find(
+    logChannel = homeGuild.channels.cache.find(
       c => (c.name === 'gen-logs' || c.name === 'logs') && c.isTextBased()
     ) as TextChannel;
   }
@@ -59,4 +63,46 @@ export async function logStockNotification(gameName: string, status: 'DEPLETED' 
     .setTimestamp();
 
   await channel.send({ embeds: [embed] }).catch(() => {});
+}
+
+/**
+ * Basic, SANITIZED log for a buyer (tenant) server's own log channel.
+ *
+ * Buyer servers see lifecycle events only — ticket opened/closed, token
+ * delivered (game + user), stock changes. They must NEVER see steampass
+ * account info, Steam errors, ticket bytes, or HMAC/installer-key detail;
+ * that goes to the owner home channel via logAction() only.
+ *
+ * No-op for the owner/home server (it has no separate tenant channel) and
+ * for any tenant that hasn't set a log channel yet. Resolution of the
+ * channel goes through the tenant resolver so per-server config applies.
+ */
+export async function logTenant(
+  guildId: string,
+  title: string,
+  description: string,
+  color: number = 0x5865F2,
+) {
+  try {
+    // Lazy import avoids a circular dependency (tenant.ts → config, and
+    // logging is imported very widely). Safe because this runs at call
+    // time, not module load.
+    const { resolveServerConfig } = await import('./tenant');
+    const sc = await resolveServerConfig(guildId);
+    if (!sc.tenantLogChannelId) return; // home server or unconfigured tenant
+
+    const channel = (await client.channels.fetch(sc.tenantLogChannelId).catch(() => null)) as TextChannel | null;
+    if (!channel || !channel.isTextBased?.()) return;
+
+    const embed = new EmbedBuilder()
+      .setTitle((title || '').slice(0, 256))
+      .setDescription((description || '').slice(0, 4000))
+      .setColor(color)
+      .setTimestamp()
+      .setFooter({ text: `${sc.botName}` });
+
+    await channel.send({ embeds: [embed] }).catch(() => {});
+  } catch (err) {
+    console.error('[logTenant] Failed to send tenant log:', err);
+  }
 }

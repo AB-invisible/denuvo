@@ -1,7 +1,7 @@
 import { client } from './client';
 import { CONFIG } from './config';
 import path from 'path';
-import { REST, Routes, InteractionType, PermissionsBitField, SlashCommandBuilder, TextChannel, AttachmentBuilder, Events, ActionRowBuilder, ButtonBuilder, ButtonStyle, ActivityType, TextBasedChannel, MessageFlags, EmbedBuilder, Message, GuildMember } from 'discord.js';
+import { REST, Routes, InteractionType, PermissionsBitField, SlashCommandBuilder, TextChannel, AttachmentBuilder, Events, ActionRowBuilder, ButtonBuilder, ButtonStyle, ActivityType, TextBasedChannel, MessageFlags, EmbedBuilder, Message, GuildMember, Guild } from 'discord.js';
 import { createMainPanel, createMaintenancePanel, createVerificationProcessingEmbed, createVerificationSuccessEmbed, createVerificationFailureEmbed, createProfileEmbed, createStaffLookupEmbed, createTokenDeliveryEmbed, createVouchRequestEmbed } from './utils/embeds';
 import { createTicket, claimTicket, closeTicket, handleCooldownSelection, handleDeductionChoice, unclaimTicket, autoCloseTicketForVerificationTimeout, triggerSessionFailure, pendingVerificationTimers, vouchTimers } from './utils/ticketManager';
 import { getStaffStats, getEstimatedWaitTime } from './utils/stats';
@@ -17,6 +17,11 @@ import { updateTicketWaitTimes, checkWeeklyStaffStats, checkDutyStatusReset, che
 import { toggleDuty } from './utils/dutyManager';
 import { addSubscription, getUserSubscriptions } from './utils/subscriptionManager';
 import { isStaff } from './utils/permissions';
+import { logTenant } from './utils/logging';
+import { checkGuild, shouldLeaveGuild } from './utils/guildAccess';
+import { getAllowedGuildIds, invalidateTenantCache } from './utils/tenant';
+import { pickOwnerAccount, recordOwnerUsage } from './utils/steampassPool';
+import { OWNER_COMMANDS, SETLOGS_COMMAND, SETVOUCH_COMMAND, ADDSUPPORT_COMMAND, OWNER_COMMAND_NAMES, handleTenantCommand } from './utils/tenantCommands';
 // Spin up the payload HTTP server immediately so Railway's PORT-based
 // healthcheck has something to talk to even before the Discord client
 // finishes connecting. Wrapped in dynamic import + try/catch so any
@@ -179,9 +184,32 @@ const rest = new REST({ version: '10' }).setToken(CONFIG.TOKEN);
 async function registerCommands() {
   try {
     console.log('Started refreshing application (/) commands.');
+    // Clear any global commands (we register per-guild only).
     await rest.put(Routes.applicationCommands(CONFIG.CLIENT_ID), { body: [] });
-    await rest.put(Routes.applicationGuildCommands(CONFIG.CLIENT_ID, CONFIG.GUILD_ID), { body: commands });
-    console.log('Successfully reloaded application (/) commands.');
+
+    const ownerCmds = OWNER_COMMANDS.map(c => c.toJSON());
+    const setlogs = SETLOGS_COMMAND.toJSON();
+   const setvouch = SETVOUCH_COMMAND.toJSON();
+    const addsupport = ADDSUPPORT_COMMAND.toJSON();
+
+    // Buyer servers: the normal command set MINUS /test, PLUS /setlogs + /setvouch + /addsupport.
+    const tenantCommands = [
+      ...commands.filter((c: any) => c.name !== 'test'),
+      setlogs,
+      setvouch,
+      addsupport,
+    ];
+    // Home/owner server: everything + owner commands + the setup commands.
+    const ownerGuildCommands = [...commands, ...ownerCmds, setlogs, setvouch, addsupport];
+
+
+    const allowed = await getAllowedGuildIds();
+    for (const gid of allowed) {
+      const body = gid === CONFIG.OWNER_GUILD_ID ? ownerGuildCommands : tenantCommands;
+      await rest.put(Routes.applicationGuildCommands(CONFIG.CLIENT_ID, gid), { body })
+        .catch(e => console.error(`[registerCommands] failed for guild ${gid}:`, e?.message || e));
+    }
+    console.log(`Successfully reloaded (/) commands for ${allowed.length} guild(s).`);
   } catch (error) {
     console.error('Error registering commands:', error);
   }
@@ -193,12 +221,13 @@ client.once(Events.ClientReady, async () => {
 
   client.user?.setActivity('Denuvo Activations', { type: ActivityType.Watching });
 
-  // ─── SERVER LOCK ENFORCEMENT ───
-  // Leave any guild that isn't CONFIG.GUILD_ID. This catches stale invites
-  // from other servers if the bot was ever added elsewhere.
+ // ─── SERVER LOCK ENFORCEMENT (multi-tenant) ───
+  // Leave only guilds that are neither the home server nor a provisioned
+  // tenant. Paused tenants (active=false) are KEPT — they're suspended,
+  // not evicted, so /resumeserver can re-enable them later.
   for (const [gid, g] of client.guilds.cache) {
-    if (gid !== CONFIG.GUILD_ID) {
-      console.warn(`[ServerLock] Leaving non-target guild: ${g.name} (${gid})`);
+    if (await shouldLeaveGuild(gid)) {
+      console.warn(`[ServerLock] Leaving unauthorized guild: ${g.name} (${gid})`);
       await g.leave().catch(err => console.error(`[ServerLock] Failed to leave ${gid}:`, err));
     }
   }
@@ -220,9 +249,12 @@ client.once(Events.ClientReady, async () => {
 // If the bot is added to any server other than CONFIG.GUILD_ID, leave it
 // immediately. Prevents anyone with an invite link from using this bot.
 client.on(Events.GuildCreate, async (guild) => {
-  if (guild.id !== CONFIG.GUILD_ID) {
-    console.warn(`[ServerLock] Joined non-target guild ${guild.name} (${guild.id}) — leaving immediately.`);
+  if (await shouldLeaveGuild(guild.id)) {
+    console.warn(`[ServerLock] Joined unauthorized guild ${guild.name} (${guild.id}) — leaving immediately.`);
     await guild.leave().catch(err => console.error(`[ServerLock] Failed to leave ${guild.id}:`, err));
+  } else {
+    // Authorized (home or tenant) — register its command set.
+    await registerCommands().catch(() => {});
   }
 });
 
@@ -286,6 +318,15 @@ async function applyVouchTimeoutStrike(ticketId: number, userId: string, channel
       0xED4245
     );
   }
+  if (ch && ch.guildId) {
+    const title = permanentBan ? '🚫 Vouch Timeout (Permanent Ban)' : '🚨 Vouch Timeout (Strike)';
+    await logTenant(
+      ch.guildId,
+      title,
+      `User <@${userId}> failed to vouch in time.\n**Strikes:** \`${failures}/3\`${permanentBan ? '\n**Status:** Permanent cooldown applied.' : ''}`,
+      0xED4245
+    );
+  }
 
   vouchTimers.delete(userId);
   await refreshAllPanels();
@@ -335,9 +376,9 @@ async function rehydrateVerificationTimers() {
       const remainingMs = Math.max(0, (10 * 60 * 1000) - elapsedMs);
       
       const timer = setTimeout(async () => {
-        const guild = client.guilds.cache.get(CONFIG.GUILD_ID);
-        if (guild) {
-          await autoCloseTicketForVerificationTimeout(ticket.channelId, guild);
+        const channel = await client.channels.fetch(ticket.channelId).catch(() => null);
+        if (channel && !channel.partial && 'guild' in channel) {
+          await autoCloseTicketForVerificationTimeout(ticket.channelId, channel.guild as Guild);
         }
       }, remainingMs);
 
@@ -367,16 +408,25 @@ client.on('interactionCreate', async (interaction) => {
     // Bot only operates in CONFIG.GUILD_ID. Reject all interactions from
     // any other guild. Autocomplete is silently ignored (no reply API);
     // others get a polite ephemeral rejection.
-    if (interaction.guildId && interaction.guildId !== CONFIG.GUILD_ID) {
-      if (interaction.isAutocomplete()) {
-        await interaction.respond([]).catch(() => {});
-      } else if (interaction.isRepliable()) {
-        await interaction.reply({
-          content: '❌ This bot only operates in its designated server.',
-          flags: [MessageFlags.Ephemeral],
-        }).catch(() => {});
+if (interaction.guildId) {
+      const verdict = await checkGuild(interaction.guildId);
+      if (!verdict.allowed) {
+        const msg = verdict.reason === 'paused'
+          ? '⏸️ This server is currently suspended. Please contact the bot owner.'
+          : '❌ This server is not authorized to use this bot.';
+        if (interaction.isAutocomplete()) {
+          await interaction.respond([]).catch(() => {});
+        } else if (interaction.isRepliable()) {
+          await interaction.reply({ content: msg, flags: [MessageFlags.Ephemeral] }).catch(() => {});
+        }
+        return;
       }
-      return;
+    }
+
+    // Owner-only + /setlogs commands are handled in their own module.
+    if (interaction.isChatInputCommand()) {
+      const handled = await handleTenantCommand(interaction);
+      if (handled) return;
     }
 
     if (interaction.isAutocomplete()) {
@@ -437,11 +487,14 @@ async function handleAutocomplete(interaction: any) {
 }
 
 async function handleChatCommand(interaction: any) {
-  // ─── SERVER LOCK ───
-  // Bot only serves CONFIG.GUILD_ID. Reject any command from any other guild.
-  if (interaction.guildId !== CONFIG.GUILD_ID) {
+  // Server-lock + tenant-pause already enforced in interactionCreate via
+  // checkGuild(), so any guild reaching here is authorized (home or tenant).
+
+  // /test is OWNER-ONLY — it's stripped from buyer command sets, but guard
+  // at runtime too in case of a stale registration.
+  if (interaction.commandName === 'test' && interaction.guildId !== CONFIG.OWNER_GUILD_ID) {
     return interaction.reply({
-      content: '❌ This bot only operates in its designated server.',
+      content: '❌ This command is not available in this server.',
       flags: [MessageFlags.Ephemeral],
     }).catch(() => {});
   }
@@ -462,11 +515,14 @@ async function handleChatCommand(interaction: any) {
     }
   }
 
-  const channel = interaction.channel;
+const channel = interaction.channel;
   const isStaffStats = interaction.commandName === 'staffstats';
   // /tokengen is public (other members can see the result), like staffstats.
   const isPublic = isStaffStats || interaction.commandName === 'tokengen';
   await interaction.deferReply({ flags: isPublic ? [] : [MessageFlags.Ephemeral] });
+
+  // Resolve per-server config (tenant overrides or global env fallback).
+  const srvCfg = await (await import('./utils/tenant')).resolveServerConfig(interaction.guildId);
   
   if (interaction.commandName === 'postpanel') {
     if (channel?.isTextBased() && 'send' in channel) {
@@ -729,9 +785,25 @@ async function handleChatCommand(interaction: any) {
       .setTimestamp();
     await interaction.editReply({ embeds: [startEmbed] });
 
+     // Owner server: pick a pool account with daily quota left for this game.
+    // Buyer server: pass guildId so its own steampass account is used.
+    let poolAccountId: number | null = null;
+    let accountOverride: { login: string; password: string } | undefined;
+   if (interaction.guildId === CONFIG.OWNER_GUILD_ID) {
+      const picked = await pickOwnerAccount(game.appId);
+      if (picked.exhausted) {
+        return interaction.editReply({ content: `🔴 **${game.name}** is **out of tokens for today.** Fresh tokens unlock at 00:00 UTC — please try again tomorrow.` });
+      }
+      if (picked.account) {
+        poolAccountId = picked.account.id;
+        accountOverride = { login: picked.account.login, password: picked.account.password };
+      }
+    }
+
     try {
-      const { zipPath, logs, installerKey, ticketHash, expectedHmac, appIdBound } = await generateToken(game.appId, game.name);
+      const { zipPath, logs, installerKey, ticketHash, expectedHmac, appIdBound } = await generateToken(game.appId, game.name, interaction.guildId, accountOverride);
       console.log(`[TokenGen-Cmd] Logs for ${game.name}:\n${logs}`);
+      if (poolAccountId) await recordOwnerUsage(poolAccountId, game.appId);
 
       if (!zipPath) {
         const failEmbed = new EmbedBuilder()
@@ -831,8 +903,7 @@ async function handleChatCommand(interaction: any) {
           if (tTimer) { clearTimeout(tTimer); pendingVerificationTimers.delete(interaction.channelId); }
           await delivered.react?.('❤️').catch(() => {});
         }
-
-        if (interaction.guild) {
+     if (interaction.guild) {
           await logAction(interaction.guild, '🛠️ /tokengen Delivered',
             `Staff ${interaction.user} generated a token via **/tokengen** for **${game.name}** (AppID \`${game.appId}\`, ${zipMB.toFixed(1)} MB).\n` +
             `**Stock Deducted:** \`${deduct ? 'YES' : 'NO'}\`\n` +
@@ -840,6 +911,8 @@ async function handleChatCommand(interaction: any) {
             `**Link:** ${persistent ? '🔓 **Persistent** (never expires, installer re-runnable)' : '⏱️ Single-use (expires + consumed on first install)'}`,
             0x57F287);
         }
+        // Basic sanitized log for a buyer server (no-op on home server).
+        await logTenant(interaction.guildId, '📦 Token Delivered', `A token for **${game.name}** was delivered to <@${ticketHere?.userId || interaction.user.id}>.`, 0x57F287);
       } catch (sendErr) {
         const se = sendErr as Error;
         console.error('[TokenGen-Cmd] Delivery failed:', se);
@@ -1316,7 +1389,8 @@ async function handleWorksYes(interaction: any) {
   await interaction.deferUpdate();
   const ticket = await prisma.ticket.findFirst({ where: { channelId: interaction.channelId } });
   if (ticket && (interaction.user.id === ticket.userId)) {
-    const vouchEmbed = createVouchRequestEmbed(CONFIG.VOUCHER_CHANNEL_ID, ticket.staffId!, client.user!.id);
+    const wySc = await (await import('./utils/tenant')).resolveServerConfig(interaction.guildId);
+    const vouchEmbed = createVouchRequestEmbed(wySc.voucherChannelId, ticket.staffId!, client.user!.id);
     if (interaction.channel && 'send' in interaction.channel) {
       const vouchReply = await (interaction.channel as TextChannel).send({ embeds: [vouchEmbed] });
       await vouchReply.react('❤️').catch(() => {});
@@ -1347,19 +1421,21 @@ async function handleWorksNo(interaction: any) {
   await interaction.deferUpdate();
   const ticket = await prisma.ticket.findFirst({ where: { channelId: interaction.channelId } });
   if (ticket && interaction.user.id === ticket.userId) {
+    const wnSc = await (await import('./utils/tenant')).resolveServerConfig(interaction.guildId);
     const failureHelpEmbed = new EmbedBuilder()
       .setTitle('⚠️ Issue Reported')
-      .setDescription(`System alerted activators (<@&${CONFIG.ACTIVATORS_ROLE_ID}>). Please wait.`)
+      .setDescription(`System alerted activators (<@&${wnSc.activatorsRoleId}>). Please wait.`)
       .setColor(0xED4245)
       .setTimestamp();
 
     if (interaction.channel && 'send' in interaction.channel) {
       await (interaction.channel as TextChannel).send({ embeds: [failureHelpEmbed] });
-      await (interaction.channel as TextChannel).send({ content: `<@&${CONFIG.ACTIVATORS_ROLE_ID}>, user <@${interaction.user.id}> reported issues.` });
+      await (interaction.channel as TextChannel).send({ content: `<@&${wnSc.activatorsRoleId}>, user <@${interaction.user.id}> reported issues.` });
     }
 
-    const guild = client.guilds.cache.get(CONFIG.GUILD_ID);
+    const guild = interaction.guild;
     if (guild) await logAction(guild, '⚠️ Activation Issue', `User <@${interaction.user.id}> reported issues for **${ticket.gameId}**.`, 0xED4245);
+
   } else {
     await interaction.followUp({ content: '❌ **Unauthorized.**', flags: [MessageFlags.Ephemeral] });
   }
@@ -1458,10 +1534,19 @@ client.on(Events.MessageCreate, async (message) => {
         const successEmbed = createVerificationSuccessEmbed();
         await waitMessage.edit({ embeds: [successEmbed] });
         
-        const guild = client.guilds.cache.get(CONFIG.GUILD_ID);
-        if (guild) {
-          await logAction(guild, '✅ Screenshot Verified', `User ${message.author} has posted a valid screenshot for **${ticket.game.name}** in <#${message.channelId}>.`, 0x57F287);
+        const homeGuild = client.guilds.cache.get(CONFIG.GUILD_ID);
+        const guild = message.guild;
+        if (homeGuild) {
+          await logAction(homeGuild, '✅ Screenshot Verified', `User ${message.author} has posted a valid screenshot for **${ticket.game.name}** in <#${message.channelId}>.`, 0x57F287);
         }
+        if (message.guildId) {
+          await logTenant(message.guildId, '✅ Screenshot Verified', `User ${message.author} has posted a valid screenshot for **${ticket.game.name}** in <#${message.channelId}>.`, 0x57F287);
+        }
+
+        // Per-server support-role mention — '' for a buyer that hasn't run
+        // /addsupport, so we ping nothing instead of a broken role mention.
+        const msgSc = await (await import('./utils/tenant')).resolveServerConfig(message.guildId ?? '');
+        const staffPing = msgSc.staffPing;
 
         // ─── SECURITY: don't auto-gen off an UNVERIFIED screenshot ───
         // If GROQ_API_KEY isn't set, verifyScreenshot() returned the sentinel
@@ -1474,9 +1559,9 @@ client.on(Events.MessageCreate, async (message) => {
             .setColor(0xFEE75C)
             .setTimestamp();
           await (message.channel as TextChannel).send({ embeds: [bypassEmbed] });
-          await (message.channel as TextChannel).send({ content: `<@&${CONFIG.STAFF_ROLE_ID}> **GROQ_API_KEY not configured.** Screenshot received for **${ticket.game.name}** (AppID \`${ticket.game.appId}\`). Please review and deliver manually with \`/tokengen\`.` });
-          if (guild) {
-            await logAction(guild, '⚠️ AI Verify Bypassed', `Screenshot for **${ticket.game.name}** in <#${message.channelId}> wasn't verified by AI (GROQ_API_KEY missing). Manual staff review required.`, 0xFEE75C);
+          await (message.channel as TextChannel).send({ content: `${staffPing} **GROQ_API_KEY not configured.** Screenshot received for **${ticket.game.name}** (AppID \`${ticket.game.appId}\`). Please review and deliver manually with \`/tokengen\`.` });
+          if (homeGuild) {
+            await logAction(homeGuild, '⚠️ AI Verify Bypassed', `Screenshot for **${ticket.game.name}** in <#${message.channelId}> wasn't verified by AI (GROQ_API_KEY missing). Manual staff review required.`, 0xFEE75C);
           }
           return;
         }
@@ -1499,12 +1584,12 @@ client.on(Events.MessageCreate, async (message) => {
             .setColor(0xFEE75C)
             .setTimestamp();
           await (message.channel as TextChannel).send({ embeds: [pausedEmbed] });
-          await (message.channel as TextChannel).send({ content: `<@&${CONFIG.STAFF_ROLE_ID}> Auto-gen is paused ${scope} — manual delivery needed for **${ticket.game.name}** (AppID \`${ticket.game.appId}\`).` });
-          if (guild) {
+          await (message.channel as TextChannel).send({ content: `${staffPing} Auto-gen is paused ${scope} — manual delivery needed for **${ticket.game.name}** (AppID \`${ticket.game.appId}\`).` });
+          if (homeGuild) {
             const logTitle = !globallyEnabled
               ? '⏸️ Auto-Gen Skipped (Global Pause)'
               : '⏸️ Auto-Gen Skipped (Per-Game Pause)';
-            await logAction(guild, logTitle, `Screenshot verified for **${ticket.game.name}** in <#${message.channelId}>. Auto-gen paused ${scope} — staff needs to deliver manually.`, 0xFEE75C);
+            await logAction(homeGuild, logTitle, `Screenshot verified for **${ticket.game.name}** in <#${message.channelId}>. Auto-gen paused ${scope} — staff needs to deliver manually.`, 0xFEE75C);
           }
           return; // Skip the rest of the auto-gen block
         }
@@ -1520,8 +1605,31 @@ client.on(Events.MessageCreate, async (message) => {
           const appId = ticket.game.appId;
           if (!appId) throw new Error('Game has no AppID configured.');
 
-          const { zipPath, logs, installerKey, ticketHash, expectedHmac, appIdBound } = await generateToken(appId, ticket.game.name);
+          // Owner server: pick a pool account with daily quota left for this
+          // game; if all are used up, tell the user (generic — no mechanism).
+          // Buyer server: pass guildId so its OWN account is used.
+          let poolAccountId: number | null = null;
+          let accountOverride: { login: string; password: string } | undefined;
+          if (message.guildId === CONFIG.OWNER_GUILD_ID) {
+            const picked = await pickOwnerAccount(appId);
+            if (picked.exhausted) {
+              const outEmbed = new EmbedBuilder()
+                .setTitle('🔴 Out of Tokens Today')
+                .setDescription(`**${ticket.game.name}** is **out of tokens for today.** Fresh tokens unlock at 00:00 UTC — please try again tomorrow.`)
+                .setColor(0xED4245)
+                .setTimestamp();
+              await genMsg.edit({ embeds: [outEmbed] });
+              return;
+            }
+            if (picked.account) {
+              poolAccountId = picked.account.id;
+              accountOverride = { login: picked.account.login, password: picked.account.password };
+            }
+          }
+
+          const { zipPath, logs, installerKey, ticketHash, expectedHmac, appIdBound } = await generateToken(appId, ticket.game.name, message.guildId ?? undefined, accountOverride);
           console.log(`[TokenGen] Logs for ${ticket.game.name}:\n${logs}`);
+          if (poolAccountId) await recordOwnerUsage(poolAccountId, appId);
 
           if (zipPath) {
             const safeGameName = ticket.game.name.replace(/[<>:"/\\|?*]/g, '').trim();
@@ -1567,9 +1675,9 @@ client.on(Events.MessageCreate, async (message) => {
                   .setColor(0xED4245)
                   .setTimestamp();
                 await genMsg.edit({ embeds: [failEmbed] });
-                await (message.channel as TextChannel).send({ content: `<@&${CONFIG.STAFF_ROLE_ID}> Auto-gen worked but the zip is ${zipMB.toFixed(1)} MB and won't fit Discord (${limitMB} MB). External upload also failed. Manual delivery needed.` });
-                if (guild) {
-                  await logAction(guild, '⚠️ Token Upload Failed', `**${ticket.game.name}** — zip ${zipMB.toFixed(1)} MB > Discord limit ${limitMB} MB. Litterbox upload error:\n\`\`\`\n${(ue?.message || String(ue)).slice(0, 500)}\n\`\`\``, 0xED4245);
+                await (message.channel as TextChannel).send({ content: `${staffPing} Auto-gen worked but the zip is ${zipMB.toFixed(1)} MB and won't fit Discord (${limitMB} MB). External upload also failed. Manual delivery needed.` });
+                if (homeGuild) {
+                  await logAction(homeGuild, '⚠️ Token Upload Failed', `**${ticket.game.name}** — zip ${zipMB.toFixed(1)} MB > Discord limit ${limitMB} MB. Litterbox upload error:\n\`\`\`\n${(ue?.message || String(ue)).slice(0, 500)}\n\`\`\``, 0xED4245);
                 }
                 try { fsMod.unlinkSync(zipPath); } catch {}
                 return;
@@ -1601,13 +1709,18 @@ client.on(Events.MessageCreate, async (message) => {
               await genMsg.delete().catch(() => {});
               await deliveryMsg.react('❤️').catch(() => {});
 
-              if (guild) {
-                await logAction(guild, '🤖 Auto-Token Delivered (External Host)', `Bot auto-generated and delivered token for **${ticket.game.name}** (${zipMB.toFixed(1)} MB) via ${upload.provider} in <#${message.channelId}>. Link: ${upload.url}`, 0x57F287);
+              if (homeGuild) {
+                await logAction(homeGuild, '🤖 Auto-Token Delivered (External Host)', `Bot auto-generated and delivered token for **${ticket.game.name}** (${zipMB.toFixed(1)} MB) via ${upload.provider} in <#${message.channelId}>. Link: ${upload.url}`, 0x57F287);
+              }
+              // Basic sanitized log for a buyer server (no-op on home server).
+              if (message.guildId) {
+                await logTenant(message.guildId, '📦 Token Delivered', `A token for **${ticket.game.name}** was delivered to <@${ticket.userId}>.`, 0x57F287);
               }
 
               // Clean up local zip — we have the hosted copy
               try { fsMod.unlinkSync(zipPath); } catch {}
               return;
+
             }
           } else {
             const failEmbed = new EmbedBuilder()
@@ -1618,7 +1731,7 @@ client.on(Events.MessageCreate, async (message) => {
             await genMsg.edit({ embeds: [failEmbed] });
 
             // Ping staff for manual handling
-            await (message.channel as TextChannel).send({ content: `<@&${CONFIG.STAFF_ROLE_ID}> Auto-generation failed. Manual token delivery needed.` });
+            await (message.channel as TextChannel).send({ content: `${staffPing} Auto-generation failed. Manual token delivery needed.` });
           }
         } catch (genError) {
           const ge = genError as Error;
@@ -1639,12 +1752,16 @@ client.on(Events.MessageCreate, async (message) => {
             .setDescription(`Token generation encountered an error. Staff has been notified.\n\`\`\`\n${detail.slice(0, 500)}\n\`\`\`${hint}`)
             .setColor(0xED4245);
           await genMsg.edit({ embeds: [errEmbed] });
-          await (message.channel as TextChannel).send({ content: `<@&${CONFIG.STAFF_ROLE_ID}> Auto-generation error. Please handle manually.` });
+          await (message.channel as TextChannel).send({ content: `${staffPing} Auto-generation error. Please handle manually.` });
 
           // Also log to staff log channel
           try {
-            if (guild) {
-              await logAction(guild, '🚨 Token Generation Error', `User <@${ticket.userId}> hit a token-gen error for **${ticket.game.name}** (AppID \`${ticket.game.appId}\`):\n\`\`\`\n${detail.slice(0, 800)}\n\`\`\`${hint}`, 0xED4245);
+            const homeGuild = client.guilds.cache.get(CONFIG.GUILD_ID);
+            if (homeGuild) {
+              await logAction(homeGuild, '🚨 Token Generation Error', `User <@${ticket.userId}> hit a token-gen error for **${ticket.game.name}** (AppID \`${ticket.game.appId}\`):\n\`\`\`\n${detail.slice(0, 800)}\n\`\`\`${hint}`, 0xED4245);
+            }
+            if (message.guildId) {
+              await logTenant(message.guildId, '🚨 Token Generation Error', `User <@${ticket.userId}> hit a token-gen error for **${ticket.game.name}** (AppID \`${ticket.game.appId}\`):\n\`\`\`\n${detail.slice(0, 800)}\n\`\`\`${hint}`, 0xED4245);
             }
           } catch {}
         }
@@ -1672,15 +1789,20 @@ client.on(Events.MessageCreate, async (message) => {
         } else {
           await waitMessage.edit({ embeds: [failureEmbed] });
           
-          const guild = client.guilds.cache.get(CONFIG.GUILD_ID);
-          if (guild) {
-            await logAction(guild, '❌ Screenshot Rejected', `User <@${message.author.id}> provided an invalid screenshot for **${ticket.game.name}**.\n\n**Reasoning:** ${reasoning || 'No details'}\n**Attempts:** \`${newRetryCount}/3\``, 0xED4245);
+          if (message.guild) {
+            await autoCloseTicketForVerificationTimeout(message.channelId, message.guild);
+            const homeGuild = client.guilds.cache.get(CONFIG.GUILD_ID);
+            if (homeGuild) {
+              await logAction(homeGuild, '❌ Screenshot Rejected', `User <@${message.author.id}> provided an invalid screenshot for **${ticket.game.name}**.\n\n**Reasoning:** ${reasoning || 'No details'}\n**Attempts:** \`${newRetryCount}/3\``, 0xED4245);
+            }
+            if (message.guildId) {
+              await logTenant(message.guildId, '❌ Screenshot Rejected', `User <@${message.author.id}> provided an invalid screenshot for **${ticket.game.name}**.\n\n**Reasoning:** ${reasoning || 'No details'}\n**Attempts:** \`${newRetryCount}/3\``, 0xED4245);
+            }
           }
           
           const newTimer = setTimeout(async () => {
-            const guild = client.guilds.cache.get(CONFIG.GUILD_ID);
-            if (guild) {
-              await autoCloseTicketForVerificationTimeout(message.channelId, guild);
+            if (message.guild) {
+              await autoCloseTicketForVerificationTimeout(message.channelId, message.guild);
             }
           }, 10 * 60 * 1000);
           pendingVerificationTimers.set(message.channelId, newTimer);
@@ -1692,7 +1814,7 @@ client.on(Events.MessageCreate, async (message) => {
 
   // --- NEW: Staff Delivery Detection ---
   const firstAttachment = message.attachments.first();
-  if (firstAttachment && firstAttachment.name.toLowerCase().endsWith('.zip') && message.member?.roles.cache.has(CONFIG.STAFF_ROLE_ID)) {
+  if (firstAttachment && firstAttachment.name.toLowerCase().endsWith('.zip') && message.member && await (await import('./utils/permissions')).isStaffForGuild(message.member as GuildMember, message.guildId ?? '')) {
     try {
       const ticket = await prisma.ticket.findFirst({
         where: { channelId: message.channelId },
@@ -1753,7 +1875,12 @@ client.on(Events.MessageCreate, async (message) => {
   }
 
   // --- NEW: Voucher Monitoring (Keep legacy message detection for backward compat, but prioritize reactions) ---
-  if (message.channelId === CONFIG.VOUCHER_CHANNEL_ID) {
+   // Resolve THIS server's voucher channel (tenant override or home env).
+  const vouchSc = message.guildId
+    ? await (await import('./utils/tenant')).resolveServerConfig(message.guildId)
+    : null;
+  if (vouchSc && message.channelId === vouchSc.voucherChannelId) {
+
     // Find any open/claimed ticket for this user — vouchExpiresAt is preferred
     // but we fall back to any open ticket so this still works if the user posts
     // in voucher channel before clicking "Yes, it works!".
@@ -1872,7 +1999,7 @@ client.on(Events.MessageCreate, async (message) => {
             await logAction(
               message.guild,
               '🤖 Vouch Auto-Closed',
-              `Bot auto-closed session for <@${ticket.userId}> after vouch (ping + screenshot) in <#${CONFIG.VOUCHER_CHANNEL_ID}>.\n\n**Game:** ${ticket.game.name}\n**Cooldown:** \`${cooldownHours}h\`\n**Token Deducted:** \`YES\``,
+              `Bot auto-closed session for <@${ticket.userId}> after vouch (ping + screenshot) in <#${message.channelId}>.\n\n**Game:** ${ticket.game.name}\n**Cooldown:** \`${cooldownHours}h\`\n**Token Deducted:** \`YES\``,
               0x57F287
             );
           }
@@ -1893,7 +2020,11 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
 
   try {
     const message = reaction.message.partial ? await reaction.message.fetch() : reaction.message as Message;
-    if (message.channelId !== CONFIG.VOUCHER_CHANNEL_ID) return;
+    const rxSc = message.guildId
+      ? await (await import('./utils/tenant')).resolveServerConfig(message.guildId)
+      : null;
+    if (!rxSc || message.channelId !== rxSc.voucherChannelId) return;
+
 
     // The user who sent the vouch message
     const vouchAuthorId = message.author.id;
@@ -1937,9 +2068,12 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
           setTimeout(() => channel.delete().catch(() => {}), 5000);
         }
 
-        const guild = client.guilds.cache.get(CONFIG.GUILD_ID);
-        if (guild) {
-          await logAction(guild, '✅ Vouch Verified (Reaction)', `Vouch for <@${ticket.userId}> confirmed by <@${user.id}> via '❤️' reaction. Ticket closed.`, 0x57F287);
+        const homeGuild = client.guilds.cache.get(CONFIG.GUILD_ID);
+        if (homeGuild) {
+          await logAction(homeGuild, '✅ Vouch Verified (Reaction)', `Vouch for <@${ticket.userId}> confirmed by <@${user.id}> via '❤️' reaction. Ticket closed.`, 0x57F287);
+        }
+        if (message.guildId) {
+          await logTenant(message.guildId, '✅ Vouch Verified (Reaction)', `Vouch for <@${ticket.userId}> confirmed by <@${user.id}> via '❤️' reaction. Ticket closed.`, 0x57F287);
         }
         await refreshAllPanels();
       }

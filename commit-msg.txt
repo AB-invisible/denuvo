@@ -1,0 +1,8 @@
+fix: Resolve compile errors and finalize per-server polish
+
+- Fixed malformed code in src/utils/tenantCommands.ts
+- Corrected logAction to securely log detailed events to the owner's home guild only
+- Ensured tenant logs are directed properly for events happening on buyer servers
+- Updated hardcoded guild/staff references in src/index.ts to use context-aware equivalents
+
+Co-Authored-By: TheMich157 <142160132+TheMich157@users.noreply.github.com>

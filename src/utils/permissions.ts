@@ -10,16 +10,47 @@ import { CONFIG } from '../config';
 let warnedStaffEmpty = false;
 let warnedDonatorEmpty = false;
 
+// Synchronous staff check. Used widely (claim/close/etc.) where awaiting a
+// DB lookup per call would be awkward. It returns true if EITHER:
+//   - the member has the global home STAFF_ROLE_ID (home server), OR
+//   - the member has Discord's ManageGuild/Administrator permission.
+// The second clause is what makes BUYER-SERVER staff work without threading
+// an async per-guild role lookup through every call site: a buyer server's
+// admins/mods (who hold ManageGuild) are treated as staff. For an exact
+// per-server staff ROLE match, use isStaffForGuild() below.
 export function isStaff(member: GuildMember): boolean {
   if (!member || !member.roles) return false;
-  if (!CONFIG.STAFF_ROLE_ID) {
-    if (!warnedStaffEmpty) {
-      console.warn('[permissions] STAFF_ROLE_ID is empty — isStaff() will always return false. Set the env var to enable staff features.');
-      warnedStaffEmpty = true;
+  // Discord-native elevated permission → staff in any guild.
+  try {
+    if (member.permissions?.has?.('ManageGuild') || member.permissions?.has?.('Administrator')) {
+      return true;
     }
-    return false;
-  }
-  return member.roles.cache.has(CONFIG.STAFF_ROLE_ID);
+  } catch { /* permissions may be a partial in rare cases — fall through */ }
+  if (CONFIG.STAFF_ROLE_ID && member.roles.cache.has(CONFIG.STAFF_ROLE_ID)) return true;
+  return false;
+}
+
+/**
+ * Exact per-server staff check — matches the tenant's configured staffRoleId
+ * (or the global env role on the home server), PLUS the ManageGuild/Admin
+ * fallback. Async because it resolves tenant config. Use this where you have
+ * the guild and want the buyer's OWN staff role honored precisely.
+ */
+export async function isStaffForGuild(member: GuildMember, guildId: string): Promise<boolean> {
+  if (!member || !member.roles) return false;
+  try {
+    if (member.permissions?.has?.('ManageGuild') || member.permissions?.has?.('Administrator')) {
+      return true;
+    }
+  } catch {}
+  try {
+    const { resolveServerConfig } = await import('./tenant');
+    const sc = await resolveServerConfig(guildId);
+    if (sc.staffRoleId && member.roles.cache.has(sc.staffRoleId)) return true;
+    if (sc.activatorsRoleId && member.roles.cache.has(sc.activatorsRoleId)) return true;
+  } catch { /* fall back to the global role below */ }
+  if (CONFIG.STAFF_ROLE_ID && member.roles.cache.has(CONFIG.STAFF_ROLE_ID)) return true;
+  return false;
 }
 
 export function isDonator(member: GuildMember): boolean {

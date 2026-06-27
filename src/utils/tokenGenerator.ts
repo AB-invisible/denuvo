@@ -1,13 +1,13 @@
 /**
  * tokenGenerator.ts — Automated Denuvo token generation
- * 
+ *
  * Uses headless_token.py which:
  * 1. Fetches Steam credentials from steampass.gg API
  * 2. Gets Steam Guard code from steampass.gg
  * 3. Connects to Steam CM servers headlessly (no Steam client needed)
  * 4. Generates encrypted app ticket
  * 5. Packages everything into a zip
- * 
+ *
  * Falls back to the legacy generate_token.py if no steampass UUID is configured.
  */
 
@@ -16,6 +16,8 @@ import crypto from 'crypto';
 import path from 'path';
 import fs from 'fs';
 import prisma from '../lib/prisma';
+import { CONFIG } from '../config';
+import { resolveServerConfig } from './tenant';
 
 // Resolve Python — env override, venv, or system python3.
 function resolvePython(): string {
@@ -66,15 +68,24 @@ export interface TokenGenResult {
 /**
  * Generate a Denuvo token zip for the given AppID.
  * Returns the absolute path to the generated zip file, or null on failure.
+ *
+ * `guildId` selects WHICH steampass account to use. The owner/home server
+ * (or a missing guildId) uses the global STEAMPASS_LOGIN/PASSWORD env;
+ * a buyer server uses its own account from its TenantServer row. The
+ * per-game steampass UUID is global, so only the account differs.
+ *
+ * `accountOverride` (owner server only): index.ts picks a pool account
+ * with daily quota left for this game and passes it here; it wins over
+ * the global env account.
  */
-export async function generateToken(appId: number, gameName: string): Promise<TokenGenResult> {
+export async function generateToken(appId: number, gameName: string, guildId?: string, accountOverride?: { login: string; password: string }): Promise<TokenGenResult> {
   // Look up steampass UUID + generation mode from the database
   const game = await prisma.game.findFirst({ where: { appId } });
   const steampassUuid = game?.steampassUuid;
   const generationMode = (game as any)?.generationMode || 'gbe';
 
   if (steampassUuid) {
-    return generateHeadless(appId, gameName, steampassUuid, generationMode);
+    return generateHeadless(appId, gameName, steampassUuid, generationMode, guildId, accountOverride);
   } else {
     console.log(`[TokenGen] No steampass UUID for AppID ${appId}, falling back to legacy generator`);
     return generateLegacy(appId, gameName);
@@ -90,12 +101,12 @@ export async function generateToken(appId: number, gameName: string): Promise<To
  * placeholder ticket. The structure (DLLs, configs, achievements, etc.)
  * is identical to a real token zip — only the ticket value is fake.
  */
-export async function generateTestToken(appId: number, gameName: string): Promise<TokenGenResult> {
+export async function generateTestToken(appId: number, gameName: string, guildId?: string): Promise<TokenGenResult> {
   // Use the same generationMode as a real run so the test zip layout
   // matches what users would get.
   const game = await prisma.game.findFirst({ where: { appId } });
   const generationMode = (game as any)?.generationMode || 'gbe';
-  return generateHeadless(appId, gameName, 'FAKE', generationMode);
+  return generateHeadless(appId, gameName, 'FAKE', generationMode, guildId);
 }
 
 /**
@@ -107,7 +118,7 @@ export async function generateTestToken(appId: number, gameName: string): Promis
  *   - "coldloader": V2 DLL hijack with coldloader.dll + proxy DLLs
  *   - "coldclientloader": V1 launcher with START_<game>.exe
  */
-function generateHeadless(appId: number, gameName: string, steampassUuid: string, generationMode: string = 'gbe'): Promise<TokenGenResult> {
+function generateHeadless(appId: number, gameName: string, steampassUuid: string, generationMode: string = 'gbe', guildId?: string, accountOverride?: { login: string; password: string }): Promise<TokenGenResult> {
   // Pre-generate the per-zip installer key NOW (before spawning Python)
   // so Python can embed it inside payload-manifest.json as `_sig`. The
   // SAME key gets handed back to the caller and persisted in
@@ -115,20 +126,59 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
   // the bot's /installer-validate endpoint knows which key is valid.
   const installerKey = crypto.randomBytes(24).toString('hex'); // 48 hex chars
 
+  // Each cached Steam session is scoped to (guildId, steampassUuid).
+  // Empty string = the owner/home server (global env account). A buyer
+  // server passes its guildId so its cached session never collides with
+  // another server that shares the same global UUID.
+  const sessionGuildKey = guildId && guildId !== CONFIG.OWNER_GUILD_ID ? guildId : '';
+
   return new Promise(async (resolve) => {
+    // Resolve WHICH steampass account this server uses. Home/owner server
+    // → global STEAMPASS_LOGIN/PASSWORD env. Buyer server → its own
+    // account from the TenantServer row. UUIDs are global so only the
+    // account differs.
+    let spLogin = process.env.STEAMPASS_LOGIN || '';
+    let spPassword = process.env.STEAMPASS_PASSWORD || '';
+    const isTenant = sessionGuildKey !== '';
+    // Owner-pool override: index.ts already picked the pool account that
+    // still has daily quota left for this game and passes it here. It
+    // wins over the global env account on the owner/home server.
+    if (accountOverride && accountOverride.login) {
+      spLogin = accountOverride.login;
+      spPassword = accountOverride.password;
+      console.log('[TokenGen] Using owner-pool account override (login set)');
+    } else if (isTenant) {
+      try {
+        const sc = await resolveServerConfig(sessionGuildKey);
+        spLogin = sc.steampassLogin;
+        spPassword = sc.steampassPassword;
+        console.log(`[TokenGen] Using tenant steampass account for guild ${sessionGuildKey} (login=${spLogin ? 'set' : 'MISSING'})`);
+      } catch (e) {
+        console.warn(`[TokenGen] Tenant config lookup failed for ${sessionGuildKey}, falling back to global account:`, (e as Error).message);
+      }
+    }
+
     // Load the cached steampass bearer token from DB (Metadata table) so
     // Python can skip POST /auth/login entirely. Set via /setsteampass.
     // Falls back gracefully if the row doesn't exist — Python will then
     // attempt a fresh login and surface a clear error if it 422s.
+    //
+    // The cached bearer belongs to the GLOBAL (home) account only — a
+    // tenant has a different steampass account, so reusing the home
+    // bearer would auth as the wrong account. Tenants therefore skip the
+    // cached bearer and do a fresh /auth/login with their own creds.
+    // The owner-pool override also skips it (it's a different account too).
     let cachedToken = '';
-    try {
-      const row = await prisma.metadata.findUnique({ where: { key: 'steampass_token' } });
-      cachedToken = (row?.value || '').trim();
-    } catch {
-      // Metadata table issue is non-fatal — proceed without cached token.
+    if (!isTenant && !(accountOverride && accountOverride.login)) {
+      try {
+        const row = await prisma.metadata.findUnique({ where: { key: 'steampass_token' } });
+        cachedToken = (row?.value || '').trim();
+      } catch {
+        // Metadata table issue is non-fatal — proceed without cached token.
+      }
     }
 
-    // ── Look up cached Steam session for this UUID ──
+    // ── Look up cached Steam session for this (guild, UUID) ──
     // Eliminates 1 or 2 steampass calls per gen if found. Skipped for
     // FAKE (test) UUIDs since those don't talk to real Steam.
     let cachedSteamLogin = '';
@@ -138,7 +188,7 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
     if (steampassUuid && steampassUuid !== 'FAKE') {
       try {
         const session = await (prisma as any).steamSession.findUnique({
-          where: { steampassUuid },
+          where: { guildId_steampassUuid: { guildId: sessionGuildKey, steampassUuid } },
         });
         if (session) {
           cachedSteamLogin = (session.steamLogin || '').trim();
@@ -146,14 +196,14 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
           cachedRefreshToken = (session.refreshToken || '').trim();
           cachedGuarded = session.guarded !== false;
           console.log(
-            `[TokenGen] Cached SteamSession for UUID ${steampassUuid.slice(0, 8)}…: ` +
+            `[TokenGen] Cached SteamSession for guild ${sessionGuildKey || 'HOME'} UUID ${steampassUuid.slice(0, 8)}…: ` +
             `login=${cachedSteamLogin ? 'yes' : 'no'}, ` +
             `refresh_token=${cachedRefreshToken ? 'yes' : 'no'}, ` +
             `last=${session.lastLoginAt?.toISOString?.() || 'never'}, ` +
             `source=${session.lastLoginSource || '-'}`
           );
         } else {
-          console.log(`[TokenGen] No SteamSession cache for UUID ${steampassUuid.slice(0, 8)}… (cold start)`);
+          console.log(`[TokenGen] No SteamSession cache for guild ${sessionGuildKey || 'HOME'} UUID ${steampassUuid.slice(0, 8)}… (cold start)`);
         }
       } catch (e) {
         // SteamSession lookup is best-effort. If the table doesn't exist
@@ -175,8 +225,8 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
     console.log(`[TokenGen] Forwarding PUBLIC_URL='${publicUrlEnv}' RAILWAY_PUBLIC_DOMAIN='${railwayDomainEnv}' to Python`);
 
     const env = buildPythonEnv({
-      STEAMPASS_LOGIN: process.env.STEAMPASS_LOGIN || '',
-      STEAMPASS_PASSWORD: process.env.STEAMPASS_PASSWORD || '',
+      STEAMPASS_LOGIN: spLogin,
+      STEAMPASS_PASSWORD: spPassword,
       STEAMPASS_TOKEN: cachedToken,
       INSTALLER_KEY: installerKey,
       // Server-side secret used to sign the (sig|appId|ticketHash) tuple
@@ -212,7 +262,7 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
           if (steampassUuid && steampassUuid !== 'FAKE') {
             try {
               await (prisma as any).steamSession.update({
-                where: { steampassUuid },
+                where: { guildId_steampassUuid: { guildId: sessionGuildKey, steampassUuid } },
                 data: { failureCount: { increment: 1 }, lastFailureAt: new Date() },
               });
             } catch { /* row may not exist yet — fine */ }
@@ -257,7 +307,7 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
           if (meta && steampassUuid && steampassUuid !== 'FAKE' && meta.steam_login) {
             try {
               await (prisma as any).steamSession.upsert({
-                where: { steampassUuid },
+                where: { guildId_steampassUuid: { guildId: sessionGuildKey, steampassUuid } },
                 update: {
                   steamLogin: meta.steam_login,
                   steamPassword: meta.steam_password || cachedSteamPassword,
@@ -270,6 +320,7 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
                   lastFailureAt: null,
                 },
                 create: {
+                  guildId: sessionGuildKey,
                   steampassUuid,
                   steamLogin: meta.steam_login,
                   steamPassword: meta.steam_password || '',

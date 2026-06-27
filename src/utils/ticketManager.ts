@@ -24,6 +24,7 @@ import { refreshAllPanels } from './panelManager';
 import { createVerificationPromptEmbed, createTicketSuccessEmbed } from './embeds';
 import { getEstimatedWaitTime } from './stats';
 import { isStaff, getTier } from './permissions';
+import { resolveServerConfig } from './tenant';
 
 // Note: The Maps below now only store active timers to handle timeouts.
 // All stateful metadata (retries, processing, vouches) is persisted in Prisma for durability across reboots.
@@ -196,27 +197,32 @@ export async function createTicket(interaction: StringSelectMenuInteraction, gam
     const { game } = result;
     const channelName = `${gameName.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${interaction.user.username.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
 
+     // Resolve per-server config — buyer servers use their own category /
+    // staff role; the home server falls back to the global env values.
+    const sc = await resolveServerConfig(guild.id);
+
     // ─── DEFENSIVE CONFIG VALIDATION ───
     // Verify the configured category exists in this guild. If not (e.g. placeholder ID
     // or wrong server), fall back to creating the channel at root level instead of crashing.
     let parentId: string | null = null;
-    if (CONFIG.TICKET_CATEGORY_ID) {
-      const cat = await guild.channels.fetch(CONFIG.TICKET_CATEGORY_ID).catch(() => null);
+    if (sc.ticketCategoryId) {
+      const cat = await guild.channels.fetch(sc.ticketCategoryId).catch(() => null);
       if (cat && cat.type === 4 /* GuildCategory */) {
-        parentId = CONFIG.TICKET_CATEGORY_ID;
+        parentId = sc.ticketCategoryId;
       } else {
-        console.warn(`[createTicket] TICKET_CATEGORY_ID="${CONFIG.TICKET_CATEGORY_ID}" not a valid category in this guild — creating channel at root.`);
+        console.warn(`[createTicket] ticketCategoryId="${sc.ticketCategoryId}" not a valid category in this guild — creating channel at root.`);
       }
     }
 
     // Verify staff role exists. If not, skip its permission override (won't crash) and
     // skip the @staff mention later.
-    const staffRole = CONFIG.STAFF_ROLE_ID
-      ? await guild.roles.fetch(CONFIG.STAFF_ROLE_ID).catch(() => null)
+    const staffRole = sc.staffRoleId
+      ? await guild.roles.fetch(sc.staffRoleId).catch(() => null)
       : null;
-    if (CONFIG.STAFF_ROLE_ID && !staffRole) {
-      console.warn(`[createTicket] STAFF_ROLE_ID="${CONFIG.STAFF_ROLE_ID}" not found in this guild — staff permissions on the ticket channel will be skipped.`);
+    if (sc.staffRoleId && !staffRole) {
+      console.warn(`[createTicket] staffRoleId="${sc.staffRoleId}" not found in this guild — staff permissions on the ticket channel will be skipped.`);
     }
+
 
     const permissionOverwrites: any[] = [
       { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },

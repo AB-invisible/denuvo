@@ -154,7 +154,19 @@ model DutyStatus {
 // the HMAC_SECRET env var.
 model SteamSession {
   id              Int       @id @default(autoincrement())
-  steampassUuid   String    @unique
+  // Which tenant server this cached session belongs to. The steampass
+  // UUID is GLOBAL (the same product UUID works on every steampass
+  // account), but each buyer server logs in with its OWN steampass
+  // account — so the resulting Steam session (login/password/refresh
+  // token) is account-specific and must NOT leak across servers. Keying
+  // by (guildId, steampassUuid) keeps Server A's cached session from
+  // being reused for Server B even though they share the UUID.
+  //
+  // "" (empty string) = the owner/home server, which uses the global
+  // STEAMPASS_LOGIN/PASSWORD env account. Defaulting to "" keeps every
+  // pre-multitenant row valid (they were all the home account).
+  guildId         String    @default("")
+  steampassUuid   String
   // Cached Steam credentials from a prior /profile/product-credentials fetch.
   steamLogin      String
   steamPassword   String
@@ -173,6 +185,82 @@ model SteamSession {
   lastFailureAt   DateTime?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @default(now()) @updatedAt
+
+  @@unique([guildId, steampassUuid])
+}
+
+// A buyer server that has been sold/authorized to use the bot. The
+// owner (OWNER_ROLE_ID in OWNER_GUILD_ID) provisions these via
+// /addserver. Every field except the steampass account is optional and
+// falls back to the global env CONFIG.* when null — so a server can be
+// activated with just credentials and configured further later.
+//
+// SECURITY: steampassLogin/Password are the buyer server's steampass.gg
+// account. They are visible ONLY to the owner (via /listservers in the
+// home server) and are never logged to a tenant's own log channel.
+// Stored in plaintext for now — same trust boundary as SteamSession
+// (which already holds Steam creds in plaintext).
+model TenantServer {
+  id                  Int      @id @default(autoincrement())
+  guildId             String   @unique
+  serverName          String
+  inviteLink          String?
+  // Per-server steampass account (email + password). Swapped in for the
+  // global STEAMPASS_LOGIN/PASSWORD env when this server generates a token.
+  steampassLogin      String
+  steampassPassword   String
+  // Per-server Discord wiring. Null → fall back to global CONFIG.* env.
+  logChannelId        String?  // BASIC log channel (sanitized events only)
+  staffRoleId         String?
+  activatorsRoleId    String?
+  ticketCategoryId    String?
+  voucherChannelId    String?
+  stockNotifChannelId String?
+  donatorRoleId       String?
+  bronzeRoleId        String?
+  silverRoleId        String?
+  goldRoleId          String?
+  botName             String?
+  patreonUrl          String?
+  active              Boolean  @default(true)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @default(now()) @updatedAt
+}
+
+// ─── OWNER-ONLY steampass account pool ───────────────────────────
+// The owner/home server can hold MULTIPLE steampass accounts and rotate
+// between them. Each account can produce a limited number of tokens PER
+// GAME PER 24h (Denuvo activation limit — default 5). When an account's
+// daily quota for a given game is exhausted, the bot rotates to the next
+// active account for that game until the UTC day rolls over.
+//
+// Buyer (tenant) servers do NOT use this pool — they each have a single
+// steampass account on their TenantServer row and no rotation.
+model SteampassAccount {
+  id        Int      @id @default(autoincrement())
+  label     String?               // human label, e.g. "acct-1"
+  login     String   @unique      // steampass email
+  password  String                // steampass password
+  active    Boolean  @default(true)
+  priority  Int      @default(100) // lower = tried first
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  usages    SteampassUsage[]
+}
+
+// Per-account, per-game, per-day token counter for the owner pool.
+// usageDate is a "YYYY-MM-DD" UTC string so a daily reset is just a new
+// key. count is capped in code at OWNER_TOKENS_PER_ACCOUNT_PER_DAY.
+model SteampassUsage {
+  id        Int      @id @default(autoincrement())
+  accountId Int
+  account   SteampassAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  appId     Int
+  usageDate String   // "YYYY-MM-DD" UTC
+  count     Int      @default(0)
+  updatedAt DateTime @default(now()) @updatedAt
+
+  @@unique([accountId, appId, usageDate])
 }
 
 model TokenDownload {
