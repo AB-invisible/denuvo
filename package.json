@@ -4,9 +4,10 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "prestart": "prisma db push --accept-data-loss && npm run prisma:seed",
     "start": "ts-node src/index.ts",
     "dev": "ts-node src/index.ts",
-    "build": "prisma generate && prisma db push --accept-data-loss && npm run prisma:seed && tsc",
+    "build": "prisma generate && tsc",
     "prisma:seed": "ts-node prisma/seed.ts",
     "postinstall": "prisma generate"
   },
