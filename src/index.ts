@@ -74,6 +74,13 @@ const commands = [
     .addIntegerOption(o => o.setName('amount').setDescription('Number of tokens to set').setRequired(true).setMinValue(0))
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
+    .setName('deplet')
+    .setDescription('Bulk deplete game tokens')
+    .addSubcommand(sub => sub
+      .setName('all')
+      .setDescription('Set token count to 0 for every game'))
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+  new SlashCommandBuilder()
     .setName('mycooldown')
     .setDescription('Check your current security cooldown status'),
   new SlashCommandBuilder()
@@ -638,6 +645,31 @@ const channel = interaction.channel;
       await logAction(interaction.guild, '📊 Tokens Set',
         `Staff ${interaction.user} set token count for **${gameName}** to \`${amount}\` (via \`/settokens\`).`,
         0x5865F2);
+    }
+  } else if (interaction.commandName === 'deplet') {
+    const sub = interaction.options.getSubcommand() as 'all';
+    if (sub === 'all') {
+      const depletedAt = new Date();
+      const [gamesResult, restocksResult] = await prisma.$transaction([
+        prisma.game.updateMany({
+          data: {
+            stock: 0,
+            lastDepletedAt: depletedAt,
+          },
+        }),
+        prisma.restock.deleteMany({}),
+      ]);
+
+      await refreshAllPanels();
+      await interaction.editReply({ content: `OK **All tokens depleted:** Set \`${gamesResult.count}\` game(s) to \`0\` token(s). Cleared \`${restocksResult.count}\` pending restock(s).` });
+      if (interaction.guild) {
+        await logAction(
+          interaction.guild,
+          'All Tokens Depleted',
+          `Staff ${interaction.user} set every game token count to \`0\` via \`/deplet all\` (${gamesResult.count} game(s) updated, ${restocksResult.count} pending restock(s) cleared).`,
+          0xED4245
+        );
+      }
     }
   } else if (interaction.commandName === 'removegame') {
     // Top-level alias for /game delete — same safety rules: only deletes
