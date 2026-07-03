@@ -47,9 +47,13 @@ export async function refreshAllPanels() {
         }
 
       } catch (err) {
-        console.error(`Error refreshing panel ${panelRecord.id}:`, err);
-        // On significant error (like channel gone), remove the record
-        await prisma.panel.delete({ where: { id: panelRecord.id } }).catch(() => {});
+        const e = err as any;
+        const isGone = e?.code === 10003 || e?.code === 10008 || e?.status === 404;
+        if (isGone) {
+          await prisma.panel.delete({ where: { id: panelRecord.id } }).catch(() => {});
+        } else {
+          console.error(`Error refreshing panel ${panelRecord.id}:`, err);
+        }
       }
     }));
   } catch (err) {

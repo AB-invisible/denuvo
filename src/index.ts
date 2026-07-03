@@ -1,8 +1,8 @@
 import { client } from './client';
 import { CONFIG } from './config';
 import path from 'path';
-import { REST, Routes, InteractionType, PermissionsBitField, SlashCommandBuilder, TextChannel, AttachmentBuilder, Events, ActionRowBuilder, ButtonBuilder, ButtonStyle, ActivityType, TextBasedChannel, MessageFlags, EmbedBuilder, Message, GuildMember, Guild } from 'discord.js';
-import { createMainPanel, createMaintenancePanel, createVerificationProcessingEmbed, createVerificationSuccessEmbed, createVerificationFailureEmbed, createProfileEmbed, createStaffLookupEmbed, createTokenDeliveryEmbed, createVouchRequestEmbed } from './utils/embeds';
+import { REST, Routes, InteractionType, PermissionsBitField, PermissionFlagsBits, SlashCommandBuilder, TextChannel, AttachmentBuilder, Events, ActionRowBuilder, ButtonBuilder, ButtonStyle, ActivityType, TextBasedChannel, MessageFlags, EmbedBuilder, Message, GuildMember, Guild } from 'discord.js';
+import { createMainPanel, createMaintenancePanel, createVerificationPromptEmbed, createVerificationProcessingEmbed, createVerificationSuccessEmbed, createVerificationFailureEmbed, createProfileEmbed, createStaffLookupEmbed, createTokenDeliveryEmbed, createVouchRequestEmbed } from './utils/embeds';
 import { createTicket, claimTicket, closeTicket, handleCooldownSelection, handleDeductionChoice, unclaimTicket, autoCloseTicketForVerificationTimeout, triggerSessionFailure, pendingVerificationTimers, vouchTimers } from './utils/ticketManager';
 import { getStaffStats, getEstimatedWaitTime } from './utils/stats';
 import { updateStock, consumeStock } from './utils/gameManager';
@@ -98,6 +98,11 @@ const commands = [
     .addStringOption(o => o.setName('state').setDescription('On = exclude from regen, Off = allow regen').setRequired(true).addChoices({ name: 'On (Exclude)', value: 'on' }, { name: 'Off (Allow Regen)', value: 'off' }))
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
+    .setName('simulate')
+    .setDescription('Walk through the full user experience for a game (no tokens consumed)')
+    .addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true))
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+  new SlashCommandBuilder()
     .setName('test')
     .setDescription('Generate a TEST token (fake credentials) to verify a game\'s template')
     .addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true))
@@ -181,35 +186,31 @@ const commands = [
 
 const rest = new REST({ version: '10' }).setToken(CONFIG.TOKEN);
 
-async function registerCommands() {
+async function registerCommands(targetGuildId?: string) {
   try {
-    console.log('Started refreshing application (/) commands.');
     // Clear any global commands (we register per-guild only).
     await rest.put(Routes.applicationCommands(CONFIG.CLIENT_ID), { body: [] });
 
     const ownerCmds = OWNER_COMMANDS.map(c => c.toJSON());
     const setlogs = SETLOGS_COMMAND.toJSON();
-   const setvouch = SETVOUCH_COMMAND.toJSON();
+    const setvouch = SETVOUCH_COMMAND.toJSON();
     const addsupport = ADDSUPPORT_COMMAND.toJSON();
 
-    // Buyer servers: the normal command set MINUS /test, PLUS /setlogs + /setvouch + /addsupport.
     const tenantCommands = [
       ...commands.filter((c: any) => c.name !== 'test'),
       setlogs,
       setvouch,
       addsupport,
     ];
-    // Home/owner server: everything + owner commands + the setup commands.
     const ownerGuildCommands = [...commands, ...ownerCmds, setlogs, setvouch, addsupport];
 
-
-    const allowed = await getAllowedGuildIds();
-    for (const gid of allowed) {
+    const guilds = targetGuildId ? [targetGuildId] : await getAllowedGuildIds();
+    for (const gid of guilds) {
       const body = gid === CONFIG.OWNER_GUILD_ID ? ownerGuildCommands : tenantCommands;
       await rest.put(Routes.applicationGuildCommands(CONFIG.CLIENT_ID, gid), { body })
         .catch(e => console.error(`[registerCommands] failed for guild ${gid}:`, e?.message || e));
     }
-    console.log(`Successfully reloaded (/) commands for ${allowed.length} guild(s).`);
+    console.log(`Successfully reloaded (/) commands for ${guilds.length} guild(s).`);
   } catch (error) {
     console.error('Error registering commands:', error);
   }
@@ -253,8 +254,7 @@ client.on(Events.GuildCreate, async (guild) => {
     console.warn(`[ServerLock] Joined unauthorized guild ${guild.name} (${guild.id}) — leaving immediately.`);
     await guild.leave().catch(err => console.error(`[ServerLock] Failed to leave ${guild.id}:`, err));
   } else {
-    // Authorized (home or tenant) — register its command set.
-    await registerCommands().catch(() => {});
+    await registerCommands(guild.id).catch(() => {});
   }
 });
 
@@ -452,7 +452,7 @@ if (interaction.guildId) {
     const err = error as Error;
     console.error('Interaction Error:', err);
     if (interaction.isRepliable()) {
-      const payload = { content: `❌ **Interaction Error:** ${err.message}` };
+      const payload = { content: `❌ **Something went wrong.** Please try again or contact staff.` };
       if (interaction.deferred || interaction.replied) {
         await interaction.editReply(payload).catch(() => {});
       } else {
@@ -463,7 +463,7 @@ if (interaction.guildId) {
 });
 
 async function handleAutocomplete(interaction: any) {
-  if (interaction.commandName === 'stock' || interaction.commandName === 'exclude-auto' || interaction.commandName === 'test' || interaction.commandName === 'tokengen' || interaction.commandName === 'setmode' || interaction.commandName === 'getmode' || interaction.commandName === 'game' || interaction.commandName === 'removegame' || interaction.commandName === 'settokens' || interaction.commandName === 'autogen') {
+  if (interaction.commandName === 'stock' || interaction.commandName === 'exclude-auto' || interaction.commandName === 'test' || interaction.commandName === 'tokengen' || interaction.commandName === 'setmode' || interaction.commandName === 'getmode' || interaction.commandName === 'game' || interaction.commandName === 'removegame' || interaction.commandName === 'settokens' || interaction.commandName === 'autogen' || interaction.commandName === 'simulate') {
     const focusedValue = interaction.options.getFocused();
     const games = await prisma.game.findMany({
       where: { name: { contains: focusedValue, mode: 'insensitive' } },
@@ -846,8 +846,8 @@ const channel = interaction.channel;
         where: { channelId: interaction.channelId, status: { in: ['OPEN', 'CLAIMED'] } }
       });
       const worksRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder().setCustomId('works_yes').setLabel('Yes, it works!').setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId('works_no').setLabel('No, it doesn\'t work').setStyle(ButtonStyle.Danger)
+        new ButtonBuilder().setCustomId('works_yes').setLabel('Confirm Working').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('works_no').setLabel('Report Issue').setStyle(ButtonStyle.Danger)
       );
 
       // Persistent (never-expiring + re-runnable) when /tokengen is
@@ -1355,7 +1355,162 @@ const channel = interaction.channel;
     } else {
       await interaction.editReply({ content: `🔓 **Regen Enabled:** **${gameName}** will now auto-regenerate stock as normal.` });
     }
+  } else if (interaction.commandName === 'simulate') {
+    const gameName = interaction.options.getString('game')!;
+    const game = await prisma.game.findUnique({ where: { name: gameName } });
+    if (!game) return interaction.editReply({ content: `❌ **Not Found:** Game **${gameName}** does not exist.` });
+    await runSimulation(interaction, game);
   }
+}
+
+async function runSimulation(interaction: any, game: any) {
+  const guild = interaction.guild;
+  if (!guild) return interaction.editReply({ content: '❌ Must be used in a server.' });
+
+  const channelName = `sim-${game.name.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${interaction.user.username.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
+
+  const channel = await guild.channels.create({
+    name: channelName,
+    permissionOverwrites: [
+      { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+      { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+    ],
+  });
+
+  await interaction.editReply({ content: `🎬 Simulation started in <#${channel.id}> — watch it play out!` });
+
+  const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+  const { getTierForGuild } = await import('./utils/permissions');
+  const { resolveServerConfig } = await import('./utils/tenant');
+  const sc = await resolveServerConfig(guild.id);
+  const userTier = await getTierForGuild(interaction.member as GuildMember, guild.id);
+
+  // Step 1: Header
+  const headerEmbed = new EmbedBuilder()
+    .setTitle('🎬 Simulation Mode')
+    .setDescription(`Previewing the full user experience for **${game.name}**.\nEach step will appear with a short delay.\n\n*No tokens, tickets, or cooldowns are affected.*`)
+    .setColor(0xFEE75C)
+    .setTimestamp();
+  await channel.send({ embeds: [headerEmbed] });
+  await sleep(2000);
+
+  // Step 2: Ticket control message (what staff sees)
+  const waitTime = await getEstimatedWaitTime();
+  const controlEmbed = new EmbedBuilder()
+    .setTitle(`🎫 ${CONFIG.NAME} • Denuvo Check`)
+    .setDescription(`Denuvo check initialized for ${interaction.user}.\n\n━━━━━━━━━━━━━━━━━━━━━━\n*(info.md content would appear here)*\n━━━━━━━━━━━━━━━━━━━━━━`)
+    .addFields(
+      { name: '👤 Requester', value: `${interaction.user}`, inline: true },
+      { name: '💎 Membership', value: `\`${userTier}\``, inline: true },
+      { name: '🎮 Game', value: `\`${game.name}\``, inline: true },
+      { name: '🆔 App ID', value: `\`${game.appId || 'N/A'}\``, inline: true },
+      { name: '🕒 Activity Meta', value: `\`${waitTime}\` (ETA: Now)`, inline: true },
+      { name: '🛰️ Session Status', value: '🟢 **Awaiting Check**', inline: true }
+    )
+    .setColor(0x5865F2)
+    .setTimestamp()
+    .setFooter({ text: `${CONFIG.NAME} • Secure Session ID: SIM-0000` });
+
+  const controlRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId('sim_claim').setLabel('Claim Ticket').setStyle(ButtonStyle.Success).setDisabled(true),
+    new ButtonBuilder().setCustomId('sim_unclaim').setLabel('Unclaim').setStyle(ButtonStyle.Secondary).setDisabled(true),
+    new ButtonBuilder().setCustomId('sim_close').setLabel('Close Ticket').setStyle(ButtonStyle.Danger).setDisabled(true)
+  );
+  await channel.send({ embeds: [controlEmbed], components: [controlRow] });
+  await sleep(3000);
+
+  // Step 3: Verification prompt
+  const verifyEmbed = createVerificationPromptEmbed(interaction.user);
+  await channel.send({ embeds: [verifyEmbed] });
+  await sleep(3000);
+
+  // Step 4: User "uploads screenshot" (simulated)
+  const uploadNotice = new EmbedBuilder()
+    .setTitle('📸 [Simulated] User uploads screenshot')
+    .setDescription('*In a real session, the user would upload a screenshot here showing their game directory, Windows Update Blocker, and file properties.*')
+    .setColor(0x2B2D31);
+  await channel.send({ embeds: [uploadNotice] });
+  await sleep(2000);
+
+  // Step 5: Verification processing
+  const processingEmbed = createVerificationProcessingEmbed();
+  await channel.send({ embeds: [processingEmbed] });
+  await sleep(3000);
+
+  // Step 6: Verification success
+  const successEmbed = createVerificationSuccessEmbed();
+  await channel.send({ embeds: [successEmbed] });
+  await sleep(3000);
+
+  // Step 7: Token generation message
+  const genEmbed = new EmbedBuilder()
+    .setTitle(`⚙️ ${CONFIG.NAME} • Generating Token...`)
+    .setDescription(`Generating activation token for **${game.name}** (AppID: \`${game.appId}\`).\n\nPlease wait, this may take up to 30 seconds.`)
+    .setColor(0x5865F2)
+    .setTimestamp();
+  await channel.send({ embeds: [genEmbed] });
+  await sleep(3000);
+
+  // Step 8: Token delivery
+  const deliveryEmbed = createTokenDeliveryEmbed(
+    game.name,
+    interaction.user.id,
+    client.user!,
+    { url: '#', expiryText: '30 minutes (simulated)', sizeMB: '~9.0' },
+  );
+  const worksRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId('sim_works_yes').setLabel('Confirm Working').setStyle(ButtonStyle.Success).setDisabled(true),
+    new ButtonBuilder().setCustomId('sim_works_no').setLabel('Report Issue').setStyle(ButtonStyle.Danger).setDisabled(true)
+  );
+  await channel.send({ embeds: [deliveryEmbed], components: [worksRow] });
+  await sleep(3000);
+
+  // Step 9: User clicks "Confirm Working" (simulated)
+  const clickNotice = new EmbedBuilder()
+    .setTitle('✅ [Simulated] User clicks "Confirm Working"')
+    .setDescription('*In a real session, the user would click the green button after verifying the game works.*')
+    .setColor(0x2B2D31);
+  await channel.send({ embeds: [clickNotice] });
+  await sleep(2000);
+
+  // Step 10: Vouch request
+  const vouchEmbed = createVouchRequestEmbed(
+    sc.voucherChannelId || '(not configured)',
+    interaction.user.id,
+    client.user!.id,
+  );
+  await channel.send({ embeds: [vouchEmbed] });
+  await sleep(3000);
+
+  // Step 11: Vouch verified
+  const g = game as any;
+  const cooldownHours = g.donatorOnly ? 2 : g.highDemand ? 48 : 24;
+  const closeEmbed = new EmbedBuilder()
+    .setTitle('✅ Vouch Auto-Verified')
+    .setDescription(`Vouch + screenshot detected. Session closed.\n\n**Cooldown:** \`${cooldownHours}h\`\n**Token Deducted:** \`YES\``)
+    .setColor(0x57F287)
+    .setTimestamp();
+  await channel.send({ embeds: [closeEmbed] });
+  await sleep(3000);
+
+  // Step 12: Summary
+  const summaryEmbed = new EmbedBuilder()
+    .setTitle('🎬 Simulation Complete')
+    .setDescription(
+      `All steps of the user flow for **${game.name}** have been shown.\n\n` +
+      `**Flow summary:**\n` +
+      `1. Ticket opens → verification prompt (10m timer)\n` +
+      `2. User uploads screenshot → AI verifies (3 retries)\n` +
+      `3. Token auto-generated → uploaded to file host\n` +
+      `4. User confirms working → vouch request (10m timer)\n` +
+      `5. User vouches → cooldown applied (\`${cooldownHours}h\`), channel deleted\n\n` +
+      `*This channel will self-destruct in 15 seconds.*`
+    )
+    .setColor(0x57F287)
+    .setTimestamp();
+  await channel.send({ embeds: [summaryEmbed] });
+
+  setTimeout(() => channel.delete().catch(() => {}), 15000);
 }
 
 async function handleSelectMenu(interaction: any) {
@@ -1455,21 +1610,25 @@ async function handleWorksNo(interaction: any) {
          try {
            await prisma.ticket.update({
              where: { id: ticket.id },
-             data: { status: 'CLOSED' }
+             data: { status: 'CLOSED', closedAt: new Date() }
            });
- 
-           // Bug #6 fix: Clean up in-memory maps when member leaves
+
            const timer = pendingVerificationTimers.get(ticket.channelId);
            if (timer) {
              clearTimeout(timer);
              pendingVerificationTimers.delete(ticket.channelId);
            }
 
+           const vTimer = vouchTimers.get(ticket.userId);
+           if (vTimer) {
+             clearTimeout(vTimer);
+             vouchTimers.delete(ticket.userId);
+           }
 
            const channel = (await client.channels.fetch(ticket.channelId).catch(() => null)) as TextChannel;
            if (channel) {
              await channel.send({ content: `🔒 **Denuvo Check:** Requester has left the server. Session terminated. Closing in 5s.` }).catch(() => {});
-             setTimeout(() => channel.delete().catch(() => {}), 5000);
+             setTimeout(() => channel.delete().catch(() => {}), 10000);
            }
          } catch (err) {
            console.error(`Error closing ticket ${ticket.id} on member leave:`, err);
@@ -1643,16 +1802,14 @@ client.on(Events.MessageCreate, async (message) => {
             const limitMB = tier >= 3 ? 100 : tier >= 2 ? 50 : 10;
             const zipMB = zipBytes / (1024 * 1024);
 
-            // Always upload (30-min self-hosted link). The legacy
-            // size-based branch only triggers if uploadFile fails entirely.
-            if (true || zipMB > limitMB) {
-              console.log(`[TokenGen] Routing zip ${zipMB.toFixed(1)} MB (limit ${limitMB} MB, boost tier ${tier}) through uploadFile for 30-min self-hosted link`);
+            // Always route through self-hosted upload for 30-min link.
+              console.log(`[TokenGen] Routing zip ${zipMB.toFixed(1)} MB through uploadFile for 30-min self-hosted link`);
 
               const uploadingEmbed = new EmbedBuilder()
-                .setTitle('📤 Uploading Token to External Host')
+                .setTitle('📤 Uploading Token')
                 .setDescription(
-                  `The zip is **${zipMB.toFixed(1)} MB** — too large for this server's Discord upload limit (${limitMB} MB).\n\n` +
-                  `Uploading to a file host so you can download it directly. This takes up to a minute for large files.`
+                  `Preparing your **${zipMB.toFixed(1)} MB** token zip.\n\n` +
+                  `Uploading to our secure host so you can download it directly. This takes up to a minute for large files.`
                 )
                 .setColor(0xFEE75C)
                 .setTimestamp();
@@ -1666,9 +1823,9 @@ client.on(Events.MessageCreate, async (message) => {
                 const ue = uploadErr as Error;
                 console.error('[TokenGen] Litterbox upload failed:', ue);
                 const failEmbed = new EmbedBuilder()
-                  .setTitle('⚠️ External Upload Failed')
+                  .setTitle('⚠️ Upload Failed')
                   .setDescription(
-                    `Zip is too large for Discord (${zipMB.toFixed(1)} MB > ${limitMB} MB) and the backup file host upload failed.\n\n` +
+                    `Token zip (${zipMB.toFixed(1)} MB) upload to file host failed.\n\n` +
                     `\`\`\`\n${(ue?.message || String(ue)).slice(0, 300)}\n\`\`\`\n` +
                     `Staff has been notified for manual delivery.`
                   )
@@ -1692,8 +1849,8 @@ client.on(Events.MessageCreate, async (message) => {
               );
 
               const worksRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
-                new ButtonBuilder().setCustomId('works_yes').setLabel('Yes, it works!').setStyle(ButtonStyle.Success),
-                new ButtonBuilder().setCustomId('works_no').setLabel('No, it doesn\'t work').setStyle(ButtonStyle.Danger)
+                new ButtonBuilder().setCustomId('works_yes').setLabel('Confirm Working').setStyle(ButtonStyle.Success),
+                new ButtonBuilder().setCustomId('works_no').setLabel('Report Issue').setStyle(ButtonStyle.Danger)
               );
 
               const deliveryMsg = await (message.channel as TextChannel).send({
@@ -1719,9 +1876,7 @@ client.on(Events.MessageCreate, async (message) => {
 
               // Clean up local zip — we have the hosted copy
               try { fsMod.unlinkSync(zipPath); } catch {}
-              return;
 
-            }
           } else {
             const failEmbed = new EmbedBuilder()
               .setTitle('⚠️ Auto-Generation Failed')
@@ -1846,8 +2001,8 @@ client.on(Events.MessageCreate, async (message) => {
           const deliveryEmbed = createTokenDeliveryEmbed(ticket.game.name, ticket.userId, message.author);
           
           const worksRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
-             new ButtonBuilder().setCustomId('works_yes').setLabel('Yes, it works!').setStyle(ButtonStyle.Success),
-             new ButtonBuilder().setCustomId('works_no').setLabel('No, it doesn\'t work').setStyle(ButtonStyle.Danger)
+             new ButtonBuilder().setCustomId('works_yes').setLabel('Confirm Working').setStyle(ButtonStyle.Success),
+             new ButtonBuilder().setCustomId('works_no').setLabel('Report Issue').setStyle(ButtonStyle.Danger)
           );
 
           const deliveryMsg = await message.channel.send({
@@ -1857,9 +2012,9 @@ client.on(Events.MessageCreate, async (message) => {
           
           await prisma.ticket.update({
             where: { id: ticket.id },
-            data: { deliveryMessageId: deliveryMsg.id }
+            data: { deliveryMessageId: deliveryMsg.id, staffId: message.author.id }
           });
-          
+
           await message.react('❤️').catch(() => {});
           await deliveryMsg.react('❤️').catch(() => {});
 
@@ -1916,7 +2071,7 @@ client.on(Events.MessageCreate, async (message) => {
             `\n\n**Post again with BOTH:**\n` +
             `1. A mention of <@${client.user?.id}>\n` +
             `2. A screenshot attachment of the game running\n\n` +
-            `*This reminder will disappear in 15 seconds.*`
+            `*This reminder will disappear in 30 seconds.*`
           )
           .setColor(0xED4245)
           .setTimestamp();
@@ -1931,7 +2086,7 @@ client.on(Events.MessageCreate, async (message) => {
             embeds: [guideEmbed],
             allowedMentions: { users: [message.author.id] }
           }).catch(() => null);
-          if (reminder) setTimeout(() => reminder.delete().catch(() => {}), 15000);
+          if (reminder) setTimeout(() => reminder.delete().catch(() => {}), 30000);
         }
 
         return;
@@ -2051,8 +2206,10 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
            vouchTimers.delete(ticket.userId);
         }
 
-        const until = new Date();
-        until.setTime(until.getTime() + (24 * 60 * 60 * 1000));
+        const ticketWithGame = await prisma.ticket.findUnique({ where: { id: ticket.id }, include: { game: true } });
+        const g = ticketWithGame?.game as any;
+        const cooldownHours = g?.donatorOnly ? 2 : g?.highDemand ? 48 : 24;
+        const until = new Date(Date.now() + cooldownHours * 60 * 60 * 1000);
         await prisma.cooldown.upsert({ where: { userId: ticket.userId }, update: { until }, create: { userId: ticket.userId, until } });
 
         await prisma.ticket.update({ where: { id: ticket.id }, data: { status: 'CLOSED', closedAt: new Date(), vouchExpiresAt: null } });
@@ -2061,11 +2218,11 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
         if (channel) {
           const successEmbed = new EmbedBuilder()
             .setTitle('✅ Vouch Verified')
-            .setDescription(`Vouch confirmed by **${user.id === client.user?.id ? 'System' : user.username}**. Session closed with 24h bonus cooldown.`)
+            .setDescription(`Vouch confirmed by **${user.id === client.user?.id ? 'System' : user.username}**. Session closed with \`${cooldownHours}h\` cooldown.`)
             .setColor(0x57F287)
             .setTimestamp();
           await channel.send({ embeds: [successEmbed] });
-          setTimeout(() => channel.delete().catch(() => {}), 5000);
+          setTimeout(() => channel.delete().catch(() => {}), 10000);
         }
 
         const homeGuild = client.guilds.cache.get(CONFIG.GUILD_ID);

@@ -58,10 +58,10 @@ export async function getEstimatedWaitTime(): Promise<string> {
     const minutes = Math.ceil(estimatedTotalMs / (1000 * 60));
 
     if (minutes <= 2) return '🚀 **Instant** (1-2m)';
-    if (minutes <= 5) return '⚡ **Fast** (2-5m)';
-    if (minutes <= 15) return '🟢 **Normal** (10-15m)';
-    if (minutes <= 30) return '🟡 **Moderate** (20-30m)';
-    if (minutes <= 60) return '🔴 **High Traffic** (45-60m)';
+    if (minutes <= 5) return '⚡ **Fast** (3-5m)';
+    if (minutes <= 10) return '🟢 **Normal** (5-10m)';
+    if (minutes <= 20) return '🟡 **Moderate** (10-20m)';
+    if (minutes <= 45) return '🔴 **High Traffic** (30-45m)';
     return `⌛ **Busy** (${Math.floor(minutes / 60)}h ${minutes % 60}m)`;
   } catch (err) {
     console.error('Wait time calculation failure:', err);

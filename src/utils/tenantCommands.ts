@@ -73,6 +73,11 @@ export const OWNER_COMMANDS = [
     .setDescription('[OWNER] List all buyer servers + their steampass accounts')
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
+    .setName('viewserver')
+    .setDescription('[OWNER] View full config for a specific buyer server')
+    .addStringOption(o => o.setName('guildid').setDescription('The buyer server (guild) ID').setRequired(true))
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+  new SlashCommandBuilder()
     .setName('steampass')
     .setDescription('[OWNER] Manage the multi-account steampass pool')
     .addSubcommand(s => s.setName('add').setDescription('Add an account to the pool')
@@ -105,7 +110,7 @@ export const ADDSUPPORT_COMMAND = new SlashCommandBuilder()
 
 export const OWNER_COMMAND_NAMES = new Set([
   'addserver', 'configserver', 'removeserver', 'pauseserver',
-  'resumeserver', 'listservers', 'steampass',
+  'resumeserver', 'listservers', 'viewserver', 'steampass',
 ]);
 
 export function isOwnerInteraction(interaction: any): boolean {
@@ -167,12 +172,15 @@ export async function handleTenantCommand(interaction: any): Promise<boolean> {
       return true;
     }
     try {
+      const existing = await (prisma as any).tenantServer.findUnique({ where: { guildId: interaction.guildId } });
+      const oldRole = existing?.staffRoleId;
       await (prisma as any).tenantServer.update({
         where: { guildId: interaction.guildId },
         data: { staffRoleId: role.id, activatorsRoleId: role.id },
       });
       invalidateTenantCache();
-      await interaction.editReply({ content: `✅ Support role set to <@&${role.id}>. It'll be pinged when staff help is needed and given access to ticket channels.` });
+      const note = oldRole && oldRole !== role.id ? `\n*(Replaced previous role <@&${oldRole}>)*` : '';
+      await interaction.editReply({ content: `✅ Support role set to <@&${role.id}>. It'll be pinged when staff help is needed and given access to ticket channels.${note}` });
     } catch (e) {
       await interaction.editReply({ content: `❌ This server isn't provisioned, or the update failed: ${(e as Error).message}` });
     }
@@ -210,6 +218,11 @@ export async function handleTenantCommand(interaction: any): Promise<boolean> {
       const guildId = interaction.options.getString('guildid', true).trim();
       const field = interaction.options.getString('field', true);
       const value = interaction.options.getString('value')?.trim() || null;
+      const idFields = ['staffRoleId', 'activatorsRoleId', 'ticketCategoryId', 'voucherChannelId', 'stockNotifChannelId', 'logChannelId', 'donatorRoleId', 'bronzeRoleId', 'silverRoleId', 'goldRoleId'];
+      if (value && idFields.includes(field) && !/^\d{17,20}$/.test(value)) {
+        await interaction.editReply({ content: `❌ \`${field}\` expects a Discord snowflake ID (17-20 digit number), got \`${value}\`.` });
+        return true;
+      }
       await (prisma as any).tenantServer.update({ where: { guildId }, data: { [field]: value } });
       invalidateTenantCache();
       const shown = (field === 'steampassPassword') ? '••••••' : (value ?? '(cleared)');
@@ -219,11 +232,17 @@ export async function handleTenantCommand(interaction: any): Promise<boolean> {
 
     if (name === 'removeserver') {
       const guildId = interaction.options.getString('guildid', true).trim();
+      const tenant = await (prisma as any).tenantServer.findUnique({ where: { guildId } }).catch(() => null);
+      if (!tenant) {
+        await interaction.editReply({ content: `❌ No tenant found for \`${guildId}\`.` });
+        return true;
+      }
       await (prisma as any).tenantServer.delete({ where: { guildId } }).catch(() => {});
       invalidateTenantCache();
       const g = interaction.client.guilds.cache.get(guildId);
       if (g) await g.leave().catch(() => {});
-      await interaction.editReply({ content: `🗑️ Removed \`${guildId}\` and left the server (if present).` });
+      await logAction(interaction.guild, '🗑️ Tenant Removed', `Owner ${interaction.user} removed server **${tenant.serverName}** (\`${guildId}\`).`, 0xED4245);
+      await interaction.editReply({ content: `🗑️ Removed **${tenant.serverName}** (\`${guildId}\`) and left the server (if present).` });
       return true;
     }
 
@@ -248,6 +267,32 @@ export async function handleTenantCommand(interaction: any): Promise<boolean> {
         `   steampass: \`${t.steampassLogin}\` ${t.logChannelId ? `· logs <#${t.logChannelId}>` : '· no log channel'}`
       ).join('\n');
       const embed = new EmbedBuilder().setTitle('🗂️ Buyer Servers').setDescription(lines.slice(0, 4000)).setColor(0x5865F2);
+      await interaction.editReply({ embeds: [embed] });
+      return true;
+    }
+
+    if (name === 'viewserver') {
+      const guildId = interaction.options.getString('guildid', true).trim();
+      const tenant = await (prisma as any).tenantServer.findUnique({ where: { guildId } });
+      if (!tenant) { await interaction.editReply({ content: `❌ No tenant found for \`${guildId}\`.` }); return true; }
+      const fields: string[] = [
+        `**Status:** ${tenant.active ? '🟢 Active' : '⏸️ Paused'}`,
+        `**Name:** ${tenant.serverName}`,
+        `**Guild ID:** \`${tenant.guildId}\``,
+        `**Steampass:** \`${tenant.steampassLogin}\``,
+        tenant.staffRoleId ? `**Staff Role:** <@&${tenant.staffRoleId}>` : '**Staff Role:** *(not set)*',
+        tenant.activatorsRoleId ? `**Activators Role:** <@&${tenant.activatorsRoleId}>` : '**Activators Role:** *(not set)*',
+        tenant.ticketCategoryId ? `**Ticket Category:** \`${tenant.ticketCategoryId}\`` : '**Ticket Category:** *(not set)*',
+        tenant.voucherChannelId ? `**Vouch Channel:** <#${tenant.voucherChannelId}>` : '**Vouch Channel:** *(not set)*',
+        tenant.logChannelId ? `**Log Channel:** <#${tenant.logChannelId}>` : '**Log Channel:** *(not set)*',
+        tenant.stockNotifChannelId ? `**Stock Notif Channel:** <#${tenant.stockNotifChannelId}>` : '**Stock Notif:** *(not set)*',
+        tenant.donatorRoleId ? `**Donator Role:** <@&${tenant.donatorRoleId}>` : '**Donator Role:** *(not set)*',
+        tenant.inviteLink ? `**Invite:** ${tenant.inviteLink}` : '**Invite:** *(not set)*',
+      ];
+      const embed = new EmbedBuilder()
+        .setTitle(`🔍 Server: ${tenant.serverName}`)
+        .setDescription(fields.join('\n'))
+        .setColor(0x5865F2);
       await interaction.editReply({ embeds: [embed] });
       return true;
     }

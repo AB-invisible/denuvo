@@ -23,7 +23,7 @@ import { logAction } from './logging';
 import { refreshAllPanels } from './panelManager';
 import { createVerificationPromptEmbed, createTicketSuccessEmbed } from './embeds';
 import { getEstimatedWaitTime } from './stats';
-import { isStaff, getTier } from './permissions';
+import { isStaff, getTier, getTierForGuild } from './permissions';
 import { resolveServerConfig } from './tenant';
 
 // Note: The Maps below now only store active timers to handle timeouts.
@@ -245,7 +245,7 @@ export async function createTicket(interaction: StringSelectMenuInteraction, gam
       data: { channelId: channel.id, userId: interaction.user.id, gameId: game.id, status: 'OPEN' },
     });
 
-    const userTier = getTier(interaction.member as GuildMember);
+    const userTier = await getTierForGuild(interaction.member as GuildMember, guild.id);
     const infoContent = await getInfoContent();
     const waitTime = await getEstimatedWaitTime();
 
@@ -354,9 +354,13 @@ export async function claimTicket(interaction: ButtonInteraction) {
   await interaction.deferUpdate();
   if (!isStaff(interaction.member as GuildMember)) return interaction.followUp({ content: '❌ **Unauthorized:** Staff clearance required.', flags: [MessageFlags.Ephemeral] });
 
+  const ticket = await prisma.ticket.findUnique({ where: { channelId: interaction.channelId } });
+  if (!ticket || ticket.status !== 'OPEN') {
+    return interaction.followUp({ content: '⚠️ **Already Claimed:** This session has already been picked up.', flags: [MessageFlags.Ephemeral] });
+  }
 
-  await prisma.ticket.update({ 
-    where: { channelId: interaction.channelId }, 
+  await prisma.ticket.update({
+    where: { channelId: interaction.channelId },
     data: { status: 'CLAIMED', staffId: interaction.user.id, claimedAt: new Date() }
   });
 
@@ -383,6 +387,10 @@ export async function unclaimTicket(interaction: ButtonInteraction) {
   await interaction.deferUpdate();
   if (!isStaff(interaction.member as GuildMember)) return interaction.followUp({ content: '❌ **Unauthorized.**', flags: [MessageFlags.Ephemeral] });
 
+  const ticket = await prisma.ticket.findUnique({ where: { channelId: interaction.channelId } });
+  if (!ticket || ticket.status !== 'CLAIMED') {
+    return interaction.followUp({ content: '⚠️ **Not Claimed:** This session is not currently claimed.', flags: [MessageFlags.Ephemeral] });
+  }
 
   await prisma.ticket.update({
     where: { channelId: interaction.channelId },
@@ -561,7 +569,7 @@ export async function triggerSessionFailure(channelId: string, userId: string, c
         create: { userId, until: permanentDate } 
       });
 
-      setTimeout(() => channel.delete().catch(() => {}), 8000);
+      setTimeout(() => channel.delete().catch(() => {}), 10000);
     } else {
       const reason = isTimeout ? 'Verification not completed.' : 'Verification failed.';
       await channel.send({ 
@@ -572,7 +580,7 @@ export async function triggerSessionFailure(channelId: string, userId: string, c
         await logAction(channel.guild, '⌛ Session Failed', `Session for <@${userId}> failed in <#${channel.id}>. (Strikes: \`${failures}\`)`, 0xED4245);
       }
 
-      setTimeout(() => channel.delete().catch(() => {}), 5000);
+      setTimeout(() => channel.delete().catch(() => {}), 10000);
     }
   }
 }

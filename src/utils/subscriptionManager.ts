@@ -45,6 +45,7 @@ export async function notifySubscribers(gameId: number, gameName: string, amount
     .setFooter({ text: `${CONFIG.NAME} Secure Delivery` });
 
   const batchSize = 10;
+  const delivered: string[] = [];
   for (let i = 0; i < subscribers.length; i += batchSize) {
     const batch = subscribers.slice(i, i + batchSize);
     await Promise.allSettled(
@@ -52,23 +53,23 @@ export async function notifySubscribers(gameId: number, gameName: string, amount
         try {
           const user = await client.users.fetch(sub.userId).catch(() => null);
           if (user) {
-            await user.send({ embeds: [embed] }).catch(() => {
-              console.warn(`[Subscription] Failed to DM user ${sub.userId} (DMs closed?)`);
-            });
+            await user.send({ embeds: [embed] });
+            delivered.push(sub.userId);
           }
         } catch (err) {
-          console.error(`[Subscription] Error notifying user ${sub.userId}:`, err);
+          console.warn(`[Subscription] Failed to DM user ${sub.userId} (DMs closed?)`);
         }
       })
     );
   }
 
-  // Clear subscriptions after notification
-  await prisma.subscription.deleteMany({
-    where: { gameId }
-  });
+  if (delivered.length > 0) {
+    await prisma.subscription.deleteMany({
+      where: { gameId, userId: { in: delivered } }
+    });
+  }
 
-  console.log(`[Subscription] Notified ${subscribers.length} users for ${gameName}.`);
+  console.log(`[Subscription] Notified ${delivered.length}/${subscribers.length} users for ${gameName}.`);
 }
 
 export async function getUserSubscriptions(userId: string) {

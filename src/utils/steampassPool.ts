@@ -90,13 +90,23 @@ export async function getPoolStatus(): Promise<
   const accounts = await (prisma as any).steampassAccount.findMany({
     orderBy: [{ priority: 'asc' }, { id: 'asc' }],
   });
-  const out = [];
-  for (const a of accounts) {
-    const agg = await (prisma as any).steampassUsage.aggregate({
-      where: { accountId: a.id, usageDate: today },
+  if (!accounts.length) return [];
+
+  const accountIds = accounts.map((a: any) => a.id);
+  let usageMap = new Map<number, number>();
+  try {
+    const usages = await (prisma as any).steampassUsage.groupBy({
+      by: ['accountId'],
+      where: { accountId: { in: accountIds }, usageDate: today },
       _sum: { count: true },
     });
-    out.push({ id: a.id, label: a.label, login: a.login, active: a.active, priority: a.priority, usedToday: agg?._sum?.count ?? 0 });
-  }
-  return out;
+    for (const u of usages) {
+      usageMap.set(u.accountId, u._sum?.count ?? 0);
+    }
+  } catch {}
+
+  return accounts.map((a: any) => ({
+    id: a.id, label: a.label, login: a.login, active: a.active, priority: a.priority,
+    usedToday: usageMap.get(a.id) ?? 0,
+  }));
 }

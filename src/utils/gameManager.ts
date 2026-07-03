@@ -49,11 +49,8 @@ export async function getActiveGames() {
     orderBy: { name: 'asc' },
   });
 
-  // Run regeneration checks for all active games
-  const updatedGames = await Promise.all(games.map((game: Game) => checkRegeneration(game)));
+  await Promise.all(games.map((game: Game) => checkRegeneration(game)));
 
-  // Return games with ticket counts (Reserved stock)
-  // We re-query to get the absolute latest counts including the tickets relation
   return await prisma.game.findMany({
     where: { disabled: false },
     include: {
