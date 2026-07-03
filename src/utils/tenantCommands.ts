@@ -237,7 +237,7 @@ export async function handleTenantCommand(interaction: any): Promise<boolean> {
         await interaction.editReply({ content: `❌ No tenant found for \`${guildId}\`.` });
         return true;
       }
-      await (prisma as any).tenantServer.delete({ where: { guildId } }).catch(() => {});
+      await (prisma as any).tenantServer.delete({ where: { guildId } });
       invalidateTenantCache();
       const g = interaction.client.guilds.cache.get(guildId);
       if (g) await g.leave().catch(() => {});
@@ -313,7 +313,12 @@ export async function handleTenantCommand(interaction: any): Promise<boolean> {
       }
       if (sub === 'remove') {
         const email = interaction.options.getString('email', true).trim();
-        await (prisma as any).steampassAccount.delete({ where: { login: email } }).catch(() => {});
+        const exists = await (prisma as any).steampassAccount.findUnique({ where: { login: email } });
+        if (!exists) {
+          await interaction.editReply({ content: `❌ No pool account found for \`${email}\`.` });
+          return true;
+        }
+        await (prisma as any).steampassAccount.delete({ where: { login: email } });
         await interaction.editReply({ content: `🗑️ Removed pool account \`${email}\`.` });
         return true;
       }

@@ -197,7 +197,7 @@ async function registerCommands(targetGuildId?: string) {
     const addsupport = ADDSUPPORT_COMMAND.toJSON();
 
     const tenantCommands = [
-      ...commands.filter((c: any) => c.name !== 'test'),
+      ...commands.filter((c: any) => c.name !== 'test' && c.name !== 'simulate'),
       setlogs,
       setvouch,
       addsupport,
@@ -490,9 +490,9 @@ async function handleChatCommand(interaction: any) {
   // Server-lock + tenant-pause already enforced in interactionCreate via
   // checkGuild(), so any guild reaching here is authorized (home or tenant).
 
-  // /test is OWNER-ONLY — it's stripped from buyer command sets, but guard
+  // /test and /simulate are OWNER-ONLY — stripped from buyer command sets, but guard
   // at runtime too in case of a stale registration.
-  if (interaction.commandName === 'test' && interaction.guildId !== CONFIG.OWNER_GUILD_ID) {
+  if ((interaction.commandName === 'test' || interaction.commandName === 'simulate') && interaction.guildId !== CONFIG.OWNER_GUILD_ID) {
     return interaction.reply({
       content: '❌ This command is not available in this server.',
       flags: [MessageFlags.Ephemeral],

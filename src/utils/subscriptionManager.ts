@@ -1,6 +1,6 @@
 import prisma from '../lib/prisma';
 import { client } from '../client';
-import { EmbedBuilder, MessageFlags } from 'discord.js';
+import { EmbedBuilder } from 'discord.js';
 import { CONFIG } from '../config';
 
 export async function addSubscription(userId: string, gameId: number): Promise<{ success: boolean; message: string }> {

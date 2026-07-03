@@ -120,7 +120,7 @@ export async function consumeStock(gameId: number) {
   if (!game) throw new Error('Game not found.');
 
   // Always check/run regeneration first
-  const currentStock = (await checkRegeneration(game)).stock;
+  await checkRegeneration(game);
   const restockAt = new Date(Date.now() + REGEN_TIME);
 
   // Atomic: handle consumption and restock scheduling
