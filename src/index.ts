@@ -410,35 +410,45 @@ client.on('interactionCreate', async (interaction) => {
       if (interaction.guildId !== CONFIG.OWNER_GUILD_ID) {
         return interaction.reply({ content: '❌ This command is not available in this server.', flags: [MessageFlags.Ephemeral] }).catch(() => {});
       }
+
+      // During rolling deploys Railway runs two instances briefly. The other
+      // instance may deferReply before us (error 40060). If so, continue —
+      // editReply works from either instance since both share the bot token.
       try {
-        await interaction.reply({ content: '🎬 **Simulate:** Loading...', flags: [MessageFlags.Ephemeral] });
-      } catch (replyErr) {
-        console.error('[Simulate] reply() failed:', replyErr);
-        return;
-      }
-      console.log('[Simulate] Initial reply sent successfully');
-
-      const gameName = interaction.options.getString('game');
-      if (!gameName) {
-        return interaction.editReply({ content: '❌ No game specified.' });
-      }
-      const game = await prisma.game.findUnique({ where: { name: gameName } });
-      if (!game) {
-        return interaction.editReply({ content: `❌ **Not Found:** Game **${gameName}** does not exist.` });
-      }
-      const guild = interaction.guild;
-      if (!guild) {
-        return interaction.editReply({ content: '❌ Must be used in a server.' });
+        await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+        console.log('[Simulate] deferReply succeeded');
+      } catch (deferErr: any) {
+        if (deferErr?.code === 40060) {
+          console.log('[Simulate] Already acknowledged by another instance — continuing with editReply');
+        } else {
+          console.error('[Simulate] deferReply failed:', deferErr);
+          return;
+        }
       }
 
-      const botMember = guild.members.me;
-      if (!botMember || !botMember.permissions.has(PermissionFlagsBits.ManageChannels)) {
-        return interaction.editReply({ content: '❌ Bot needs **Manage Channels** permission to create a simulation channel.' });
-      }
-
-      const channelName = `sim-${game.name.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${interaction.user.username.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
-      console.log('[Simulate] Creating channel:', channelName);
       try {
+        const gameName = interaction.options.getString('game');
+        if (!gameName) {
+          return interaction.editReply({ content: '❌ No game specified.' });
+        }
+        const game = await prisma.game.findUnique({ where: { name: gameName } });
+        if (!game) {
+          return interaction.editReply({ content: `❌ **Not Found:** Game **${gameName}** does not exist.` });
+        }
+        const guild = interaction.guild;
+        if (!guild) {
+          return interaction.editReply({ content: '❌ Must be used in a server.' });
+        }
+
+        const botMember = guild.members.me;
+        if (!botMember || !botMember.permissions.has(PermissionFlagsBits.ManageChannels)) {
+          return interaction.editReply({ content: '❌ Bot needs **Manage Channels** permission to create a simulation channel.' });
+        }
+
+        await interaction.editReply({ content: '🎬 Setting up simulation channel...' });
+
+        const channelName = `sim-${game.name.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${interaction.user.username.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
+        console.log('[Simulate] Creating channel:', channelName);
         const permOverwrites: any[] = [
           { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
           { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
@@ -454,8 +464,8 @@ client.on('interactionCreate', async (interaction) => {
           channel.send({ content: `❌ Simulation error: ${(e as Error).message}` }).catch(() => {});
         });
       } catch (e) {
-        console.error('[Simulate] Channel creation failed:', e);
-        await interaction.editReply({ content: `❌ Failed to create simulation channel: ${(e as Error).message}` }).catch(() => {});
+        console.error('[Simulate] Error:', e);
+        await interaction.editReply({ content: `❌ Simulation failed: ${(e as Error).message}` }).catch(() => {});
       }
       return;
     }
