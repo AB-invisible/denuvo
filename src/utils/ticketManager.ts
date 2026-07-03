@@ -410,12 +410,12 @@ export async function unclaimTicket(interaction: ButtonInteraction) {
   await interaction.editReply({ embeds: [embed], components: [row] });
 
   // Reset the verification timer when a ticket is unclaimed
-  const ticket = await prisma.ticket.findUnique({ where: { channelId: interaction.channelId }, include: { game: true } });
-  if (ticket && !ticket.screenshotVerified) {
+  const freshTicket = await prisma.ticket.findUnique({ where: { channelId: interaction.channelId }, include: { game: true } });
+  if (freshTicket && !freshTicket.screenshotVerified) {
     const timer = setTimeout(async () => {
       const guild = interaction.guild;
       if (guild) {
-        await autoCloseTicketForVerificationTimeout(ticket.channelId, guild);
+        await autoCloseTicketForVerificationTimeout(freshTicket.channelId, guild);
       }
     }, 10 * 60 * 1000);
 
