@@ -1359,31 +1359,35 @@ const channel = interaction.channel;
     const gameName = interaction.options.getString('game')!;
     const game = await prisma.game.findUnique({ where: { name: gameName } });
     if (!game) return interaction.editReply({ content: `❌ **Not Found:** Game **${gameName}** does not exist.` });
-    await runSimulation(interaction, game);
+    const guild = interaction.guild;
+    if (!guild) return interaction.editReply({ content: '❌ Must be used in a server.' });
+
+    const channelName = `sim-${game.name.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${interaction.user.username.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
+    try {
+      const channel = await guild.channels.create({
+        name: channelName,
+        permissionOverwrites: [
+          { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+          { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+        ],
+      });
+      await interaction.editReply({ content: `🎬 Simulation started in <#${channel.id}> — watch it play out!` });
+      runSimulation(channel, game, interaction.user, interaction.member as GuildMember, guild).catch(e => {
+        console.error('[Simulate] Error:', e);
+        channel.send({ content: `❌ Simulation error: ${(e as Error).message}` }).catch(() => {});
+      });
+    } catch (e) {
+      await interaction.editReply({ content: `❌ Failed to create simulation channel: ${(e as Error).message}` });
+    }
   }
 }
 
-async function runSimulation(interaction: any, game: any) {
-  const guild = interaction.guild;
-  if (!guild) return interaction.editReply({ content: '❌ Must be used in a server.' });
-
-  const channelName = `sim-${game.name.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${interaction.user.username.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
-
-  const channel = await guild.channels.create({
-    name: channelName,
-    permissionOverwrites: [
-      { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-      { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
-    ],
-  });
-
-  await interaction.editReply({ content: `🎬 Simulation started in <#${channel.id}> — watch it play out!` });
-
+async function runSimulation(channel: any, game: any, user: any, member: GuildMember, guild: Guild) {
   const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
   const { getTierForGuild } = await import('./utils/permissions');
   const { resolveServerConfig } = await import('./utils/tenant');
   const sc = await resolveServerConfig(guild.id);
-  const userTier = await getTierForGuild(interaction.member as GuildMember, guild.id);
+  const userTier = await getTierForGuild(member, guild.id);
 
   // Step 1: Header
   const headerEmbed = new EmbedBuilder()
@@ -1398,9 +1402,9 @@ async function runSimulation(interaction: any, game: any) {
   const waitTime = await getEstimatedWaitTime();
   const controlEmbed = new EmbedBuilder()
     .setTitle(`🎫 ${CONFIG.NAME} • Denuvo Check`)
-    .setDescription(`Denuvo check initialized for ${interaction.user}.\n\n━━━━━━━━━━━━━━━━━━━━━━\n*(info.md content would appear here)*\n━━━━━━━━━━━━━━━━━━━━━━`)
+    .setDescription(`Denuvo check initialized for ${user}.\n\n━━━━━━━━━━━━━━━━━━━━━━\n*(info.md content would appear here)*\n━━━━━━━━━━━━━━━━━━━━━━`)
     .addFields(
-      { name: '👤 Requester', value: `${interaction.user}`, inline: true },
+      { name: '👤 Requester', value: `${user}`, inline: true },
       { name: '💎 Membership', value: `\`${userTier}\``, inline: true },
       { name: '🎮 Game', value: `\`${game.name}\``, inline: true },
       { name: '🆔 App ID', value: `\`${game.appId || 'N/A'}\``, inline: true },
@@ -1420,7 +1424,7 @@ async function runSimulation(interaction: any, game: any) {
   await sleep(3000);
 
   // Step 3: Verification prompt
-  const verifyEmbed = createVerificationPromptEmbed(interaction.user);
+  const verifyEmbed = createVerificationPromptEmbed(user);
   await channel.send({ embeds: [verifyEmbed] });
   await sleep(3000);
 
@@ -1454,7 +1458,7 @@ async function runSimulation(interaction: any, game: any) {
   // Step 8: Token delivery
   const deliveryEmbed = createTokenDeliveryEmbed(
     game.name,
-    interaction.user.id,
+    user.id,
     client.user!,
     { url: '#', expiryText: '30 minutes (simulated)', sizeMB: '~9.0' },
   );
@@ -1476,7 +1480,7 @@ async function runSimulation(interaction: any, game: any) {
   // Step 10: Vouch request
   const vouchEmbed = createVouchRequestEmbed(
     sc.voucherChannelId || '(not configured)',
-    interaction.user.id,
+    user.id,
     client.user!.id,
   );
   await channel.send({ embeds: [vouchEmbed] });
