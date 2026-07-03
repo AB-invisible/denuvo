@@ -409,6 +409,56 @@ async function rehydrateVerificationTimers() {
   console.log(`[Boot] Restored ${openTickets.length} session timers.`);
 }
 
+async function handleDepletCommand(interaction: any) {
+  await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+
+  if (interaction.guildId) {
+    const verdict = await checkGuild(interaction.guildId);
+    if (!verdict.allowed) {
+      const msg = verdict.reason === 'paused'
+        ? 'This server is currently suspended. Please contact the bot owner.'
+        : 'This server is not authorized to use this bot.';
+      await interaction.editReply({ content: msg });
+      return;
+    }
+  }
+
+  const member = interaction.member as GuildMember | null;
+  const hasAdmin = member?.permissions?.has?.(PermissionsBitField.Flags.Administrator);
+  if (!hasAdmin) {
+    await interaction.editReply({ content: 'Unauthorized: this command requires Administrator permission.' });
+    return;
+  }
+
+  const sub = interaction.options.getSubcommand() as 'all';
+  if (sub !== 'all') {
+    await interaction.editReply({ content: 'Unknown subcommand.' });
+    return;
+  }
+
+  const depletedAt = new Date();
+  const [gamesResult, restocksResult] = await prisma.$transaction([
+    prisma.game.updateMany({
+      data: {
+        stock: 0,
+        lastDepletedAt: depletedAt,
+      },
+    }),
+    prisma.restock.deleteMany({}),
+  ]);
+
+  await refreshAllPanels();
+  await interaction.editReply({ content: `OK **All tokens depleted:** Set \`${gamesResult.count}\` game(s) to \`0\` token(s). Cleared \`${restocksResult.count}\` pending restock(s).` });
+  if (interaction.guild) {
+    await logAction(
+      interaction.guild,
+      'All Tokens Depleted',
+      `Staff ${interaction.user} set every game token count to \`0\` via \`/deplet all\` (${gamesResult.count} game(s) updated, ${restocksResult.count} pending restock(s) cleared).`,
+      0xED4245
+    );
+  }
+}
+
 client.on('interactionCreate', async (interaction) => {
   try {
     // ─── SIMULATE: handle at the top to bypass all other middleware ───
@@ -471,6 +521,11 @@ client.on('interactionCreate', async (interaction) => {
     // Bot only operates in CONFIG.GUILD_ID. Reject all interactions from
     // any other guild. Autocomplete is silently ignored (no reply API);
     // others get a polite ephemeral rejection.
+    if (interaction.isChatInputCommand() && interaction.commandName === 'deplet') {
+      await handleDepletCommand(interaction);
+      return;
+    }
+
 if (interaction.guildId) {
       const verdict = await checkGuild(interaction.guildId);
       if (!verdict.allowed) {
@@ -645,31 +700,6 @@ const channel = interaction.channel;
       await logAction(interaction.guild, '📊 Tokens Set',
         `Staff ${interaction.user} set token count for **${gameName}** to \`${amount}\` (via \`/settokens\`).`,
         0x5865F2);
-    }
-  } else if (interaction.commandName === 'deplet') {
-    const sub = interaction.options.getSubcommand() as 'all';
-    if (sub === 'all') {
-      const depletedAt = new Date();
-      const [gamesResult, restocksResult] = await prisma.$transaction([
-        prisma.game.updateMany({
-          data: {
-            stock: 0,
-            lastDepletedAt: depletedAt,
-          },
-        }),
-        prisma.restock.deleteMany({}),
-      ]);
-
-      await refreshAllPanels();
-      await interaction.editReply({ content: `OK **All tokens depleted:** Set \`${gamesResult.count}\` game(s) to \`0\` token(s). Cleared \`${restocksResult.count}\` pending restock(s).` });
-      if (interaction.guild) {
-        await logAction(
-          interaction.guild,
-          'All Tokens Depleted',
-          `Staff ${interaction.user} set every game token count to \`0\` via \`/deplet all\` (${gamesResult.count} game(s) updated, ${restocksResult.count} pending restock(s) cleared).`,
-          0xED4245
-        );
-      }
     }
   } else if (interaction.commandName === 'removegame') {
     // Top-level alias for /game delete — same safety rules: only deletes
