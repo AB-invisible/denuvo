@@ -404,6 +404,62 @@ async function rehydrateVerificationTimers() {
 
 client.on('interactionCreate', async (interaction) => {
   try {
+    // ─── SIMULATE: handle at the top to bypass all other middleware ───
+    if (interaction.isChatInputCommand() && interaction.commandName === 'simulate') {
+      console.log('[Simulate] === INTERCEPTED at top of interactionCreate ===');
+      if (interaction.guildId !== CONFIG.OWNER_GUILD_ID) {
+        return interaction.reply({ content: '❌ This command is not available in this server.', flags: [MessageFlags.Ephemeral] }).catch(() => {});
+      }
+      try {
+        await interaction.reply({ content: '🎬 **Simulate:** Loading...', flags: [MessageFlags.Ephemeral] });
+      } catch (replyErr) {
+        console.error('[Simulate] reply() failed:', replyErr);
+        return;
+      }
+      console.log('[Simulate] Initial reply sent successfully');
+
+      const gameName = interaction.options.getString('game');
+      if (!gameName) {
+        return interaction.editReply({ content: '❌ No game specified.' });
+      }
+      const game = await prisma.game.findUnique({ where: { name: gameName } });
+      if (!game) {
+        return interaction.editReply({ content: `❌ **Not Found:** Game **${gameName}** does not exist.` });
+      }
+      const guild = interaction.guild;
+      if (!guild) {
+        return interaction.editReply({ content: '❌ Must be used in a server.' });
+      }
+
+      const botMember = guild.members.me;
+      if (!botMember || !botMember.permissions.has(PermissionFlagsBits.ManageChannels)) {
+        return interaction.editReply({ content: '❌ Bot needs **Manage Channels** permission to create a simulation channel.' });
+      }
+
+      const channelName = `sim-${game.name.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${interaction.user.username.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
+      console.log('[Simulate] Creating channel:', channelName);
+      try {
+        const permOverwrites: any[] = [
+          { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+          { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+        ];
+        if (client.user) {
+          permOverwrites.push({ id: client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks] });
+        }
+        const channel = await guild.channels.create({ name: channelName, permissionOverwrites: permOverwrites });
+        console.log('[Simulate] Channel created:', channel.id);
+        await interaction.editReply({ content: `🎬 Simulation started in <#${channel.id}> — watch it play out!` });
+        runSimulation(channel, game, interaction.user, interaction.member as GuildMember, guild).catch(e => {
+          console.error('[Simulate] runSimulation error:', e);
+          channel.send({ content: `❌ Simulation error: ${(e as Error).message}` }).catch(() => {});
+        });
+      } catch (e) {
+        console.error('[Simulate] Channel creation failed:', e);
+        await interaction.editReply({ content: `❌ Failed to create simulation channel: ${(e as Error).message}` }).catch(() => {});
+      }
+      return;
+    }
+
     // ─── GLOBAL SERVER LOCK ───
     // Bot only operates in CONFIG.GUILD_ID. Reject all interactions from
     // any other guild. Autocomplete is silently ignored (no reply API);
@@ -490,9 +546,10 @@ async function handleChatCommand(interaction: any) {
   // Server-lock + tenant-pause already enforced in interactionCreate via
   // checkGuild(), so any guild reaching here is authorized (home or tenant).
 
-  // /test and /simulate are OWNER-ONLY — stripped from buyer command sets, but guard
+  // /test is OWNER-ONLY — stripped from buyer command sets, but guard
   // at runtime too in case of a stale registration.
-  if ((interaction.commandName === 'test' || interaction.commandName === 'simulate') && interaction.guildId !== CONFIG.OWNER_GUILD_ID) {
+  // (/simulate is handled at the top of interactionCreate, never reaches here.)
+  if (interaction.commandName === 'test' && interaction.guildId !== CONFIG.OWNER_GUILD_ID) {
     return interaction.reply({
       content: '❌ This command is not available in this server.',
       flags: [MessageFlags.Ephemeral],
@@ -1354,50 +1411,6 @@ const channel = interaction.channel;
       }
     } else {
       await interaction.editReply({ content: `🔓 **Regen Enabled:** **${gameName}** will now auto-regenerate stock as normal.` });
-    }
-  } else if (interaction.commandName === 'simulate') {
-    console.log('[Simulate] Handler entered for user:', interaction.user.username);
-    const gameName = interaction.options.getString('game')!;
-    console.log('[Simulate] Game:', gameName);
-
-    const game = await prisma.game.findUnique({ where: { name: gameName } });
-    if (!game) return interaction.editReply({ content: `❌ **Not Found:** Game **${gameName}** does not exist.` });
-
-    const guild = interaction.guild;
-    if (!guild) return interaction.editReply({ content: '❌ Must be used in a server.' });
-
-    const botMember = guild.members.me;
-    if (!botMember || !botMember.permissions.has(PermissionFlagsBits.ManageChannels)) {
-      console.log('[Simulate] Bot lacks ManageChannels permission');
-      return interaction.editReply({ content: '❌ Bot needs **Manage Channels** permission to create a simulation channel.' });
-    }
-
-    await interaction.editReply({ content: '🎬 Setting up simulation channel...' });
-    console.log('[Simulate] Initial reply sent');
-
-    const channelName = `sim-${game.name.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${interaction.user.username.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
-    try {
-      const permOverwrites: any[] = [
-        { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-        { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
-      ];
-      if (client.user) {
-        permOverwrites.push({ id: client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks] });
-      }
-      console.log('[Simulate] Creating channel:', channelName);
-      const channel = await guild.channels.create({
-        name: channelName,
-        permissionOverwrites: permOverwrites,
-      });
-      console.log('[Simulate] Channel created:', channel.id);
-      await interaction.editReply({ content: `🎬 Simulation started in <#${channel.id}> — watch it play out!` });
-      runSimulation(channel, game, interaction.user, interaction.member as GuildMember, guild).catch(e => {
-        console.error('[Simulate] runSimulation error:', e);
-        channel.send({ content: `❌ Simulation error: ${(e as Error).message}` }).catch(() => {});
-      });
-    } catch (e) {
-      console.error('[Simulate] Channel creation failed:', e);
-      await interaction.editReply({ content: `❌ Failed to create simulation channel: ${(e as Error).message}` }).catch(() => {});
     }
   }
 }
