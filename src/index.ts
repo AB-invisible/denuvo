@@ -101,6 +101,7 @@ const commands = [
     .setName('deplet')
     .setDescription('Bulk deplete game tokens')
     .addSubcommand(sub => sub.setName('all').setDescription('Set token count to 0 for every game'))
+    .addSubcommand(sub => sub.setName('game').setDescription('Set token count to 0 for a single game').addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true)))
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
     .setName('simulate')
@@ -507,6 +508,20 @@ client.on('interactionCreate', async (interaction) => {
             content: `✅ **All tokens depleted:** Set \`${gamesResult.count}\` game(s) to \`0\` token(s). Cleared \`${restocksResult.count}\` pending restock(s).`,
           });
           logAction(interaction.guild!, '🗑️ Deplet All', `**${interaction.user.tag}** depleted all games (${gamesResult.count}) and cleared ${restocksResult.count} restocks`, 0xFF0000);
+        } else if (sub === 'game') {
+          const gameName = interaction.options.getString('game', true);
+          const game = await prisma.game.findUnique({ where: { name: gameName } });
+          if (!game) {
+            await interaction.editReply({ content: `❌ **Not Found:** Game **${gameName}** does not exist.` });
+          } else {
+            await prisma.game.update({ where: { id: game.id }, data: { stock: 0, lastDepletedAt: new Date() } });
+            await prisma.restock.deleteMany({ where: { gameId: game.id } });
+            await refreshAllPanels();
+            await interaction.editReply({
+              content: `✅ **${game.name}** depleted: set to \`0\` tokens.`,
+            });
+            logAction(interaction.guild!, '🗑️ Deplet Game', `**${interaction.user.tag}** depleted **${game.name}**`, 0xFF0000);
+          }
         }
       } catch (e) {
         console.error('[Deplet] Error:', e);
@@ -574,7 +589,7 @@ if (interaction.guildId) {
 });
 
 async function handleAutocomplete(interaction: any) {
-  if (interaction.commandName === 'stock' || interaction.commandName === 'exclude-auto' || interaction.commandName === 'test' || interaction.commandName === 'tokengen' || interaction.commandName === 'setmode' || interaction.commandName === 'getmode' || interaction.commandName === 'game' || interaction.commandName === 'removegame' || interaction.commandName === 'settokens' || interaction.commandName === 'autogen' || interaction.commandName === 'simulate') {
+  if (interaction.commandName === 'stock' || interaction.commandName === 'exclude-auto' || interaction.commandName === 'test' || interaction.commandName === 'tokengen' || interaction.commandName === 'setmode' || interaction.commandName === 'getmode' || interaction.commandName === 'game' || interaction.commandName === 'removegame' || interaction.commandName === 'settokens' || interaction.commandName === 'autogen' || interaction.commandName === 'simulate' || interaction.commandName === 'deplet') {
     const focusedValue = interaction.options.getFocused();
     const games = await prisma.game.findMany({
       where: { name: { contains: focusedValue, mode: 'insensitive' } },
@@ -631,7 +646,16 @@ const channel = interaction.channel;
   const isStaffStats = interaction.commandName === 'staffstats';
   // /tokengen is public (other members can see the result), like staffstats.
   const isPublic = isStaffStats || interaction.commandName === 'tokengen';
-  await interaction.deferReply({ flags: isPublic ? [] : [MessageFlags.Ephemeral] });
+  try {
+    await interaction.deferReply({ flags: isPublic ? [] : [MessageFlags.Ephemeral] });
+  } catch (deferErr: any) {
+    if (deferErr?.code === 40060) {
+      console.log(`[${interaction.commandName}] Already acknowledged by another instance — continuing`);
+    } else {
+      console.error(`[${interaction.commandName}] deferReply failed:`, deferErr);
+      return;
+    }
+  }
 
   // Resolve per-server config (tenant overrides or global env fallback).
   const srvCfg = await (await import('./utils/tenant')).resolveServerConfig(interaction.guildId);

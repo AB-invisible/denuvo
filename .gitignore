@@ -19,3 +19,7 @@ __pycache__/
 /installer/_config.py
 /installer/build/
 /installer/dist/
+
+# Local dev helper scripts
+sync-dlls.bat
+update-dlls.bat
