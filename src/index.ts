@@ -98,6 +98,11 @@ const commands = [
     .addStringOption(o => o.setName('state').setDescription('On = exclude from regen, Off = allow regen').setRequired(true).addChoices({ name: 'On (Exclude)', value: 'on' }, { name: 'Off (Allow Regen)', value: 'off' }))
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
+    .setName('deplet')
+    .setDescription('Bulk deplete game tokens')
+    .addSubcommand(sub => sub.setName('all').setDescription('Set token count to 0 for every game'))
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+  new SlashCommandBuilder()
     .setName('simulate')
     .setDescription('Walk through the full user experience for a game (no tokens consumed)')
     .addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true))
@@ -197,7 +202,7 @@ async function registerCommands(targetGuildId?: string) {
     const addsupport = ADDSUPPORT_COMMAND.toJSON();
 
     const tenantCommands = [
-      ...commands.filter((c: any) => c.name !== 'test' && c.name !== 'simulate'),
+      ...commands.filter((c: any) => c.name !== 'test' && c.name !== 'simulate' && c.name !== 'deplet'),
       setlogs,
       setvouch,
       addsupport,
@@ -466,6 +471,46 @@ client.on('interactionCreate', async (interaction) => {
       } catch (e) {
         console.error('[Simulate] Error:', e);
         await interaction.editReply({ content: `❌ Simulation failed: ${(e as Error).message}` }).catch(() => {});
+      }
+      return;
+    }
+
+    // ─── DEPLET: handle at the top to bypass all other middleware ───
+    if (interaction.isChatInputCommand() && interaction.commandName === 'deplet') {
+      console.log('[Deplet] === INTERCEPTED at top of interactionCreate ===');
+      if (interaction.guildId !== CONFIG.OWNER_GUILD_ID) {
+        return interaction.reply({ content: '❌ This command is not available in this server.', flags: [MessageFlags.Ephemeral] }).catch(() => {});
+      }
+
+      try {
+        await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+        console.log('[Deplet] deferReply succeeded');
+      } catch (deferErr: any) {
+        if (deferErr?.code === 40060) {
+          console.log('[Deplet] Already acknowledged by another instance — continuing with editReply');
+        } else {
+          console.error('[Deplet] deferReply failed:', deferErr);
+          return;
+        }
+      }
+
+      try {
+        const sub = interaction.options.getSubcommand();
+        if (sub === 'all') {
+          const depletedAt = new Date();
+          const [gamesResult, restocksResult] = await prisma.$transaction([
+            prisma.game.updateMany({ data: { stock: 0, lastDepletedAt: depletedAt } }),
+            prisma.restock.deleteMany({}),
+          ]);
+          await refreshAllPanels();
+          await interaction.editReply({
+            content: `✅ **All tokens depleted:** Set \`${gamesResult.count}\` game(s) to \`0\` token(s). Cleared \`${restocksResult.count}\` pending restock(s).`,
+          });
+          logAction(interaction.guild!, '🗑️ Deplet All', `**${interaction.user.tag}** depleted all games (${gamesResult.count}) and cleared ${restocksResult.count} restocks`, 0xFF0000);
+        }
+      } catch (e) {
+        console.error('[Deplet] Error:', e);
+        await interaction.editReply({ content: `❌ Deplet failed: ${(e as Error).message}` }).catch(() => {});
       }
       return;
     }
