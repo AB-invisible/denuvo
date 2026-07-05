@@ -162,3 +162,13 @@ export async function consumeStock(gameId: number) {
 
   return updatedGame;
 }
+
+export async function purgeGameCascade(gameId: number) {
+  await prisma.pendingVerification.deleteMany({
+    where: { ticket: { gameId } },
+  });
+  await prisma.ticket.deleteMany({ where: { gameId } });
+  await prisma.restock.deleteMany({ where: { gameId } });
+  await prisma.subscription.deleteMany({ where: { gameId } });
+  await prisma.game.delete({ where: { id: gameId } });
+}

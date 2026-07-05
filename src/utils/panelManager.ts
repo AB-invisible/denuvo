@@ -1,7 +1,8 @@
 import { client } from '../client';
 import { CONFIG } from '../config';
-import { TextChannel, AttachmentBuilder } from 'discord.js';
+import { TextChannel, AttachmentBuilder, TextBasedChannel } from 'discord.js';
 import { createMainPanel } from './embeds';
+import { logAction } from './logging';
 import prisma from '../lib/prisma';
 import path from 'path';
 
@@ -58,5 +59,44 @@ export async function refreshAllPanels() {
     }));
   } catch (err) {
     console.error('Error refreshing panels:', err);
+  }
+}
+
+export async function postMainPanel(channel: TextBasedChannel) {
+  if (channel.isTextBased() && 'send' in channel) {
+    const panel = await createMainPanel();
+    const coverPath = path.join(__dirname, '../public/gamegen.png');
+    const cover = new AttachmentBuilder(coverPath, { name: 'gamegen.png' });
+
+    const sentMessage = await (channel as TextChannel).send({
+      ...panel,
+      files: [cover]
+    });
+
+    await prisma.panel.create({
+      data: { channelId: channel.id, messageId: sentMessage.id }
+    }).catch(() => {});
+  }
+}
+
+export async function resumeFromMaintenance(channelId: string, messageId?: string) {
+  try {
+    const channel = await client.channels.fetch(channelId).catch(() => null) as TextBasedChannel | null;
+    if (channel) {
+      if (messageId && 'messages' in channel) {
+        const msg = await (channel as TextChannel).messages.fetch(messageId).catch(() => null);
+        if (msg) await msg.delete().catch(() => {});
+      }
+
+      await postMainPanel(channel);
+
+      const guild = client.guilds.cache.get(CONFIG.GUILD_ID);
+      if (guild) {
+        await logAction(guild, '🔄 System Resumed', `Maintenance ended in <#${channelId}>. Panel has been restored.`, 0x5865F2);
+      }
+    }
+    await prisma.maintenance.deleteMany({ where: { channelId } });
+  } catch (err) {
+    console.error(`Failed to resume from maintenance in ${channelId}:`, err);
   }
 }
