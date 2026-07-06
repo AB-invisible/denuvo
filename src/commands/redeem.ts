@@ -18,7 +18,7 @@ export async function execute(interaction: any): Promise<void> {
   }
 
   const alreadyRedeemed = await prisma.promoRedemption.findUnique({
-    where: { userId_promoId: { userId: interaction.user.id, promoId: promo.id } },
+    where: { userId_promoId_guildId: { userId: interaction.user.id, promoId: promo.id, guildId: interaction.guildId || '' } },
   });
   if (alreadyRedeemed) {
     return interaction.editReply({ content: '❌ You have already redeemed this promo code.' });
@@ -28,7 +28,7 @@ export async function execute(interaction: any): Promise<void> {
     await prisma.cooldown.deleteMany({ where: { userId: interaction.user.id, guildId: interaction.guildId || '' } });
 
     await prisma.promoRedemption.create({
-      data: { userId: interaction.user.id, promoId: promo.id },
+      data: { userId: interaction.user.id, promoId: promo.id, guildId: interaction.guildId || '' },
     });
     await prisma.promoCode.update({
       where: { id: promo.id },
@@ -42,7 +42,7 @@ export async function execute(interaction: any): Promise<void> {
     const expiresAt = new Date(Date.now() + (promo.durationH || 24) * 60 * 60 * 1000);
 
     await prisma.promoRedemption.create({
-      data: { userId: interaction.user.id, promoId: promo.id, expiresAt },
+      data: { userId: interaction.user.id, promoId: promo.id, guildId: interaction.guildId || '', expiresAt },
     });
     await prisma.promoCode.update({
       where: { id: promo.id },

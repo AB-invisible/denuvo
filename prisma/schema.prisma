@@ -323,11 +323,12 @@ model PromoRedemption {
   id         Int       @id @default(autoincrement())
   userId     String
   promoId    Int
+  guildId    String    @default("")
   promo      PromoCode @relation(fields: [promoId], references: [id], onDelete: Cascade)
   redeemedAt DateTime  @default(now())
   expiresAt  DateTime?
 
-  @@unique([userId, promoId])
+  @@unique([userId, promoId, guildId])
 }
 
 model Waitlist {

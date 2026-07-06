@@ -484,8 +484,10 @@ export async function handleDeductionChoice(interaction: ButtonInteraction, choi
   const member = await interaction.guild?.members.fetch(ticket.userId).catch(() => null);
   let userTier: string = member ? await getTierForGuild(member, interaction.guildId!) : 'None';
 
+  const effectiveGuildId = ticket.guildId || interaction.guildId || '';
+
   const promoTier = await prisma.promoRedemption.findFirst({
-    where: { userId: ticket.userId, expiresAt: { gt: new Date() } },
+    where: { userId: ticket.userId, guildId: effectiveGuildId, expiresAt: { gt: new Date() } },
     include: { promo: true },
     orderBy: { expiresAt: 'desc' },
   });
@@ -503,7 +505,6 @@ export async function handleDeductionChoice(interaction: ButtonInteraction, choi
     await consumeStock(ticket.gameId).catch(console.error);
   }
 
-  const effectiveGuildId = ticket.guildId || interaction.guildId || '';
   const until = new Date();
   until.setTime(until.getTime() + (hours * 60 * 60 * 1000));
   await prisma.cooldown.upsert({ where: { userId_guildId: { userId: ticket.userId, guildId: effectiveGuildId } }, update: { until }, create: { userId: ticket.userId, guildId: effectiveGuildId, until } });
