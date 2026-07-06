@@ -9,7 +9,7 @@ export async function execute(interaction: any): Promise<void> {
   if (sub === 'add') {
     const name = interaction.options.getString('name')!.trim();
     const appId = interaction.options.getInteger('appid')!;
-    const steampass = interaction.options.getString('steampass') || null;
+    const steampass = interaction.options.getString('product-uuid') || null;
     const tier = interaction.options.getString('tier') || 'normal';
     const stock = interaction.options.getInteger('stock') ?? 5;
 
@@ -45,7 +45,7 @@ export async function execute(interaction: any): Promise<void> {
       content: `✅ **Added:** ${tierEmoji[tier]} **${name}** (AppID \`${appId}\`)\n` +
         `• Stock: \`${stock}\`\n` +
         `• Tier: \`${tier}\`\n` +
-        `• Token generation: ${steampass ? `enabled (steampass UUID set)` : `**disabled** — no steampass UUID provided. Set one later via DB or re-add.`}\n` +
+        `• Token generation: ${steampass ? `enabled` : `**disabled** — no product UUID provided. Set one later via DB or re-add.`}\n` +
         `• Mode: \`gbe\` (default)\n\n` +
         `Manually-added games are protected from the denuvo.json sync (won't be auto-disabled).`
     });

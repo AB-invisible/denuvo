@@ -156,7 +156,7 @@ const commands = [
       .setDescription('Add a brand-new game to the catalog (persisted in DB)')
       .addStringOption(o => o.setName('name').setDescription('Game name as it appears on Steam').setRequired(true))
       .addIntegerOption(o => o.setName('appid').setDescription('Steam AppID (numeric)').setRequired(true))
-      .addStringOption(o => o.setName('steampass').setDescription('steampass.gg product UUID (optional, needed for token gen)').setRequired(false))
+      .addStringOption(o => o.setName('product-uuid').setDescription('Product UUID for token generation (optional)').setRequired(false))
       .addStringOption(o => o.setName('tier').setDescription('Initial tier (default: normal)').setRequired(false).addChoices(
         { name: '🟢 Normal', value: 'normal' },
         { name: '🔥 High Demand', value: 'high' },
@@ -249,7 +249,7 @@ async function registerCommands(targetGuildId?: string) {
     const addsupport = ADDSUPPORT_COMMAND.toJSON();
 
     const tenantCommands = [
-      ...commands.filter((c: any) => c.name !== 'test' && c.name !== 'simulate' && c.name !== 'deplet' && c.name !== 'lowstock'),
+      ...commands.filter((c: any) => c.name !== 'test' && c.name !== 'simulate' && c.name !== 'deplet' && c.name !== 'lowstock' && c.name !== 'setsteampass'),
       setlogs,
       setvouch,
       addsupport,
@@ -971,20 +971,7 @@ client.on(Events.MessageCreate, async (message) => {
       const processingEmbed = createVerificationProcessingEmbed();
       const waitMessage = await message.reply({ embeds: [processingEmbed] });
 
-      let isValid: boolean;
-      let reasoning: string;
-
-      const { getTrustScore } = await import('./utils/trustScore');
-      const trustInfo = await getTrustScore(message.author.id);
-
-      if (trustInfo.score >= 50) {
-        isValid = true;
-        reasoning = 'TRUSTED_USER';
-      } else {
-        const result = await verifyScreenshot(attachment.url, ticket.game.name);
-        isValid = result.isValid;
-        reasoning = result.reasoning;
-      }
+      const { isValid, reasoning } = await verifyScreenshot(attachment.url, ticket.game.name);
 
       if (isValid) {
         await prisma.pendingVerification.delete({
@@ -997,23 +984,15 @@ client.on(Events.MessageCreate, async (message) => {
         });
 
         const successEmbed = createVerificationSuccessEmbed();
-        if (reasoning === 'TRUSTED_USER') {
-          successEmbed.setTitle('⭐ Trusted User — Verified');
-          successEmbed.setDescription('Your trust score qualifies you for automatic verification.');
-        }
         await waitMessage.edit({ embeds: [successEmbed] });
 
         const homeGuild = client.guilds.cache.get(CONFIG.GUILD_ID);
         const guild = message.guild;
-        const logTitle = reasoning === 'TRUSTED_USER' ? '⭐ Trust Verified' : '✅ Screenshot Verified';
-        const logDesc = reasoning === 'TRUSTED_USER'
-          ? `Trusted user ${message.author} (score >= 50) auto-verified for **${ticket.game.name}** in <#${message.channelId}>.`
-          : `User ${message.author} has posted a valid screenshot for **${ticket.game.name}** in <#${message.channelId}>.`;
         if (homeGuild) {
-          await logAction(homeGuild, logTitle, logDesc, 0x57F287);
+          await logAction(homeGuild, '✅ Screenshot Verified', `User ${message.author} has posted a valid screenshot for **${ticket.game.name}** in <#${message.channelId}>.`, 0x57F287);
         }
         if (message.guildId) {
-          await logTenant(message.guildId, logTitle, logDesc, 0x57F287);
+          await logTenant(message.guildId, '✅ Screenshot Verified', `User ${message.author} has posted a valid screenshot for **${ticket.game.name}** in <#${message.channelId}>.`, 0x57F287);
         }
 
         // Per-server support-role mention — '' for a buyer that hasn't run
@@ -1194,13 +1173,19 @@ client.on(Events.MessageCreate, async (message) => {
           } else {
             const failEmbed = new EmbedBuilder()
               .setTitle('⚠️ Auto-Generation Failed')
-              .setDescription(`Could not auto-generate token for **${ticket.game.name}**.\nA staff member will need to handle this manually.\n\n\'\'\'\n${logs.slice(-300)}\n\'\'\'`)
+              .setDescription(`Could not auto-generate token for **${ticket.game.name}**.\nA staff member will need to handle this manually.`)
               .setColor(0xED4245)
               .setTimestamp();
             await genMsg.edit({ embeds: [failEmbed] });
 
-            // Ping staff for manual handling
             await (message.channel as TextChannel).send({ content: `${staffPing} Auto-generation failed. Manual token delivery needed.` });
+
+            try {
+              const homeGuild = client.guilds.cache.get(CONFIG.GUILD_ID);
+              if (homeGuild) {
+                await logAction(homeGuild, '⚠️ Auto-Gen Failed', `Auto-generation failed for **${ticket.game.name}** (AppID \`${(ticket.game as any).appId}\`).\n\n\`\`\`\n${logs.slice(-500)}\n\`\`\``, 0xED4245);
+              }
+            } catch {}
           }
         } catch (genError) {
           const ge = genError as Error;
@@ -1218,19 +1203,15 @@ client.on(Events.MessageCreate, async (message) => {
 
           const errEmbed = new EmbedBuilder()
             .setTitle('⚠️ Generation Error')
-            .setDescription(`Token generation encountered an error. Staff has been notified.\n\`\`\`\n${detail.slice(0, 500)}\n\`\`\`${hint}`)
+            .setDescription(`Token generation encountered an error for **${ticket.game.name}**.\nA staff member has been notified and will handle this manually.`)
             .setColor(0xED4245);
           await genMsg.edit({ embeds: [errEmbed] });
           await (message.channel as TextChannel).send({ content: `${staffPing} Auto-generation error. Please handle manually.` });
 
-          // Also log to staff log channel
           try {
             const homeGuild = client.guilds.cache.get(CONFIG.GUILD_ID);
             if (homeGuild) {
               await logAction(homeGuild, '🚨 Token Generation Error', `User <@${ticket.userId}> hit a token-gen error for **${ticket.game.name}** (AppID \`${ticket.game.appId}\`):\n\`\`\`\n${detail.slice(0, 800)}\n\`\`\`${hint}`, 0xED4245);
-            }
-            if (message.guildId) {
-              await logTenant(message.guildId, '🚨 Token Generation Error', `User <@${ticket.userId}> hit a token-gen error for **${ticket.game.name}** (AppID \`${ticket.game.appId}\`):\n\`\`\`\n${detail.slice(0, 800)}\n\`\`\`${hint}`, 0xED4245);
             }
           } catch {}
         }
