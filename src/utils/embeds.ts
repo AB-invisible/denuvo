@@ -4,6 +4,7 @@ import { CONFIG } from '../config';
 import { getActiveGames, REGEN_TIME } from './gameManager';
 import { getEstimatedWaitTime, getStaffStats } from './stats';
 import { getActiveStaffCount } from './dutyManager';
+import prisma from '../lib/prisma';
 
 export type GameWithCount = Game & {
   _count?: {
@@ -14,6 +15,12 @@ export type GameWithCount = Game & {
 export async function createMainPanel() {
   const allGames = await getActiveGames() as GameWithCount[];
   const now = new Date();
+
+  const waitlistCounts = await prisma.waitlist.groupBy({
+    by: ['gameId'],
+    _count: true,
+  });
+  const waitlistMap = new Map(waitlistCounts.map(w => [w.gameId, w._count]));
 
   const totalStock = allGames.reduce((acc: number, game: GameWithCount) => acc + game.stock, 0);
   const totalReserved = allGames.reduce((acc: number, game: GameWithCount) => acc + (game._count?.tickets || 0), 0);
@@ -59,7 +66,8 @@ export async function createMainPanel() {
         chunk.map((game: GameWithCount) => {
           const reserved = game._count?.tickets || 0;
           const availableStock = Math.max(0, game.stock - reserved);
-          
+          const queueCount = waitlistMap.get(game.id) || 0;
+
           let emoji = '🔴';
           let description = `ID: ${game.appId || 'N/A'} • ${availableStock} tokens remaining (${reserved} reserved)`;
 
@@ -70,10 +78,12 @@ export async function createMainPanel() {
             const remaining = Math.max(0, REGEN_TIME - timeDiff);
             const hours = Math.floor(remaining / (1000 * 60 * 60));
             const minutes = Math.floor((remaining % (1000 * 60 * 60)) / (1000 * 60));
-            description = `ID: ${game.appId || 'N/A'} • 🔄 Full Restock in ${hours}h ${minutes}m (${reserved} reserved)`;
+            const queueText = queueCount > 0 ? ` • ${queueCount} in queue` : '';
+            description = `ID: ${game.appId || 'N/A'} • 🔄 Restock in ${hours}h ${minutes}m${queueText}`;
           } else if (availableStock === 0 && reserved > 0) {
             emoji = '🔴';
-            description = `ID: ${game.appId || 'N/A'} • ⏳ Out of stock (${reserved} reserved)`;
+            const queueText = queueCount > 0 ? ` • ${queueCount} in queue` : '';
+            description = `ID: ${game.appId || 'N/A'} • ⏳ Out of stock (${reserved} reserved${queueText})`;
           }
 
           // Tier overrides — order matters: donor > booster > high > stock-based
@@ -203,7 +213,7 @@ export function createTicketSuccessEmbed(channel: TextBasedChannel | string, wai
 }
 
 // Bug #9 fix: Accept GuildMember for accurate joinedAt date instead of User.createdAt
-export function createProfileEmbed(user: User, cooldown: Cooldown | null, subscriptions: (Subscription & { game: { name: string } })[], totalActivations: number, member?: GuildMember | null) {
+export function createProfileEmbed(user: User, cooldown: Cooldown | null, subscriptions: (Subscription & { game: { name: string } })[], totalActivations: number, member?: GuildMember | null, trustInfo?: { score: number, rank: string } | null) {
   const timeLeft = cooldown && cooldown.until > new Date() 
     ? Math.ceil((cooldown.until.getTime() - Date.now()) / (1000 * 60 * 60)) 
     : 0;
@@ -219,6 +229,7 @@ export function createProfileEmbed(user: User, cooldown: Cooldown | null, subscr
       { name: '🛡️ Active Cooldown', value: timeLeft > 0 ? `\`${timeLeft} Hours Remaining\`` : '`None (Cleared)`', inline: true },
       { name: '📊 Total Activations', value: `\`${totalActivations}\``, inline: true },
       { name: '📅 Joined Server', value: `<t:${Math.floor(joinTimestamp / 1000)}:R>`, inline: true },
+      { name: '⭐ Trust Score', value: trustInfo ? `\`${trustInfo.score}\` (${trustInfo.rank})` : '`N/A`', inline: true },
       { name: '━━━━━━━━━━━━━━━━━━━━━━━━━━', value: ' ', inline: false }
     );
 

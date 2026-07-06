@@ -37,12 +37,14 @@ model Game {
   tickets         Ticket[]
   restocks        Restock[]
   subscriptions   Subscription[]
+  waitlist        Waitlist[]
 }
 
 model Ticket {
   id        Int      @id @default(autoincrement())
   channelId        String   @unique
   controlMessageId String?
+  guildId          String?
   userId           String
   gameId           Int
   game      Game     @relation(fields: [gameId], references: [id])
@@ -291,4 +293,47 @@ model TokenDownload {
   // Inside a ticket the field stays false and single-use enforcement
   // works as normal.
   persistent    Boolean  @default(false)
+}
+
+model GameRequest {
+  id        Int      @id @default(autoincrement())
+  userId    String
+  gameName  String
+  createdAt DateTime @default(now())
+
+  @@unique([userId, gameName])
+}
+
+model PromoCode {
+  id          Int       @id @default(autoincrement())
+  code        String    @unique
+  effect      String    // 'cooldown_reset' | 'temp_tier'
+  tierGrant   String?   // 'Gold' | 'Silver' | 'Bronze'
+  durationH   Int?      // hours the tier effect lasts
+  maxUses     Int       @default(1)
+  usedCount   Int       @default(0)
+  expiresAt   DateTime?
+  createdAt   DateTime  @default(now())
+  redemptions PromoRedemption[]
+}
+
+model PromoRedemption {
+  id         Int       @id @default(autoincrement())
+  userId     String
+  promoId    Int
+  promo      PromoCode @relation(fields: [promoId], references: [id], onDelete: Cascade)
+  redeemedAt DateTime  @default(now())
+  expiresAt  DateTime?
+
+  @@unique([userId, promoId])
+}
+
+model Waitlist {
+  id        Int      @id @default(autoincrement())
+  userId    String
+  gameId    Int
+  game      Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, gameId])
 }

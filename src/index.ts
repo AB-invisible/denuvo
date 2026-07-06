@@ -187,6 +187,53 @@ const commands = [
       .setDescription('Permanently delete a manually-added game from the DB (cannot delete JSON-synced games)')
       .addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true)))
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+  new SlashCommandBuilder()
+    .setName('lowstock')
+    .setDescription('Set low stock alert threshold')
+    .addIntegerOption(o => o.setName('threshold').setDescription('Alert when stock drops to this number'))
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+  new SlashCommandBuilder()
+    .setName('request')
+    .setDescription('Vote for a game to be added')
+    .addStringOption(o => o.setName('name').setDescription('Game name').setRequired(true)),
+  new SlashCommandBuilder()
+    .setName('requests')
+    .setDescription('View/clear game requests')
+    .addBooleanOption(o => o.setName('clear').setDescription('Clear all requests'))
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+  new SlashCommandBuilder()
+    .setName('promo')
+    .setDescription('Manage promo codes')
+    .addSubcommand(s => s.setName('create').setDescription('Create a promo code')
+      .addStringOption(o => o.setName('code').setDescription('The code').setRequired(true))
+      .addStringOption(o => o.setName('effect').setDescription('Effect type').setRequired(true)
+        .addChoices({ name: 'Cooldown Reset', value: 'cooldown_reset' }, { name: 'Temporary Tier', value: 'temp_tier' }))
+      .addStringOption(o => o.setName('tier').setDescription('Tier to grant (for temp_tier)')
+        .addChoices({ name: 'Gold', value: 'Gold' }, { name: 'Silver', value: 'Silver' }, { name: 'Bronze', value: 'Bronze' }))
+      .addIntegerOption(o => o.setName('duration_hours').setDescription('How long the tier lasts (hours)'))
+      .addIntegerOption(o => o.setName('max_uses').setDescription('Max redemptions (default 1)'))
+      .addIntegerOption(o => o.setName('expires_in_hours').setDescription('Code expires after this many hours')))
+    .addSubcommand(s => s.setName('list').setDescription('List active promo codes'))
+    .addSubcommand(s => s.setName('delete').setDescription('Delete a promo code')
+      .addStringOption(o => o.setName('code').setDescription('Code to delete').setRequired(true)))
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+  new SlashCommandBuilder()
+    .setName('redeem')
+    .setDescription('Redeem a promo code')
+    .addStringOption(o => o.setName('code').setDescription('The promo code').setRequired(true)),
+  new SlashCommandBuilder()
+    .setName('tenant-stats')
+    .setDescription('View server token usage stats')
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+  new SlashCommandBuilder()
+    .setName('trust')
+    .setDescription('View a user\'s trust score breakdown')
+    .addUserOption(o => o.setName('user').setDescription('The user to check').setRequired(true))
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+  new SlashCommandBuilder()
+    .setName('waitlist')
+    .setDescription('View or leave your game waitlists')
+    .addStringOption(o => o.setName('leave').setDescription('Game name to leave the waitlist for').setAutocomplete(true)),
 ].map(command => command.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(CONFIG.TOKEN);
@@ -202,7 +249,7 @@ async function registerCommands(targetGuildId?: string) {
     const addsupport = ADDSUPPORT_COMMAND.toJSON();
 
     const tenantCommands = [
-      ...commands.filter((c: any) => c.name !== 'test' && c.name !== 'simulate' && c.name !== 'deplet'),
+      ...commands.filter((c: any) => c.name !== 'test' && c.name !== 'simulate' && c.name !== 'deplet' && c.name !== 'lowstock'),
       setlogs,
       setvouch,
       addsupport,
@@ -561,7 +608,7 @@ if (interaction.guildId) {
 });
 
 async function handleAutocomplete(interaction: any) {
-  if (interaction.commandName === 'stock' || interaction.commandName === 'exclude-auto' || interaction.commandName === 'test' || interaction.commandName === 'tokengen' || interaction.commandName === 'setmode' || interaction.commandName === 'getmode' || interaction.commandName === 'game' || interaction.commandName === 'removegame' || interaction.commandName === 'settokens' || interaction.commandName === 'autogen' || interaction.commandName === 'simulate' || interaction.commandName === 'deplet') {
+  if (interaction.commandName === 'stock' || interaction.commandName === 'exclude-auto' || interaction.commandName === 'test' || interaction.commandName === 'tokengen' || interaction.commandName === 'setmode' || interaction.commandName === 'getmode' || interaction.commandName === 'game' || interaction.commandName === 'removegame' || interaction.commandName === 'settokens' || interaction.commandName === 'autogen' || interaction.commandName === 'simulate' || interaction.commandName === 'deplet' || interaction.commandName === 'waitlist') {
     const focusedValue = interaction.options.getFocused();
     const games = await prisma.game.findMany({
       where: { name: { contains: focusedValue, mode: 'insensitive' } },
@@ -592,7 +639,7 @@ async function handleChatCommand(interaction: any) {
     }).catch(() => {});
   }
 
-  const USER_FACING_COMMANDS = new Set(['mycooldown', 'profile', 'onduty']);
+  const USER_FACING_COMMANDS = new Set(['mycooldown', 'profile', 'onduty', 'request', 'redeem', 'waitlist']);
   if (!USER_FACING_COMMANDS.has(interaction.commandName)) {
     const m = interaction.member as GuildMember | null;
     const hasAdmin = m?.permissions?.has?.(PermissionsBitField.Flags.Administrator);
@@ -923,8 +970,21 @@ client.on(Events.MessageCreate, async (message) => {
 
       const processingEmbed = createVerificationProcessingEmbed();
       const waitMessage = await message.reply({ embeds: [processingEmbed] });
-      
-      const { isValid, reasoning } = await verifyScreenshot(attachment.url, ticket.game.name);
+
+      let isValid: boolean;
+      let reasoning: string;
+
+      const { getTrustScore } = await import('./utils/trustScore');
+      const trustInfo = await getTrustScore(message.author.id);
+
+      if (trustInfo.score >= 50) {
+        isValid = true;
+        reasoning = 'TRUSTED_USER';
+      } else {
+        const result = await verifyScreenshot(attachment.url, ticket.game.name);
+        isValid = result.isValid;
+        reasoning = result.reasoning;
+      }
 
       if (isValid) {
         await prisma.pendingVerification.delete({
@@ -937,15 +997,23 @@ client.on(Events.MessageCreate, async (message) => {
         });
 
         const successEmbed = createVerificationSuccessEmbed();
+        if (reasoning === 'TRUSTED_USER') {
+          successEmbed.setTitle('⭐ Trusted User — Verified');
+          successEmbed.setDescription('Your trust score qualifies you for automatic verification.');
+        }
         await waitMessage.edit({ embeds: [successEmbed] });
-        
+
         const homeGuild = client.guilds.cache.get(CONFIG.GUILD_ID);
         const guild = message.guild;
+        const logTitle = reasoning === 'TRUSTED_USER' ? '⭐ Trust Verified' : '✅ Screenshot Verified';
+        const logDesc = reasoning === 'TRUSTED_USER'
+          ? `Trusted user ${message.author} (score >= 50) auto-verified for **${ticket.game.name}** in <#${message.channelId}>.`
+          : `User ${message.author} has posted a valid screenshot for **${ticket.game.name}** in <#${message.channelId}>.`;
         if (homeGuild) {
-          await logAction(homeGuild, '✅ Screenshot Verified', `User ${message.author} has posted a valid screenshot for **${ticket.game.name}** in <#${message.channelId}>.`, 0x57F287);
+          await logAction(homeGuild, logTitle, logDesc, 0x57F287);
         }
         if (message.guildId) {
-          await logTenant(message.guildId, '✅ Screenshot Verified', `User ${message.author} has posted a valid screenshot for **${ticket.game.name}** in <#${message.channelId}>.`, 0x57F287);
+          await logTenant(message.guildId, logTitle, logDesc, 0x57F287);
         }
 
         // Per-server support-role mention — '' for a buyer that hasn't run
@@ -1189,9 +1257,8 @@ client.on(Events.MessageCreate, async (message) => {
           await refreshAllPanels();
         } else {
           await waitMessage.edit({ embeds: [failureEmbed] });
-          
+
           if (message.guild) {
-            await autoCloseTicketForVerificationTimeout(message.channelId, message.guild);
             const homeGuild = client.guilds.cache.get(CONFIG.GUILD_ID);
             if (homeGuild) {
               await logAction(homeGuild, '❌ Screenshot Rejected', `User <@${message.author.id}> provided an invalid screenshot for **${ticket.game.name}**.\n\n**Reasoning:** ${reasoning || 'No details'}\n**Attempts:** \`${newRetryCount}/3\``, 0xED4245);

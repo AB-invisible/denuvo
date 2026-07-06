@@ -170,7 +170,18 @@ export async function createTicket(interaction: StringSelectMenuInteraction, gam
       const availableResources = game.stock - activeReservations;
 
       if (availableResources <= 0) {
-        return { error: '❌ **Resource Exhaustion:** No available tokens at this time. Please monitor restocks.' };
+        const existing = await tx.waitlist.findUnique({
+          where: { userId_gameId: { userId: interaction.user.id, gameId: game.id } },
+        });
+        if (existing) {
+          const position = await tx.waitlist.count({
+            where: { gameId: game.id, createdAt: { lte: existing.createdAt } },
+          });
+          return { error: `⏳ **Out of Stock:** You're already on the waitlist for **${gameName}** at position **#${position}**. You'll be DM'd when it restocks.` };
+        }
+        await tx.waitlist.create({ data: { userId: interaction.user.id, gameId: game.id } });
+        const position = await tx.waitlist.count({ where: { gameId: game.id } });
+        return { error: `⏳ **Out of Stock:** You've been added to the waitlist for **${gameName}** at position **#${position}**. You'll receive a DM when it restocks!` };
       }
 
       if (game.donatorOnly) {
@@ -242,7 +253,7 @@ export async function createTicket(interaction: StringSelectMenuInteraction, gam
     });
 
     const ticket = await prisma.ticket.create({
-      data: { channelId: channel.id, userId: interaction.user.id, gameId: game.id, status: 'OPEN' },
+      data: { channelId: channel.id, userId: interaction.user.id, gameId: game.id, status: 'OPEN', guildId: interaction.guildId },
     });
 
     const userTier = await getTierForGuild(interaction.member as GuildMember, guild.id);
@@ -462,34 +473,65 @@ export async function closeTicket(interaction: ButtonInteraction) {
 
 export async function handleDeductionChoice(interaction: ButtonInteraction, choice: 'yes' | 'no') {
   await interaction.deferUpdate();
-  const ticket = await prisma.ticket.findUnique({ where: { channelId: interaction.channelId } });
+  const ticket = await prisma.ticket.findUnique({ where: { channelId: interaction.channelId }, include: { game: true } });
   if (!ticket) return interaction.editReply({ content: '❌ Not found.' });
 
   if (ticket.status === 'CLOSED') {
     return interaction.editReply({ content: '⚠️ **Already Closed:** This session was closed by another process.', components: [] });
   }
 
-  // Bug #10 fix: Safe null handling — don't blindly cast null to GuildMember
   const member = await interaction.guild?.members.fetch(ticket.userId).catch(() => null);
-  const userTier = member ? getTier(member) : 'None';
-  const maxHours = CONFIG.TIER_COOLDOWNS[userTier.toUpperCase() as keyof typeof CONFIG.TIER_COOLDOWNS] || CONFIG.TIER_COOLDOWNS.DEFAULT;
+  let userTier: string = member ? await getTierForGuild(member, interaction.guildId!) : 'None';
 
-  const options = [
-    { label: '30m', value: '0.5' }, { label: '1h', value: '1' }, { label: '6h', value: '6' }, 
-    { label: '12h', value: '12' }, { label: '24h', value: '24' }, { label: '48h', value: '48' }, 
-    { label: '1w', value: '168' }, { label: 'Indefinite', value: '8760' }
-  ];
-
-  const selectMenu = new StringSelectMenuBuilder()
-    .setCustomId(`close_cooldown_select_${choice.toUpperCase()}`)
-    .setPlaceholder(`Set Cooldown (${userTier})`)
-    .addOptions(options.map(o => new StringSelectMenuOptionBuilder().setLabel(o.label).setValue(o.value)));
-
-  await interaction.editReply({ 
-    content: `📊 Deduction: **${choice.toUpperCase()}** • Tier: **${userTier}**`, 
-    embeds: [], 
-    components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu)] 
+  const promoTier = await prisma.promoRedemption.findFirst({
+    where: { userId: ticket.userId, expiresAt: { gt: new Date() } },
+    include: { promo: true },
+    orderBy: { expiresAt: 'desc' },
   });
+  if (promoTier?.promo.effect === 'temp_tier' && promoTier.promo.tierGrant) {
+    const tierRank: Record<string, number> = { Gold: 3, Silver: 2, Bronze: 1, None: 0 };
+    if ((tierRank[promoTier.promo.tierGrant] || 0) > (tierRank[userTier] || 0)) {
+      userTier = promoTier.promo.tierGrant;
+    }
+  }
+
+  const hours = CONFIG.TIER_COOLDOWNS[userTier.toUpperCase() as keyof typeof CONFIG.TIER_COOLDOWNS] || CONFIG.TIER_COOLDOWNS.DEFAULT;
+  const deduct = choice === 'yes';
+
+  if (deduct) {
+    await consumeStock(ticket.gameId).catch(console.error);
+  }
+
+  const until = new Date();
+  until.setTime(until.getTime() + (hours * 60 * 60 * 1000));
+  await prisma.cooldown.upsert({ where: { userId: ticket.userId }, update: { until }, create: { userId: ticket.userId, until } });
+
+  await prisma.ticket.update({
+    where: { channelId: interaction.channelId },
+    data: { status: 'CLOSED', closedAt: new Date(), screenshotVerified: true, activeClosingStaffId: null },
+  });
+
+  const vTimer = pendingVerificationTimers.get(interaction.channelId);
+  if (vTimer) {
+    clearTimeout(vTimer);
+    pendingVerificationTimers.delete(interaction.channelId);
+  }
+
+  const vouchTimer = vouchTimers.get(ticket.userId);
+  if (vouchTimer) {
+    clearTimeout(vouchTimer);
+    vouchTimers.delete(ticket.userId);
+  }
+
+  const promoNote = promoTier?.promo.effect === 'temp_tier' ? ` (Promo: ${promoTier.promo.tierGrant})` : '';
+  await interaction.editReply({ content: `✅ Session closed. Tier: **${userTier}${promoNote}** • Cooldown: **${hours}h**.`, components: [] });
+
+  if (interaction.guild) {
+    await logAction(interaction.guild, '🔒 Ticket Closed', `Staff ${interaction.user} closed session in <#${interaction.channelId}>.\n\n**User:** <@${ticket.userId}>\n**Tier:** \`${userTier}${promoNote}\`\n**Cooldown:** \`${hours}h\`\n**Token Deducted:** \`${deduct ? 'YES' : 'NO'}\``, 0x2B2D31);
+  }
+
+  await refreshAllPanels();
+  setTimeout(() => interaction.channel?.delete().catch(() => {}), 5000);
 }
 
 export async function handleCooldownSelection(interaction: StringSelectMenuInteraction) {

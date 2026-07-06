@@ -17,6 +17,14 @@ import { execute as game } from './game';
 import { execute as setmode } from './setmode';
 import { execute as getmode } from './getmode';
 import { execute as excludeAuto } from './excludeAuto';
+import { execute as lowstock } from './lowstock';
+import { execute as request } from './request';
+import { execute as requests } from './requests';
+import { execute as promo } from './promo';
+import { execute as redeem } from './redeem';
+import { execute as tenantstats } from './tenantstats';
+import { execute as trust } from './trust';
+import { execute as waitlist } from './waitlist';
 
 export const commandHandlers: Record<string, (interaction: any) => Promise<void>> = {
   postpanel,
@@ -38,4 +46,12 @@ export const commandHandlers: Record<string, (interaction: any) => Promise<void>
   setmode,
   getmode,
   'exclude-auto': excludeAuto,
+  lowstock,
+  request,
+  requests,
+  promo,
+  redeem,
+  'tenant-stats': tenantstats,
+  trust,
+  waitlist,
 };

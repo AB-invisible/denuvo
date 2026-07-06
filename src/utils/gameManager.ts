@@ -2,6 +2,7 @@ import prisma from '../lib/prisma';
 import { Game, Prisma } from '@prisma/client';
 import { logGlobal, logStockNotification } from './logging';
 import { notifySubscribers } from './subscriptionManager';
+import { notifyWaitlist } from './waitlistManager';
 
 export const REGEN_TIME = 24 * 60 * 60 * 1000; // 24 hours
 
@@ -37,6 +38,7 @@ export async function checkRegeneration(game: Game): Promise<Game> {
 
     await logStockNotification(game.name, 'RESTOCKED', amountToRestock);
     await notifySubscribers(game.id, game.name, amountToRestock);
+    await notifyWaitlist(game.id, game.name, amountToRestock);
     return updatedGame;
   }
 
@@ -101,8 +103,9 @@ export async function updateStock(gameName: string, sub: 'add' | 'remove' | 'set
   }
 
   if (sub === 'add' || (sub === 'set' && amount > 0)) {
-    const amountAdded = sub === 'add' ? amount : amount; // Simplified for notification logic
+    const amountAdded = sub === 'add' ? amount : amount;
     await notifySubscribers(updatedGame.id, updatedGame.name, amountAdded);
+    await notifyWaitlist(updatedGame.id, updatedGame.name, amountAdded);
   }
 
   if (updatedGame.stock === 0) {
@@ -160,6 +163,14 @@ export async function consumeStock(gameId: number) {
     await logGlobal('⚠️ Last Token Alert', `Only **1 token** remains for **${updatedGame.name}**.`, 0xFEE75C);
   }
 
+  if (updatedGame.stock > 0) {
+    const thresholdSetting = await prisma.metadata.findUnique({ where: { key: 'lowStockThreshold' } });
+    const threshold = thresholdSetting ? parseInt(thresholdSetting.value) : 3;
+    if (updatedGame.stock <= threshold && updatedGame.stock > 0) {
+      await logStockNotification(updatedGame.name, 'LOW_STOCK', updatedGame.stock);
+    }
+  }
+
   return updatedGame;
 }
 
@@ -170,5 +181,6 @@ export async function purgeGameCascade(gameId: number) {
   await prisma.ticket.deleteMany({ where: { gameId } });
   await prisma.restock.deleteMany({ where: { gameId } });
   await prisma.subscription.deleteMany({ where: { gameId } });
+  await prisma.waitlist.deleteMany({ where: { gameId } });
   await prisma.game.delete({ where: { id: gameId } });
 }

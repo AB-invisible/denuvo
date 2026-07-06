@@ -48,18 +48,23 @@ export async function logAction(guild: Guild, title: string, description: string
   }
 }
 
-export async function logStockNotification(gameName: string, status: 'DEPLETED' | 'RESTOCKED', amount?: number) {
+export async function logStockNotification(gameName: string, status: 'DEPLETED' | 'RESTOCKED' | 'LOW_STOCK', amount?: number) {
   const channel = (await client.channels.fetch(CONFIG.STOCK_NOTIF_CHANNEL_ID).catch(() => null)) as TextChannel;
   if (!channel) return;
 
+  const titleMap = { DEPLETED: '🚨 Game Out of Stock', RESTOCKED: '✅ Game Token Restocked', LOW_STOCK: '⚠️ Low Stock Warning' };
+  const colorMap = { DEPLETED: 0xED4245, RESTOCKED: 0x57F287, LOW_STOCK: 0xFEE75C };
+
+  const descMap: Record<string, string> = {
+    DEPLETED: `**${gameName}** is now out of stock. Individual token regeneration is active.`,
+    RESTOCKED: amount ? `**${amount} token(s)** have been restocked for **${gameName}**!` : `**${gameName}** has received a new token and is active!`,
+    LOW_STOCK: `**${gameName}** is running low — only **${amount}** token(s) remaining.`,
+  };
+
   const embed = new EmbedBuilder()
-    .setTitle(status === 'DEPLETED' ? '🚨 Game Out of Stock' : '✅ Game Token Restocked')
-    .setDescription(status === 'DEPLETED' 
-      ? `**${gameName}** is now out of stock. Individual token regeneration is active.` 
-      : status === 'RESTOCKED' && amount 
-        ? `**${amount} token(s)** have been restocked for **${gameName}**!`
-        : `**${gameName}** has received a new token and is active!`)
-    .setColor(status === 'DEPLETED' ? 0xED4245 : 0x57F287)
+    .setTitle(titleMap[status])
+    .setDescription(descMap[status])
+    .setColor(colorMap[status])
     .setTimestamp();
 
   await channel.send({ embeds: [embed] }).catch(() => {});
