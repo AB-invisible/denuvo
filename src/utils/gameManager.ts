@@ -36,8 +36,7 @@ export async function checkRegeneration(game: Game): Promise<Game> {
       })
     ]);
 
-    await logStockNotification(game.name, 'RESTOCKED', amountToRestock);
-    await notifySubscribers(game.id, game.name, amountToRestock);
+    await logGlobal('✅ Auto-Restock', `**${amountToRestock} token(s)** auto-restocked for **${game.name}**.`, 0x57F287);
     await notifyWaitlist(game.id, game.name, amountToRestock);
     return updatedGame;
   }
