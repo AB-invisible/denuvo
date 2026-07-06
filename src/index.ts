@@ -249,7 +249,7 @@ async function registerCommands(targetGuildId?: string) {
     const addsupport = ADDSUPPORT_COMMAND.toJSON();
 
     const tenantCommands = [
-      ...commands.filter((c: any) => c.name !== 'test' && c.name !== 'simulate' && c.name !== 'deplet' && c.name !== 'lowstock' && c.name !== 'setsteampass' && c.name !== 'game' && c.name !== 'removegame' && c.name !== 'autogen'),
+      ...commands.filter((c: any) => c.name !== 'test' && c.name !== 'simulate' && c.name !== 'deplet' && c.name !== 'lowstock' && c.name !== 'setsteampass' && c.name !== 'game' && c.name !== 'removegame' && c.name !== 'autogen' && c.name !== 'stock' && c.name !== 'settokens' && c.name !== 'exclude-auto' && c.name !== 'setmode' && c.name !== 'getmode' && c.name !== 'promo' && c.name !== 'requests' && c.name !== 'staffstats'),
       setlogs,
       setvouch,
       addsupport,

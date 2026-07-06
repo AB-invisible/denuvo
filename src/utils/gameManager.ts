@@ -37,6 +37,7 @@ export async function checkRegeneration(game: Game): Promise<Game> {
     ]);
 
     await logGlobal('✅ Auto-Restock', `**${amountToRestock} token(s)** auto-restocked for **${game.name}**.`, 0x57F287);
+    await notifySubscribers(game.id, game.name, amountToRestock);
     await notifyWaitlist(game.id, game.name, amountToRestock);
     return updatedGame;
   }
@@ -157,7 +158,6 @@ export async function consumeStock(gameId: number) {
 
   if (updatedGame.stock === 0) {
     await logGlobal('🚨 Game Depleted', `Stock for **${updatedGame.name}** has reached zero via consumption. Individual regeneration tracking active.`, 0xED4245);
-    await logStockNotification(updatedGame.name, 'DEPLETED');
   } else if (updatedGame.stock === 1) {
     await logGlobal('⚠️ Last Token Alert', `Only **1 token** remains for **${updatedGame.name}**.`, 0xFEE75C);
   }
@@ -166,7 +166,7 @@ export async function consumeStock(gameId: number) {
     const thresholdSetting = await prisma.metadata.findUnique({ where: { key: 'lowStockThreshold' } });
     const threshold = thresholdSetting ? parseInt(thresholdSetting.value) : 3;
     if (updatedGame.stock <= threshold && updatedGame.stock > 0) {
-      await logStockNotification(updatedGame.name, 'LOW_STOCK', updatedGame.stock);
+      await logGlobal('⚠️ Low Stock Warning', `**${updatedGame.name}** is running low — only **${updatedGame.stock}** token(s) remaining.`, 0xFEE75C);
     }
   }
 
