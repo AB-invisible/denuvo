@@ -249,7 +249,7 @@ async function registerCommands(targetGuildId?: string) {
     const addsupport = ADDSUPPORT_COMMAND.toJSON();
 
     const tenantCommands = [
-      ...commands.filter((c: any) => c.name !== 'test' && c.name !== 'simulate' && c.name !== 'deplet' && c.name !== 'lowstock' && c.name !== 'setsteampass'),
+      ...commands.filter((c: any) => c.name !== 'test' && c.name !== 'simulate' && c.name !== 'deplet' && c.name !== 'lowstock' && c.name !== 'setsteampass' && c.name !== 'game' && c.name !== 'removegame'),
       setlogs,
       setvouch,
       addsupport,
