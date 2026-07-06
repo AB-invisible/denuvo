@@ -214,9 +214,10 @@ export function createTicketSuccessEmbed(channel: TextBasedChannel | string, wai
 
 // Bug #9 fix: Accept GuildMember for accurate joinedAt date instead of User.createdAt
 export function createProfileEmbed(user: User, cooldown: Cooldown | null, subscriptions: (Subscription & { game: { name: string } })[], totalActivations: number, member?: GuildMember | null, trustInfo?: { score: number, rank: string } | null) {
-  const timeLeft = cooldown && cooldown.until > new Date() 
-    ? Math.ceil((cooldown.until.getTime() - Date.now()) / (1000 * 60 * 60)) 
-    : 0;
+  const hasActiveCooldown = cooldown && cooldown.until > new Date();
+  const cooldownDisplay = hasActiveCooldown
+    ? `Expires <t:${Math.floor(cooldown.until.getTime() / 1000)}:R>`
+    : 'None (Cleared)';
 
   // Use member.joinedAt for server join date, fallback to user.createdAt (account creation)
   const joinTimestamp = member?.joinedAt?.getTime() || user.createdAt?.getTime() || 0;
@@ -224,9 +225,9 @@ export function createProfileEmbed(user: User, cooldown: Cooldown | null, subscr
   const embed = new EmbedBuilder()
     .setTitle(`👤 User Security Profile • ${user.username}`)
     .setThumbnail(user.displayAvatarURL())
-    .setColor(timeLeft > 0 ? 0xED4245 : 0x5865F2)
+    .setColor(hasActiveCooldown ? 0xED4245 : 0x5865F2)
     .addFields(
-      { name: '🛡️ Active Cooldown', value: timeLeft > 0 ? `\`${timeLeft} Hours Remaining\`` : '`None (Cleared)`', inline: true },
+      { name: '🛡️ Active Cooldown', value: `\`${cooldownDisplay}\``, inline: true },
       { name: '📊 Total Activations', value: `\`${totalActivations}\``, inline: true },
       { name: '📅 Joined Server', value: `<t:${Math.floor(joinTimestamp / 1000)}:R>`, inline: true },
       { name: '⭐ Trust Score', value: trustInfo ? `\`${trustInfo.score}\` (${trustInfo.rank})` : '`N/A`', inline: true },

@@ -26,6 +26,7 @@ export const CONFIG = {
     GOLD: process.env.COOLDOWN_GOLD !== undefined ? Number(process.env.COOLDOWN_GOLD) : 8,
     SILVER: process.env.COOLDOWN_SILVER !== undefined ? Number(process.env.COOLDOWN_SILVER) : 16,
     BRONZE: process.env.COOLDOWN_BRONZE !== undefined ? Number(process.env.COOLDOWN_BRONZE) : 20,
+    NONE: process.env.COOLDOWN_NONE !== undefined ? Number(process.env.COOLDOWN_NONE) : 24,
     DEFAULT: process.env.COOLDOWN_DEFAULT !== undefined ? Number(process.env.COOLDOWN_DEFAULT) : 8760 * 10
   },
   DUTY_RESET_HOURS: process.env.DUTY_RESET_HOURS !== undefined ? Number(process.env.DUTY_RESET_HOURS) : 8
