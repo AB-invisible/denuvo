@@ -315,12 +315,12 @@ client.on(Events.GuildCreate, async (guild) => {
  * Marks the ticket as a strike (screenshotVerified=false), applies 48h cooldown,
  * and escalates to a permanent ban if the user has now hit 3 strikes total.
  */
-async function applyVouchTimeoutStrike(ticketId: number, userId: string, channelId: string) {
+async function applyVouchTimeoutStrike(ticketId: number, userId: string, channelId: string, guildId: string) {
   const until = new Date(Date.now() + 48 * 60 * 60 * 1000);
   await prisma.cooldown.upsert({
-    where: { userId },
+    where: { userId_guildId: { userId, guildId } },
     update: { until },
-    create: { userId, until }
+    create: { userId, guildId, until }
   });
 
   // Revoke verification flag so this counts in the strike query
@@ -344,9 +344,9 @@ async function applyVouchTimeoutStrike(ticketId: number, userId: string, channel
     const permanent = new Date();
     permanent.setFullYear(permanent.getFullYear() + 99);
     await prisma.cooldown.upsert({
-      where: { userId },
+      where: { userId_guildId: { userId, guildId } },
       update: { until: permanent },
-      create: { userId, until: permanent }
+      create: { userId, guildId, until: permanent }
     });
     permanentBan = true;
   }
@@ -417,7 +417,7 @@ async function rehydrateVerificationTimers() {
       const timeout = setTimeout(async () => {
         const currentTicket = await prisma.ticket.findUnique({ where: { id: ticket.id } });
         if (currentTicket && currentTicket.status !== 'CLOSED') {
-          await applyVouchTimeoutStrike(currentTicket.id, currentTicket.userId, currentTicket.channelId);
+          await applyVouchTimeoutStrike(currentTicket.id, currentTicket.userId, currentTicket.channelId, currentTicket.guildId || '');
         }
       }, remainingMs);
 
@@ -853,7 +853,7 @@ async function handleWorksYes(interaction: any) {
     const timeout = setTimeout(async () => {
       const current = await prisma.ticket.findFirst({ where: { channelId: interaction.channelId } });
       if (current && current.status !== 'CLOSED' && current.vouchExpiresAt) {
-        await applyVouchTimeoutStrike(current.id, current.userId, interaction.channelId);
+        await applyVouchTimeoutStrike(current.id, current.userId, interaction.channelId, current.guildId || interaction.guildId!);
       } else {
         vouchTimers.delete(interaction.user.id);
       }
@@ -1023,10 +1023,13 @@ client.on(Events.MessageCreate, async (message) => {
         //   - Global: Metadata key "autoGenEnabled". Pauses every game.
         //   - Per-game: Game.autoGenDisabled. Pauses just this game.
         // Either being "off" routes the ticket to manual staff delivery.
-        const autoGenSetting = await prisma.metadata.findUnique({ where: { key: 'autoGenEnabled' } });
-        const globallyEnabled = autoGenSetting?.value !== 'false';
+        const autoGenKey = `autoGenEnabled:${message.guildId || ''}`;
+        const autoGenSetting = await prisma.metadata.findUnique({ where: { key: autoGenKey } });
+        const globalSetting = await prisma.metadata.findUnique({ where: { key: 'autoGenEnabled' } });
+        const globallyEnabled = globalSetting?.value !== 'false';
+        const serverEnabled = autoGenSetting?.value !== 'false';
         const gamePaused = (ticket.game as any).autoGenDisabled === true;
-        const autoGenEnabled = globallyEnabled && !gamePaused;
+        const autoGenEnabled = globallyEnabled && serverEnabled && !gamePaused;
 
         if (!autoGenEnabled) {
           const scope = !globallyEnabled ? 'globally' : `for **${ticket.game.name}**`;
@@ -1234,7 +1237,7 @@ client.on(Events.MessageCreate, async (message) => {
           await waitMessage.edit({ embeds: [failureEmbed] });
           
           const channel = message.channel as TextChannel;
-          await triggerSessionFailure(message.channelId, ticket.userId, channel, false);
+          await triggerSessionFailure(message.channelId, ticket.userId, channel, false, ticket.guildId || message.guildId || '');
           await refreshAllPanels();
         } else {
           await waitMessage.edit({ embeds: [failureEmbed] });
@@ -1412,9 +1415,9 @@ client.on(Events.MessageCreate, async (message) => {
           const cooldownHours = g.donatorOnly ? 2 : g.highDemand ? 48 : 24;
           const until = new Date(Date.now() + cooldownHours * 60 * 60 * 1000);
           await prisma.cooldown.upsert({
-            where: { userId: ticket.userId },
+            where: { userId_guildId: { userId: ticket.userId, guildId: ticket.guildId || message.guildId || '' } },
             update: { until },
-            create: { userId: ticket.userId, until }
+            create: { userId: ticket.userId, guildId: ticket.guildId || message.guildId || '', until }
           });
 
           // Deduct one token from stock
@@ -1504,7 +1507,7 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
         const g = ticketWithGame?.game as any;
         const cooldownHours = g?.donatorOnly ? 2 : g?.highDemand ? 48 : 24;
         const until = new Date(Date.now() + cooldownHours * 60 * 60 * 1000);
-        await prisma.cooldown.upsert({ where: { userId: ticket.userId }, update: { until }, create: { userId: ticket.userId, until } });
+        await prisma.cooldown.upsert({ where: { userId_guildId: { userId: ticket.userId, guildId: ticket.guildId || reaction.message.guildId || '' } }, update: { until }, create: { userId: ticket.userId, guildId: ticket.guildId || reaction.message.guildId || '', until } });
 
         await prisma.ticket.update({ where: { id: ticket.id }, data: { status: 'CLOSED', closedAt: new Date(), vouchExpiresAt: null } });
 

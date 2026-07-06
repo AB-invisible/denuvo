@@ -222,10 +222,11 @@ export async function checkStaleTickets(client: Client) {
             // Bug #13 fix: Apply a 24h cooldown for stale sessions to prevent abandonment spam
             const until = new Date();
             until.setTime(until.getTime() + (24 * 60 * 60 * 1000));
-            await prisma.cooldown.upsert({ 
-              where: { userId: ticket.userId }, 
-              update: { until }, 
-              create: { userId: ticket.userId, until } 
+            const staleGuildId = ticket.guildId || channel.guild?.id || '';
+            await prisma.cooldown.upsert({
+              where: { userId_guildId: { userId: ticket.userId, guildId: staleGuildId } },
+              update: { until },
+              create: { userId: ticket.userId, guildId: staleGuildId, until }
             });
 
             await prisma.ticket.update({
@@ -272,7 +273,7 @@ export async function cleanupExpiredCooldowns() {
       console.log(`[Scheduler] Processing missed vouch timeout for ticket ${ticket.id}`);
       const until = new Date();
       until.setTime(until.getTime() + (48 * 60 * 60 * 1000));
-      await prisma.cooldown.upsert({ where: { userId: ticket.userId }, update: { until }, create: { userId: ticket.userId, until } });
+      await prisma.cooldown.upsert({ where: { userId_guildId: { userId: ticket.userId, guildId: ticket.guildId || '' } }, update: { until }, create: { userId: ticket.userId, guildId: ticket.guildId || '', until } });
       
       await prisma.ticket.update({ where: { id: ticket.id }, data: { status: 'CLOSED', vouchExpiresAt: null } });
     }

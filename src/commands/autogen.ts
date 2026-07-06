@@ -52,7 +52,8 @@ export async function execute(interaction: any): Promise<void> {
     return;
   }
 
-  const setting = await prisma.metadata.findUnique({ where: { key: 'autoGenEnabled' } });
+  const autoGenKey = `autoGenEnabled:${interaction.guildId}`;
+  const setting = await prisma.metadata.findUnique({ where: { key: autoGenKey } });
   const currentlyEnabled = setting?.value !== 'false';
 
   if (!state) {
@@ -65,10 +66,10 @@ export async function execute(interaction: any): Promise<void> {
       : '';
 
     await interaction.editReply({
-      content: `🤖 **Auto-Generation Status:** ${currentlyEnabled ? '🟢 **ENABLED**' : '🔴 **PAUSED**'}\n\n` +
+      content: `🤖 **Auto-Generation Status (this server):** ${currentlyEnabled ? '🟢 **ENABLED**' : '🔴 **PAUSED**'}\n\n` +
         `• **When enabled:** bot auto-generates tokens after AI screenshot verification\n` +
         `• **When paused:** screenshots still get verified, but staff must deliver tokens manually\n\n` +
-        `Use \`/autogen state:off\` to pause globally, \`/autogen state:on\` to resume.\n` +
+        `Use \`/autogen state:off\` to pause, \`/autogen state:on\` to resume.\n` +
         `Use \`/autogen state:off game:<name>\` to pause one game only.` +
         pausedList
     });
@@ -78,28 +79,28 @@ export async function execute(interaction: any): Promise<void> {
   const enable = state === 'on';
   if (enable === currentlyEnabled) {
     await interaction.editReply({
-      content: `ℹ️ Auto-generation is already ${enable ? '🟢 enabled' : '🔴 paused'} globally. No change.`
+      content: `ℹ️ Auto-generation is already ${enable ? '🟢 enabled' : '🔴 paused'} in this server. No change.`
     });
     return;
   }
 
   await prisma.metadata.upsert({
-    where: { key: 'autoGenEnabled' },
+    where: { key: autoGenKey },
     update: { value: enable ? 'true' : 'false' },
-    create: { key: 'autoGenEnabled', value: enable ? 'true' : 'false' }
+    create: { key: autoGenKey, value: enable ? 'true' : 'false' }
   });
 
   await interaction.editReply({
     content: enable
-      ? `🟢 **Auto-Generation Resumed (Global).** Bot will now auto-generate tokens after screenshot verification.`
-      : `🔴 **Auto-Generation Paused (Global).** New tickets will still verify screenshots, but staff must deliver tokens manually (via \`/tokengen\` or by uploading a zip in the ticket channel).`
+      ? `🟢 **Auto-Generation Resumed.** Bot will now auto-generate tokens after screenshot verification in this server.`
+      : `🔴 **Auto-Generation Paused.** New tickets in this server will still verify screenshots, but staff must deliver tokens manually (via \`/tokengen\` or by uploading a zip in the ticket channel).`
   });
 
   if (interaction.guild) {
     await logAction(
       interaction.guild,
-      enable ? '🟢 Auto-Gen Resumed (Global)' : '🔴 Auto-Gen Paused (Global)',
-      `Staff ${interaction.user} ${enable ? 'enabled' : 'paused'} automatic token generation globally.`,
+      enable ? '🟢 Auto-Gen Resumed' : '🔴 Auto-Gen Paused',
+      `Staff ${interaction.user} ${enable ? 'enabled' : 'paused'} automatic token generation in this server.`,
       enable ? 0x57F287 : 0xED4245
     );
   }

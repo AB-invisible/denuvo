@@ -5,7 +5,7 @@ import { createProfileEmbed } from '../utils/embeds';
 import { getTrustScore } from '../utils/trustScore';
 
 export async function execute(interaction: any): Promise<void> {
-  const cooldown = await prisma.cooldown.findUnique({ where: { userId: interaction.user.id } });
+  const cooldown = await prisma.cooldown.findUnique({ where: { userId_guildId: { userId: interaction.user.id, guildId: interaction.guildId || '' } } });
   const subs = await getUserSubscriptions(interaction.user.id);
   const total = await prisma.ticket.count({ where: { userId: interaction.user.id, status: 'CLOSED' } });
   const trustInfo = await getTrustScore(interaction.user.id);

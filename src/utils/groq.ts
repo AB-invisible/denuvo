@@ -74,6 +74,8 @@ INSTRUCTIONS:
 - For WUB, examine the icon color, not the text labels.
 - For File Explorer, accept partial matches and codenames.
 - All three windows must be VISIBLE in the same screenshot.
+- If ANY of the three requirements is missing, unclear, or you are uncertain, answer NO.
+- When in doubt, ALWAYS default to NO. Only answer YES when ALL three requirements are clearly and unambiguously met.
 
 OUTPUT FORMAT:
 REASONING: [Explain your findings for each requirement; for WUB, name the shield color you see]
@@ -105,9 +107,9 @@ ANSWER: [YES or NO]`,
     if (answerMatch) {
       isValid = answerMatch[1].toUpperCase() === 'YES';
     } else {
-      // Fallback if ANSWER tag is missing but YES is present in the text
-      isValid = rawResult.toUpperCase().includes('ANSWER: YES') || 
-                (rawResult.toUpperCase().includes('YES') && !rawResult.toUpperCase().includes('NO'));
+      // No structured ANSWER tag found — default to rejection for safety
+      console.warn('[Groq] No ANSWER tag in response, defaulting to NO');
+      isValid = false;
     }
 
     const reasoning = reasoningMatch 

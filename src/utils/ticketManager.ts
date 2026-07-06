@@ -129,7 +129,7 @@ export async function createTicket(interaction: StringSelectMenuInteraction, gam
     // --- ATOMIC TRANSACTION START ---
     const result = await prisma.$transaction(async (tx) => {
       const now = new Date();
-      const cooldown = await tx.cooldown.findUnique({ where: { userId: interaction.user.id } });
+      const cooldown = await tx.cooldown.findUnique({ where: { userId_guildId: { userId: interaction.user.id, guildId: interaction.guildId || '' } } });
       if (cooldown && cooldown.until > now) {
         const hoursLeft = (cooldown.until.getTime() - now.getTime()) / (1000 * 60 * 60);
 
@@ -138,7 +138,8 @@ export async function createTicket(interaction: StringSelectMenuInteraction, gam
           return { error: `🚨 **Access Revoked:** Your activation privileges have been permanently terminated due to multiple **failed denuvo checks**.` };
         }
 
-        return { error: `❌ **Security Cooldown Active:** Please wait **${Math.ceil(hoursLeft)} hour(s)** before opening a new session.` };
+        const exp = Math.floor(cooldown.until.getTime() / 1000);
+        return { error: `❌ **Security Cooldown Active:** You can open a new session <t:${exp}:R>.` };
       }
 
       // We've already handled the orphan-cleanup case above. This is a
@@ -502,9 +503,10 @@ export async function handleDeductionChoice(interaction: ButtonInteraction, choi
     await consumeStock(ticket.gameId).catch(console.error);
   }
 
+  const effectiveGuildId = ticket.guildId || interaction.guildId || '';
   const until = new Date();
   until.setTime(until.getTime() + (hours * 60 * 60 * 1000));
-  await prisma.cooldown.upsert({ where: { userId: ticket.userId }, update: { until }, create: { userId: ticket.userId, until } });
+  await prisma.cooldown.upsert({ where: { userId_guildId: { userId: ticket.userId, guildId: effectiveGuildId } }, update: { until }, create: { userId: ticket.userId, guildId: effectiveGuildId, until } });
 
   await prisma.ticket.update({
     where: { channelId: interaction.channelId },
@@ -551,9 +553,10 @@ export async function handleCooldownSelection(interaction: StringSelectMenuInter
     await consumeStock(ticket.gameId).catch(console.error);
   }
 
+  const csGuildId = ticket.guildId || interaction.guildId || '';
   const until = new Date();
   until.setTime(until.getTime() + (hours * 60 * 60 * 1000));
-  await prisma.cooldown.upsert({ where: { userId: ticket.userId }, update: { until }, create: { userId: ticket.userId, until } });
+  await prisma.cooldown.upsert({ where: { userId_guildId: { userId: ticket.userId, guildId: csGuildId } }, update: { until }, create: { userId: ticket.userId, guildId: csGuildId, until } });
   
   await prisma.ticket.update({ 
     where: { channelId: interaction.channelId }, 
@@ -590,10 +593,11 @@ export async function handleCooldownSelection(interaction: StringSelectMenuInter
   setTimeout(() => interaction.channel?.delete().catch(() => {}), 5000);
 }
 
-export async function triggerSessionFailure(channelId: string, userId: string, channel: TextChannel | null, isTimeout: boolean = true) {
+export async function triggerSessionFailure(channelId: string, userId: string, channel: TextChannel | null, isTimeout: boolean = true, guildId: string = '') {
   const until = new Date();
   until.setTime(until.getTime() + (48 * 60 * 60 * 1000));
-  await prisma.cooldown.upsert({ where: { userId }, update: { until }, create: { userId, until } });
+  const effectiveGuildId = guildId || channel?.guild?.id || '';
+  await prisma.cooldown.upsert({ where: { userId_guildId: { userId, guildId: effectiveGuildId } }, update: { until }, create: { userId, guildId: effectiveGuildId, until } });
 
   await prisma.ticket.update({ where: { channelId }, data: { status: 'CLOSED', closedAt: new Date() } });
 
@@ -605,17 +609,17 @@ export async function triggerSessionFailure(channelId: string, userId: string, c
     if (failures >= 3) {
       const permanentDate = new Date();
       permanentDate.setFullYear(permanentDate.getFullYear() + 99);
-      await prisma.cooldown.upsert({ 
-        where: { userId }, 
-        update: { until: permanentDate }, 
-        create: { userId, until: permanentDate } 
+      await prisma.cooldown.upsert({
+        where: { userId_guildId: { userId, guildId: effectiveGuildId } },
+        update: { until: permanentDate },
+        create: { userId, guildId: effectiveGuildId, until: permanentDate }
       });
 
       setTimeout(() => channel.delete().catch(() => {}), 10000);
     } else {
       const reason = isTimeout ? 'Verification not completed.' : 'Verification failed.';
-      await channel.send({ 
-        content: `⌛ **Session Expired:** ${reason} Applying a 48-hour cooldown. (Failure count: **${failures}/3**)` 
+      await channel.send({
+        content: `⌛ **Session Expired:** ${reason} Applying a 48-hour cooldown. (Failure count: **${failures}/3**)`
       }).catch(() => {});
 
       if (channel.guild) {
@@ -649,7 +653,7 @@ export async function autoCloseTicketForVerificationTimeout(channelId: string, g
       }
     }
 
-    await triggerSessionFailure(channelId, userId, channel, true);
+    await triggerSessionFailure(channelId, userId, channel, true, ticket.guildId || guild.id);
 
     pendingVerificationTimers.delete(channelId);
     await refreshAllPanels();

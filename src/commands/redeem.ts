@@ -25,7 +25,7 @@ export async function execute(interaction: any): Promise<void> {
   }
 
   if (promo.effect === 'cooldown_reset') {
-    await prisma.cooldown.deleteMany({ where: { userId: interaction.user.id } });
+    await prisma.cooldown.deleteMany({ where: { userId: interaction.user.id, guildId: interaction.guildId || '' } });
 
     await prisma.promoRedemption.create({
       data: { userId: interaction.user.id, promoId: promo.id },
