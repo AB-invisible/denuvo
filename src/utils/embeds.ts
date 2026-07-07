@@ -12,7 +12,7 @@ export type GameWithCount = Game & {
   };
 };
 
-export async function createMainPanel() {
+export async function createMainPanel(guildId?: string) {
   const allGames = await getActiveGames() as GameWithCount[];
   const now = new Date();
 
@@ -22,8 +22,21 @@ export async function createMainPanel() {
   });
   const waitlistMap = new Map(waitlistCounts.map(w => [w.gameId, w._count]));
 
+  // Per-server reserved counts: only count tickets from this server
+  let serverReservedMap: Map<number, number> | null = null;
+  if (guildId) {
+    const serverCounts = await prisma.ticket.groupBy({
+      by: ['gameId'],
+      where: { guildId, status: { in: ['OPEN', 'CLAIMED'] } },
+      _count: true,
+    });
+    serverReservedMap = new Map(serverCounts.map(c => [c.gameId, c._count]));
+  }
+
   const totalStock = allGames.reduce((acc: number, game: GameWithCount) => acc + game.stock, 0);
-  const totalReserved = allGames.reduce((acc: number, game: GameWithCount) => acc + (game._count?.tickets || 0), 0);
+  const totalReserved = allGames.reduce((acc: number, game: GameWithCount) => {
+    return acc + (serverReservedMap ? (serverReservedMap.get(game.id) || 0) : (game._count?.tickets || 0));
+  }, 0);
   const totalGames = allGames.length;
 
   const waitTime = await getEstimatedWaitTime();
@@ -64,8 +77,8 @@ export async function createMainPanel() {
       .setPlaceholder(`🎮 Browse Games [${startLetter}-${endLetter}]`)
       .addOptions(
         chunk.map((game: GameWithCount) => {
-          const reserved = game._count?.tickets || 0;
-          const availableStock = Math.max(0, game.stock - reserved);
+          const reserved = serverReservedMap ? (serverReservedMap.get(game.id) || 0) : (game._count?.tickets || 0);
+          const availableStock = Math.max(0, game.stock - (game._count?.tickets || 0));
           const queueCount = waitlistMap.get(game.id) || 0;
 
           let emoji = '🔴';
