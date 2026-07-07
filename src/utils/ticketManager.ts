@@ -604,7 +604,7 @@ export async function triggerSessionFailure(channelId: string, userId: string, c
 
   if (channel) {
     const failures = await prisma.ticket.count({
-      where: { userId, status: 'CLOSED', screenshotVerified: false }
+      where: { userId, guildId: effectiveGuildId, status: 'CLOSED', screenshotVerified: false }
     });
 
     if (failures >= 3) {

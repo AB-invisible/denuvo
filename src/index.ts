@@ -334,9 +334,9 @@ async function applyVouchTimeoutStrike(ticketId: number, userId: string, channel
     }
   });
 
-  // Count strikes (CLOSED tickets with screenshotVerified=false)
+  // Count strikes (CLOSED tickets with screenshotVerified=false) — per-server
   const failures = await prisma.ticket.count({
-    where: { userId, status: 'CLOSED', screenshotVerified: false }
+    where: { userId, guildId, status: 'CLOSED', screenshotVerified: false }
   });
 
   let permanentBan = false;

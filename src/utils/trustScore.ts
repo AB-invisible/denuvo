@@ -14,10 +14,11 @@ const TRUST_RANKS: { min: number; label: string }[] = [
   { min: -Infinity, label: '🔴 Flagged' },
 ];
 
-export async function getTrustScore(userId: string): Promise<TrustInfo> {
+export async function getTrustScore(userId: string, guildId?: string): Promise<TrustInfo> {
+  const guildFilter = guildId ? { guildId } : {};
   const [successes, failures] = await Promise.all([
-    prisma.ticket.count({ where: { userId, status: 'CLOSED', screenshotVerified: true } }),
-    prisma.ticket.count({ where: { userId, status: 'CLOSED', screenshotVerified: false } }),
+    prisma.ticket.count({ where: { userId, ...guildFilter, status: 'CLOSED', screenshotVerified: true } }),
+    prisma.ticket.count({ where: { userId, ...guildFilter, status: 'CLOSED', screenshotVerified: false } }),
   ]);
 
   const score = (successes * 10) + (failures * -20);

@@ -4,7 +4,7 @@ import { getTrustScore } from '../utils/trustScore';
 export async function execute(interaction: any): Promise<void> {
   const user = interaction.options.getUser('user')!;
 
-  const trust = await getTrustScore(user.id);
+  const trust = await getTrustScore(user.id, interaction.guildId || '');
 
   const embed = new EmbedBuilder()
     .setTitle(`🛡️ Trust Score — ${user.username}`)
@@ -20,7 +20,7 @@ export async function execute(interaction: any): Promise<void> {
     .setColor(trust.score >= 50 ? 0x57F287 : trust.score >= 0 ? 0x5865F2 : 0xED4245)
     .setDescription(
       trust.score >= 50
-        ? '⭐ **Trusted User** — AI verification is skipped for this user.'
+        ? '⭐ **Trusted User** — This user has a strong verification history.'
         : trust.score < 0
           ? '🔴 **Flagged** — This user has more failures than successes.'
           : 'Standard verification applies for this user.'
