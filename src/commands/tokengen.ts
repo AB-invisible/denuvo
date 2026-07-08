@@ -30,7 +30,7 @@ export async function execute(interaction: any): Promise<void> {
   await interaction.editReply({ embeds: [startEmbed] });
 
   let poolAccountId: number | null = null;
-  let accountOverride: { login: string; password: string } | undefined;
+  let accountOverride: { login: string; password: string; token?: string } | undefined;
   if (interaction.guildId === CONFIG.OWNER_GUILD_ID) {
     const picked = await pickOwnerAccount(game.appId);
     if (picked.exhausted) {
@@ -38,14 +38,16 @@ export async function execute(interaction: any): Promise<void> {
     }
     if (picked.account) {
       poolAccountId = picked.account.id;
-      accountOverride = { login: picked.account.login, password: picked.account.password };
+      accountOverride = { login: picked.account.login, password: picked.account.password, token: picked.account.token };
     }
   }
 
   try {
-    const { zipPath, logs, installerKey, ticketHash, expectedHmac, appIdBound } = await generateToken(game.appId, game.name, interaction.guildId, accountOverride);
+    const { zipPath, logs, installerKey, ticketHash, expectedHmac, appIdBound, usedFallbackAccount } = await generateToken(game.appId, game.name, interaction.guildId, accountOverride);
     console.log(`[TokenGen-Cmd] Logs for ${game.name}:\n${logs}`);
-    if (poolAccountId) await recordOwnerUsage(poolAccountId, game.appId);
+    // Only charge the pool account's daily quota if IT actually produced the
+    // token — a fallback to the global env account doesn't count against it.
+    if (poolAccountId && zipPath && !usedFallbackAccount) await recordOwnerUsage(poolAccountId, game.appId);
 
     if (!zipPath) {
       const failEmbed = new EmbedBuilder()

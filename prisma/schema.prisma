@@ -245,6 +245,7 @@ model SteampassAccount {
   label     String?               // human label, e.g. "acct-1"
   login     String   @unique      // steampass email
   password  String                // steampass password
+  token     String   @default("") // cached bearer token — lets this account skip /auth/login (set via /setsteampass account:<id>)
   active    Boolean  @default(true)
   priority  Int      @default(100) // lower = tried first
   createdAt DateTime @default(now())

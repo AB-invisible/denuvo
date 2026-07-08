@@ -325,7 +325,7 @@ export async function handleTenantCommand(interaction: any): Promise<boolean> {
       const status = await getPoolStatus();
       if (!status.length) { await interaction.editReply({ content: 'Pool is empty. Owner server falls back to the global env account.' }); return true; }
       const cap = CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
-      const lines = status.map(a => `${a.active ? '🟢' : '⏸️'} \`${a.login}\`${a.label ? ` (${a.label})` : ''} — used today: **${a.usedToday}** (cap ${cap}/game)`).join('\n');
+      const lines = status.map(a => `${a.active ? '🟢' : '⏸️'} \`#${a.id}\` \`${a.login}\`${a.label ? ` (${a.label})` : ''} — used today: **${a.usedToday}** (cap ${cap}/game) ${a.hasToken ? '🔑 token cached' : '⚠️ no token (uses /auth/login)'}`).join('\n');
       const embed = new EmbedBuilder().setTitle('🔑 Steampass Pool').setDescription(lines.slice(0, 4000)).setColor(0x5865F2);
       await interaction.editReply({ embeds: [embed] });
       return true;

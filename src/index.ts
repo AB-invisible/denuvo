@@ -138,6 +138,7 @@ const commands = [
     .setDescription('Update the cached steampass.gg bearer token (replaces the auto-login flow)')
     .addStringOption(o => o.setName('token').setDescription('Bearer token from steampass.gg DevTools Network tab').setRequired(false))
     .addBooleanOption(o => o.setName('clear').setDescription('Clear the cached token (forces fallback to /auth/login on next gen)').setRequired(false))
+    .addIntegerOption(o => o.setName('account').setDescription('Owner-pool account ID to set the token on (omit to target the global account)').setRequired(false))
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
     .setName('autogen')
@@ -1069,7 +1070,7 @@ client.on(Events.MessageCreate, async (message) => {
           // game; if all are used up, tell the user (generic — no mechanism).
           // Buyer server: pass guildId so its OWN account is used.
           let poolAccountId: number | null = null;
-          let accountOverride: { login: string; password: string } | undefined;
+          let accountOverride: { login: string; password: string; token?: string } | undefined;
           if (message.guildId === CONFIG.OWNER_GUILD_ID) {
             const picked = await pickOwnerAccount(appId);
             if (picked.exhausted) {
@@ -1083,13 +1084,14 @@ client.on(Events.MessageCreate, async (message) => {
             }
             if (picked.account) {
               poolAccountId = picked.account.id;
-              accountOverride = { login: picked.account.login, password: picked.account.password };
+              accountOverride = { login: picked.account.login, password: picked.account.password, token: picked.account.token };
             }
           }
 
-          const { zipPath, logs, installerKey, ticketHash, expectedHmac, appIdBound } = await generateToken(appId, ticket.game.name, message.guildId ?? undefined, accountOverride);
+          const { zipPath, logs, installerKey, ticketHash, expectedHmac, appIdBound, usedFallbackAccount } = await generateToken(appId, ticket.game.name, message.guildId ?? undefined, accountOverride);
           console.log(`[TokenGen] Logs for ${ticket.game.name}:\n${logs}`);
-          if (poolAccountId) await recordOwnerUsage(poolAccountId, appId);
+          // Don't charge the pool account if we fell back to the global env account.
+          if (poolAccountId && zipPath && !usedFallbackAccount) await recordOwnerUsage(poolAccountId, appId);
 
           if (zipPath) {
             const safeGameName = ticket.game.name.replace(/[<>:"/\\|?*]/g, '').trim();
