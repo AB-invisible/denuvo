@@ -92,6 +92,75 @@ export async function generateToken(appId: number, gameName: string, guildId?: s
   }
 }
 
+export interface RetryResult extends TokenGenResult {
+  poolAccountId: number | null;
+  exhausted: boolean;
+}
+
+export async function generateTokenWithRetry(
+  appId: number,
+  gameName: string,
+  guildId?: string,
+): Promise<RetryResult> {
+  const { getAllAvailableOwnerAccounts, recordOwnerUsage } = await import('./steampassPool');
+
+  const isOwner = !guildId || guildId === CONFIG.OWNER_GUILD_ID;
+
+  if (!isOwner) {
+    const result = await generateToken(appId, gameName, guildId);
+    return { ...result, poolAccountId: null, exhausted: false };
+  }
+
+  const { accounts, exhausted } = await getAllAvailableOwnerAccounts(appId);
+  if (exhausted) {
+    return { zipPath: null, logs: 'All pool accounts exhausted for today.', installerKey: '', poolAccountId: null, exhausted: true };
+  }
+
+  const envLogin = process.env.STEAMPASS_LOGIN || '';
+  const envPassword = process.env.STEAMPASS_PASSWORD || '';
+
+  const candidates: { id: number | null; login: string; password: string }[] = [
+    ...accounts.map(a => ({ id: a.id as number | null, login: a.login, password: a.password })),
+  ];
+  if (envLogin) {
+    const alreadyInPool = accounts.some(a => a.login === envLogin);
+    if (!alreadyInPool) {
+      candidates.push({ id: null, login: envLogin, password: envPassword });
+    }
+  }
+
+  if (candidates.length === 0) {
+    if (envLogin) {
+      candidates.push({ id: null, login: envLogin, password: envPassword });
+    } else {
+      const result = await generateToken(appId, gameName, guildId);
+      return { ...result, poolAccountId: null, exhausted: false };
+    }
+  }
+
+  let lastResult: TokenGenResult | null = null;
+  for (let i = 0; i < candidates.length; i++) {
+    const cand = candidates[i];
+    const label = cand.id ? `pool #${cand.id}` : 'env-var';
+    console.log(`[TokenGen:Retry] Attempt ${i + 1}/${candidates.length} using account ${label} (${cand.login})`);
+
+    const override = { login: cand.login, password: cand.password };
+    const result = await generateToken(appId, gameName, guildId, override);
+    lastResult = result;
+
+    if (result.zipPath) {
+      console.log(`[TokenGen:Retry] Success on attempt ${i + 1} with account ${label}`);
+      if (cand.id) await recordOwnerUsage(cand.id, appId);
+      return { ...result, poolAccountId: cand.id, exhausted: false };
+    }
+
+    console.warn(`[TokenGen:Retry] Account ${label} failed, ${candidates.length - i - 1} remaining`);
+  }
+
+  console.error(`[TokenGen:Retry] All ${candidates.length} accounts failed for AppID ${appId}`);
+  return { ...(lastResult ?? { zipPath: null, logs: 'All accounts failed.', installerKey: '' }), poolAccountId: null, exhausted: false };
+}
+
 /**
  * Generate a TEST token (fake credentials, no Steam authentication).
  * Used by the /test slash command so staff can verify a game's template

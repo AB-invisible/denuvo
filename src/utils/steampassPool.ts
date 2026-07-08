@@ -118,7 +118,7 @@ export async function getAllAvailableOwnerAccounts(
       used = 0;
     }
     if (used < cap) {
-      available.push({ id: acct.id, login: acct.login, password: acct.password });
+      available.push({ id: acct.id, login: acct.login, password: acct.password, token: (acct.token || '').trim() });
     }
   }
 
