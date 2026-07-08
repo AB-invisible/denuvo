@@ -51,7 +51,7 @@ const commands = [
     .setDescription('Manage game stock')
     .addSubcommand(sub => sub.setName('add').setDescription('Add stock to a game').addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true)).addIntegerOption(o => o.setName('amount').setDescription('Amount to add').setRequired(true)))
     .addSubcommand(sub => sub.setName('remove').setDescription('Remove stock from a game').addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true)).addIntegerOption(o => o.setName('amount').setDescription('Amount to remove').setRequired(true)))
-    .addSubcommand(sub => sub.setName('set').setDescription('Set stock for a game').addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true)).addIntegerOption(o => o.setName('amount').setDescription('Specific amount to set').setRequired(true)))
+    .addSubcommand(sub => sub.setName('set').setDescription('Set stock for a game (or all games)').addStringOption(o => o.setName('game').setDescription('Game name, or "ALL" to apply to every game').setRequired(true).setAutocomplete(true)).addIntegerOption(o => o.setName('amount').setDescription('Specific amount to set').setRequired(true)))
     .addSubcommand(sub => sub.setName('clear').setDescription('Clear stock for a game').addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true)))
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
@@ -69,7 +69,7 @@ const commands = [
   new SlashCommandBuilder()
     .setName('settokens')
     .setDescription('Set how many tokens are left for a game (alias of /stock set)')
-    .addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true))
+    .addStringOption(o => o.setName('game').setDescription('Game name, or "ALL" to apply to every game').setRequired(true).setAutocomplete(true))
     .addIntegerOption(o => o.setName('amount').setDescription('Number of tokens to set').setRequired(true).setMinValue(0))
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
@@ -619,7 +619,12 @@ async function handleAutocomplete(interaction: any) {
 
     // Bulk-capable commands accept "ALL" to act on every game. Surface it as
     // the first autocomplete suggestion when the input is empty or matches "a".
-    const bulkCapable = interaction.commandName === 'setmode' || interaction.commandName === 'getmode' || interaction.commandName === 'exclude-auto';
+    const bulkCapable =
+      interaction.commandName === 'setmode' ||
+      interaction.commandName === 'getmode' ||
+      interaction.commandName === 'exclude-auto' ||
+      interaction.commandName === 'settokens' ||
+      (interaction.commandName === 'stock' && interaction.options.getSubcommand() === 'set');
     if (bulkCapable) {
       const f = focusedValue.toLowerCase();
       if (f === '' || 'all'.startsWith(f)) {
