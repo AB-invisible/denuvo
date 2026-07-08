@@ -51,7 +51,7 @@ const commands = [
     .setDescription('Manage game stock')
     .addSubcommand(sub => sub.setName('add').setDescription('Add stock to a game').addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true)).addIntegerOption(o => o.setName('amount').setDescription('Amount to add').setRequired(true)))
     .addSubcommand(sub => sub.setName('remove').setDescription('Remove stock from a game').addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true)).addIntegerOption(o => o.setName('amount').setDescription('Amount to remove').setRequired(true)))
-    .addSubcommand(sub => sub.setName('set').setDescription('Set stock for a game (or all games)').addStringOption(o => o.setName('game').setDescription('Game name, or "ALL" to apply to every game').setRequired(true).setAutocomplete(true)).addIntegerOption(o => o.setName('amount').setDescription('Specific amount to set').setRequired(true)))
+    .addSubcommand(sub => sub.setName('set').setDescription('Set stock for a game').addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true)).addIntegerOption(o => o.setName('amount').setDescription('Specific amount to set').setRequired(true)))
     .addSubcommand(sub => sub.setName('clear').setDescription('Clear stock for a game').addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true)))
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
@@ -69,7 +69,7 @@ const commands = [
   new SlashCommandBuilder()
     .setName('settokens')
     .setDescription('Set how many tokens are left for a game (alias of /stock set)')
-    .addStringOption(o => o.setName('game').setDescription('Game name, or "ALL" to apply to every game').setRequired(true).setAutocomplete(true))
+    .addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true))
     .addIntegerOption(o => o.setName('amount').setDescription('Number of tokens to set').setRequired(true).setMinValue(0))
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
@@ -92,8 +92,8 @@ const commands = [
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
     .setName('exclude-auto')
-    .setDescription('Toggle a game or ALL games from automatic stock regeneration')
-    .addStringOption(o => o.setName('game').setDescription('Game name, or "ALL" to apply to every game').setRequired(true).setAutocomplete(true))
+    .setDescription('Toggle a game\'s exclusion from automatic stock regeneration')
+    .addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true))
     .addStringOption(o => o.setName('state').setDescription('On = exclude from regen, Off = allow regen').setRequired(true).addChoices({ name: 'On (Exclude)', value: 'on' }, { name: 'Off (Allow Regen)', value: 'off' }))
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
@@ -101,6 +101,11 @@ const commands = [
     .setDescription('Bulk deplete game tokens')
     .addSubcommand(sub => sub.setName('all').setDescription('Set token count to 0 for every game'))
     .addSubcommand(sub => sub.setName('game').setDescription('Set token count to 0 for a single game').addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true)))
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+  new SlashCommandBuilder()
+    .setName('restockall')
+    .setDescription('Set all games to a specified token count in this server')
+    .addIntegerOption(o => o.setName('amount').setDescription('Tokens per game (default 5)'))
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
     .setName('simulate')
@@ -138,7 +143,6 @@ const commands = [
     .setDescription('Update the cached steampass.gg bearer token (replaces the auto-login flow)')
     .addStringOption(o => o.setName('token').setDescription('Bearer token from steampass.gg DevTools Network tab').setRequired(false))
     .addBooleanOption(o => o.setName('clear').setDescription('Clear the cached token (forces fallback to /auth/login on next gen)').setRequired(false))
-    .addIntegerOption(o => o.setName('account').setDescription('Owner-pool account ID to set the token on (omit to target the global account)').setRequired(false))
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
     .setName('autogen')
@@ -250,7 +254,7 @@ async function registerCommands(targetGuildId?: string) {
     const addsupport = ADDSUPPORT_COMMAND.toJSON();
 
     const tenantCommands = [
-      ...commands.filter((c: any) => c.name !== 'test' && c.name !== 'simulate' && c.name !== 'deplet' && c.name !== 'lowstock' && c.name !== 'setsteampass' && c.name !== 'game' && c.name !== 'removegame' && c.name !== 'autogen' && c.name !== 'stock' && c.name !== 'settokens' && c.name !== 'exclude-auto' && c.name !== 'setmode' && c.name !== 'getmode' && c.name !== 'promo' && c.name !== 'requests' && c.name !== 'staffstats'),
+      ...commands.filter((c: any) => c.name !== 'test' && c.name !== 'simulate' && c.name !== 'deplet' && c.name !== 'lowstock' && c.name !== 'setsteampass' && c.name !== 'game' && c.name !== 'removegame' && c.name !== 'autogen' && c.name !== 'stock' && c.name !== 'settokens' && c.name !== 'exclude-auto' && c.name !== 'setmode' && c.name !== 'getmode' && c.name !== 'promo' && c.name !== 'requests' && c.name !== 'staffstats' && c.name !== 'restockall'),
       setlogs,
       setvouch,
       addsupport,
@@ -517,25 +521,30 @@ client.on('interactionCreate', async (interaction) => {
 
       try {
         const sub = interaction.options.getSubcommand();
+        const depletGuildId = interaction.guildId || '';
         if (sub === 'all') {
           const depletedAt = new Date();
-          const [gamesResult, restocksResult] = await prisma.$transaction([
-            prisma.game.updateMany({ data: { stock: 0, lastDepletedAt: depletedAt } }),
-            prisma.restock.deleteMany({}),
+          const [stockResult, restocksResult] = await prisma.$transaction([
+            prisma.serverStock.updateMany({ where: { guildId: depletGuildId }, data: { stock: 0, lastDepletedAt: depletedAt } }),
+            prisma.restock.deleteMany({ where: { guildId: depletGuildId } }),
           ]);
           await refreshAllPanels();
           await interaction.editReply({
-            content: `✅ **All tokens depleted:** Set \`${gamesResult.count}\` game(s) to \`0\` token(s). Cleared \`${restocksResult.count}\` pending restock(s).`,
+            content: `✅ **All tokens depleted:** Set \`${stockResult.count}\` game(s) to \`0\` token(s). Cleared \`${restocksResult.count}\` pending restock(s).`,
           });
-          logAction(interaction.guild!, '🗑️ Deplet All', `**${interaction.user.tag}** depleted all games (${gamesResult.count}) and cleared ${restocksResult.count} restocks`, 0xFF0000);
+          logAction(interaction.guild!, '🗑️ Deplet All', `**${interaction.user.tag}** depleted all games (${stockResult.count}) and cleared ${restocksResult.count} restocks`, 0xFF0000);
         } else if (sub === 'game') {
           const gameName = interaction.options.getString('game', true);
           const game = await prisma.game.findUnique({ where: { name: gameName } });
           if (!game) {
             await interaction.editReply({ content: `❌ **Not Found:** Game **${gameName}** does not exist.` });
           } else {
-            await prisma.game.update({ where: { id: game.id }, data: { stock: 0, lastDepletedAt: new Date() } });
-            await prisma.restock.deleteMany({ where: { gameId: game.id } });
+            await prisma.serverStock.upsert({
+              where: { gameId_guildId: { gameId: game.id, guildId: depletGuildId } },
+              update: { stock: 0, lastDepletedAt: new Date() },
+              create: { gameId: game.id, guildId: depletGuildId, stock: 0, lastDepletedAt: new Date() },
+            });
+            await prisma.restock.deleteMany({ where: { gameId: game.id, guildId: depletGuildId } });
             await refreshAllPanels();
             await interaction.editReply({
               content: `✅ **${game.name}** depleted: set to \`0\` tokens.`,
@@ -618,14 +627,9 @@ async function handleAutocomplete(interaction: any) {
 
     const entries = games.map((g: { name: string }) => ({ name: g.name, value: g.name }));
 
-    // Bulk-capable commands accept "ALL" to act on every game. Surface it as
+    // /setmode and /getmode accept "ALL" to act on every game. Surface it as
     // the first autocomplete suggestion when the input is empty or matches "a".
-    const bulkCapable =
-      interaction.commandName === 'setmode' ||
-      interaction.commandName === 'getmode' ||
-      interaction.commandName === 'exclude-auto' ||
-      interaction.commandName === 'settokens' ||
-      (interaction.commandName === 'stock' && interaction.options.getSubcommand() === 'set');
+    const bulkCapable = interaction.commandName === 'setmode' || interaction.commandName === 'getmode';
     if (bulkCapable) {
       const f = focusedValue.toLowerCase();
       if (f === '' || 'all'.startsWith(f)) {
@@ -1070,7 +1074,7 @@ client.on(Events.MessageCreate, async (message) => {
           // game; if all are used up, tell the user (generic — no mechanism).
           // Buyer server: pass guildId so its OWN account is used.
           let poolAccountId: number | null = null;
-          let accountOverride: { login: string; password: string; token?: string } | undefined;
+          let accountOverride: { login: string; password: string } | undefined;
           if (message.guildId === CONFIG.OWNER_GUILD_ID) {
             const picked = await pickOwnerAccount(appId);
             if (picked.exhausted) {
@@ -1084,14 +1088,13 @@ client.on(Events.MessageCreate, async (message) => {
             }
             if (picked.account) {
               poolAccountId = picked.account.id;
-              accountOverride = { login: picked.account.login, password: picked.account.password, token: picked.account.token };
+              accountOverride = { login: picked.account.login, password: picked.account.password };
             }
           }
 
-          const { zipPath, logs, installerKey, ticketHash, expectedHmac, appIdBound, usedFallbackAccount } = await generateToken(appId, ticket.game.name, message.guildId ?? undefined, accountOverride);
+          const { zipPath, logs, installerKey, ticketHash, expectedHmac, appIdBound } = await generateToken(appId, ticket.game.name, message.guildId ?? undefined, accountOverride);
           console.log(`[TokenGen] Logs for ${ticket.game.name}:\n${logs}`);
-          // Don't charge the pool account if we fell back to the global env account.
-          if (poolAccountId && zipPath && !usedFallbackAccount) await recordOwnerUsage(poolAccountId, appId);
+          if (poolAccountId) await recordOwnerUsage(poolAccountId, appId);
 
           if (zipPath) {
             const safeGameName = ticket.game.name.replace(/[<>:"/\\|?*]/g, '').trim();
@@ -1428,7 +1431,7 @@ client.on(Events.MessageCreate, async (message) => {
           });
 
           // Deduct one token from stock
-          await consumeStock(ticket.gameId).catch((e) => console.error('[VouchAuto] consumeStock failed:', e));
+          await consumeStock(ticket.gameId, ticket.guildId || message.guildId || '').catch((e) => console.error('[VouchAuto] consumeStock failed:', e));
 
           // Close ticket
           await prisma.ticket.update({

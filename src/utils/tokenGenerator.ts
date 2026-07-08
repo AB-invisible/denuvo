@@ -63,31 +63,6 @@ export interface TokenGenResult {
   ticketHash?: string;
   expectedHmac?: string;
   appIdBound?: number;
-  /** True when the owner-pool account couldn't authenticate with steampass
-   * and we fell back to the pre-given global env account. Callers use this
-   * to avoid charging the pool account's daily quota for a gen it didn't
-   * actually perform. */
-  usedFallbackAccount?: boolean;
-}
-
-/**
- * Heuristic: did this run fail because the steampass ACCOUNT itself is
- * unusable (bad/invalid login, email-code required, rate-limit, IP-ban,
- * or a 4xx from the credential/guard-code endpoints)? These are the cases
- * where retrying with a DIFFERENT account (the global env one) can succeed.
- * A generic Steam-side or packaging failure would NOT match, so we don't
- * pointlessly burn a second account on it.
- */
-function looksLikeSteampassAccountFailure(logs: string): boolean {
-  if (!logs) return false;
-  const s = logs.toLowerCase();
-  return (
-    s.includes('/auth/login returned http') ||
-    s.includes('неверный логин') ||
-    /steampass[^\n]*http\s*(401|403|422|429)/.test(s) ||
-    s.includes('steampass credentials api 4') ||
-    s.includes('steampass guard-code api 4')
-  );
 }
 
 /**
@@ -103,48 +78,18 @@ function looksLikeSteampassAccountFailure(logs: string): boolean {
  * with daily quota left for this game and passes it here; it wins over
  * the global env account.
  */
-export async function generateToken(appId: number, gameName: string, guildId?: string, accountOverride?: { login: string; password: string; token?: string }): Promise<TokenGenResult> {
+export async function generateToken(appId: number, gameName: string, guildId?: string, accountOverride?: { login: string; password: string }): Promise<TokenGenResult> {
   // Look up steampass UUID + generation mode from the database
   const game = await prisma.game.findFirst({ where: { appId } });
   const steampassUuid = game?.steampassUuid;
   const generationMode = (game as any)?.generationMode || 'gbe';
 
-  if (!steampassUuid) {
+  if (steampassUuid) {
+    return generateHeadless(appId, gameName, steampassUuid, generationMode, guildId, accountOverride);
+  } else {
     console.log(`[TokenGen] No steampass UUID for AppID ${appId}, falling back to legacy generator`);
     return generateLegacy(appId, gameName);
   }
-
-  const first = await generateHeadless(appId, gameName, steampassUuid, generationMode, guildId, accountOverride);
-
-  // Owner-pool → env fallback. If the picked pool account can't authenticate
-  // with steampass (422 invalid login / rate-limit / IP-ban), retry ONCE on
-  // the core/home server using the pre-given global env account
-  // (STEAMPASS_LOGIN/PASSWORD + its own cached bearer). Only kicks in when:
-  //   • we actually used a pool override,
-  //   • this is the owner/home guild (never a tenant — different account),
-  //   • an env account is configured and differs from the failed pool one,
-  //   • the failure looks account-related (not a generic Steam/pack error).
-  const isOwnerHome = !guildId || guildId === CONFIG.OWNER_GUILD_ID;
-  const envLogin = (process.env.STEAMPASS_LOGIN || '').trim();
-  if (
-    !first.zipPath &&
-    accountOverride?.login &&
-    isOwnerHome &&
-    envLogin &&
-    envLogin !== accountOverride.login.trim() &&
-    looksLikeSteampassAccountFailure(first.logs)
-  ) {
-    console.warn(`[TokenGen] Pool account '${accountOverride.login}' failed steampass auth — falling back to global env account '${envLogin}'.`);
-    const fallback = await generateHeadless(appId, gameName, steampassUuid, generationMode, guildId, undefined);
-    fallback.logs =
-      first.logs +
-      `\n\n[TokenGen] Pool account '${accountOverride.login}' failed steampass auth — retried with the global env account.\n` +
-      fallback.logs;
-    fallback.usedFallbackAccount = true;
-    return fallback;
-  }
-
-  return first;
 }
 
 /**
@@ -173,7 +118,7 @@ export async function generateTestToken(appId: number, gameName: string, guildId
  *   - "coldloader": V2 DLL hijack with coldloader.dll + proxy DLLs
  *   - "coldclientloader": V1 launcher with START_<game>.exe
  */
-function generateHeadless(appId: number, gameName: string, steampassUuid: string, generationMode: string = 'gbe', guildId?: string, accountOverride?: { login: string; password: string; token?: string }): Promise<TokenGenResult> {
+function generateHeadless(appId: number, gameName: string, steampassUuid: string, generationMode: string = 'gbe', guildId?: string, accountOverride?: { login: string; password: string }): Promise<TokenGenResult> {
   // Pre-generate the per-zip installer key NOW (before spawning Python)
   // so Python can embed it inside payload-manifest.json as `_sig`. The
   // SAME key gets handed back to the caller and persisted in
@@ -213,22 +158,18 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
       }
     }
 
-    // Load the cached steampass bearer token so Python can skip POST
-    // /auth/login entirely. Falls back gracefully if none exists — Python
-    // will then attempt a fresh login and surface a clear error if it 422s.
+    // Load the cached steampass bearer token from DB (Metadata table) so
+    // Python can skip POST /auth/login entirely. Set via /setsteampass.
+    // Falls back gracefully if the row doesn't exist — Python will then
+    // attempt a fresh login and surface a clear error if it 422s.
     //
-    // Each steampass account has its OWN bearer: reusing another account's
-    // bearer would auth as the wrong account. So the source depends on who
-    // we're authing as:
-    //   • Owner-pool override → the picked account's own cached token
-    //     (SteampassAccount.token, set via `/setsteampass account:<id>`).
-    //   • Home/owner global account → Metadata `steampass_token`
-    //     (set via `/setsteampass`).
-    //   • Tenant → no cached bearer; fresh /auth/login with its own creds.
+    // The cached bearer belongs to the GLOBAL (home) account only — a
+    // tenant has a different steampass account, so reusing the home
+    // bearer would auth as the wrong account. Tenants therefore skip the
+    // cached bearer and do a fresh /auth/login with their own creds.
+    // The owner-pool override also skips it (it's a different account too).
     let cachedToken = '';
-    if (accountOverride && accountOverride.login) {
-      cachedToken = (accountOverride.token || '').trim();
-    } else if (!isTenant) {
+    if (!isTenant && !(accountOverride && accountOverride.login)) {
       try {
         const row = await prisma.metadata.findUnique({ where: { key: 'steampass_token' } });
         cachedToken = (row?.value || '').trim();
