@@ -658,14 +658,29 @@ class SteampassClient:
             # Surface the actual API error message (credits exhausted, etc.)
             log(f"Steampass credentials API {resp.status_code} for UUID {product_uuid}: {resp.text[:500]}")
             resp.raise_for_status()
-        data = resp.json().get("data", {})
+        raw = resp.json()
+        data = raw.get("data", {})
+        # Log the response structure so we can detect API format changes
+        log(f"Steampass: raw response keys={list(raw.keys())}, "
+            f"data keys={list(data.keys())}")
         steam = data.get("steam", data)  # Handle both nested and flat responses
+        if steam is not data:
+            log(f"Steampass: using nested 'steam' object, keys={list(steam.keys())}")
         login = steam.get("login")
         password = steam.get("password")
         guarded = steam.get("guarded", True)
         if not login or not password:
+            log(f"Steampass: MISSING credentials! login={'set' if login else 'EMPTY'}, "
+                f"password={'set' if password else 'EMPTY'}, "
+                f"available keys={list(steam.keys())}")
             raise RuntimeError(f"No Steam credentials returned for {product_uuid}")
-        log(f"Steampass: got credentials (guarded={guarded})")
+        # Masked diagnostic: show username + password shape without
+        # revealing the actual password. Enough to tell if it's
+        # truncated, has weird chars, or is from the wrong account.
+        pw_preview = f"{password[0]}{'*' * (len(password) - 2)}{password[-1]}" if len(password) > 2 else "***"
+        log(f"Steampass: got credentials (login={login}, "
+            f"pw_len={len(password)}, pw_preview={pw_preview}, "
+            f"guarded={guarded})")
         return login, password, guarded
 
     def get_guard_code(self, product_uuid):
