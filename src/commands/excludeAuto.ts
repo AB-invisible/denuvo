@@ -7,6 +7,38 @@ export async function execute(interaction: any): Promise<void> {
   const state = interaction.options.getString('state')!;
   const exclude = state === 'on';
 
+  if (gameName.toUpperCase() === 'ALL') {
+    if (exclude) {
+      const [updated, deleted] = await prisma.$transaction([
+        prisma.game.updateMany({ data: { excludeRegen: true } }),
+        prisma.restock.deleteMany({}),
+      ]);
+
+      await interaction.editReply({
+        content: `🔒 **Bulk Regen Excluded:** Auto-regeneration is now stopped for **${updated.count}** game(s). Cleared **${deleted.count}** pending restock(s).`,
+      });
+
+      if (interaction.guild) {
+        await logAction(interaction.guild, '🔒 Bulk Regen Excluded',
+          `Staff ${interaction.user} stopped automatic stock regeneration for **all ${updated.count} game(s)** and cleared **${deleted.count}** pending restock(s).`,
+          0xED4245);
+      }
+    } else {
+      const updated = await prisma.game.updateMany({ data: { excludeRegen: false } });
+
+      await interaction.editReply({
+        content: `🔓 **Bulk Regen Enabled:** Auto-regeneration is now enabled for **${updated.count}** game(s).`,
+      });
+
+      if (interaction.guild) {
+        await logAction(interaction.guild, '🔓 Bulk Regen Enabled',
+          `Staff ${interaction.user} enabled automatic stock regeneration for **all ${updated.count} game(s)**.`,
+          0x57F287);
+      }
+    }
+    return;
+  }
+
   const game = await prisma.game.findUnique({ where: { name: gameName } });
   if (!game) return interaction.editReply({ content: `❌ **Not Found:** Game **${gameName}** does not exist.` });
 

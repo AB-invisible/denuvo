@@ -92,8 +92,8 @@ const commands = [
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
     .setName('exclude-auto')
-    .setDescription('Toggle a game\'s exclusion from automatic stock regeneration')
-    .addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true))
+    .setDescription('Toggle a game or ALL games from automatic stock regeneration')
+    .addStringOption(o => o.setName('game').setDescription('Game name, or "ALL" to apply to every game').setRequired(true).setAutocomplete(true))
     .addStringOption(o => o.setName('state').setDescription('On = exclude from regen, Off = allow regen').setRequired(true).addChoices({ name: 'On (Exclude)', value: 'on' }, { name: 'Off (Allow Regen)', value: 'off' }))
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
@@ -617,9 +617,9 @@ async function handleAutocomplete(interaction: any) {
 
     const entries = games.map((g: { name: string }) => ({ name: g.name, value: g.name }));
 
-    // /setmode and /getmode accept "ALL" to act on every game. Surface it as
+    // Bulk-capable commands accept "ALL" to act on every game. Surface it as
     // the first autocomplete suggestion when the input is empty or matches "a".
-    const bulkCapable = interaction.commandName === 'setmode' || interaction.commandName === 'getmode';
+    const bulkCapable = interaction.commandName === 'setmode' || interaction.commandName === 'getmode' || interaction.commandName === 'exclude-auto';
     if (bulkCapable) {
       const f = focusedValue.toLowerCase();
       if (f === '' || 'all'.startsWith(f)) {
