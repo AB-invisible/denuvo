@@ -118,6 +118,34 @@ export async function updateStock(gameName: string, sub: 'add' | 'remove' | 'set
   return updatedGame;
 }
 
+export async function updateStockForAllGames(amount: number) {
+  if (amount === 0) {
+    const depletedAt = new Date();
+    const [gamesResult, restocksResult] = await prisma.$transaction([
+      prisma.game.updateMany({
+        data: { stock: 0, lastDepletedAt: depletedAt },
+      }),
+      prisma.restock.deleteMany({}),
+    ]);
+    await logGlobal(
+      '🚨 Bulk Depletion',
+      `Stock for **all games** set to **0** (${gamesResult.count} game(s) updated).`,
+      0xED4245
+    );
+    return { count: gamesResult.count, restocksCleared: restocksResult.count };
+  }
+
+  const gamesResult = await prisma.game.updateMany({
+    data: { stock: amount, lastDepletedAt: null },
+  });
+  await logGlobal(
+    '📦 Bulk Stock Set',
+    `Stock for **all games** set to **${amount}** (${gamesResult.count} game(s) updated).`,
+    0x57F287
+  );
+  return { count: gamesResult.count, restocksCleared: 0 };
+}
+
 export async function consumeStock(gameId: number) {
   const game = await prisma.game.findUnique({ where: { id: gameId } });
   if (!game) throw new Error('Game not found.');
