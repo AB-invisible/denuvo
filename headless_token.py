@@ -838,11 +838,37 @@ def get_encrypted_ticket_headless(app_id, steam_login, steam_password, guard_cod
                 "steampass before retrying."
             )
         log("Steam: authenticating with credentials + guard code...")
+        # Steampass accounts may use EITHER mobile authenticator (TOTP)
+        # or email-based Steam Guard. The steampass API endpoint is
+        # /email/code/main, suggesting email guard — but some accounts
+        # may have been migrated to mobile auth. The steam library uses
+        # different kwargs for each:
+        #   two_factor_code = mobile authenticator (TOTP)
+        #   auth_code       = email-based guard code
+        # Passing the wrong type causes EResult.InvalidPassword (5) on
+        # newer steam[client] versions because Steam's auth protocol
+        # rejects the credential+code bundle before looking at the code.
+        # Try two_factor_code first; if it fails with InvalidPassword,
+        # retry with auth_code.
         result = client.login(
             username=steam_login,
             password=steam_password,
             two_factor_code=guard_code,
         )
+        if result != EResult.OK:
+            log(f"Steam: two_factor_code login returned {result}, "
+                "retrying with auth_code (email guard)...")
+            # Reconnect — some steam library versions poison the client
+            # state after a failed login attempt.
+            client.disconnect()
+            client.connect()
+            if not client.connected:
+                raise RuntimeError("Steam: failed to reconnect for auth_code retry")
+            result = client.login(
+                username=steam_login,
+                password=steam_password,
+                auth_code=guard_code,
+            )
         if result != EResult.OK:
             client.disconnect()
             raise RuntimeError(f"Steam: login failed with result: {result}")
