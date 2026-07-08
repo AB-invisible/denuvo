@@ -250,11 +250,14 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
     // ── Look up cached Steam session for this (guild, UUID) ──
     // Eliminates 1 or 2 steampass calls per gen if found. Skipped for
     // FAKE (test) UUIDs since those don't talk to real Steam.
+    // Also skipped when using a pool account override — the cached session
+    // belongs to whichever account last succeeded, which may be a DIFFERENT
+    // pool account with different Steam credentials.
     let cachedSteamLogin = '';
     let cachedSteamPassword = '';
     let cachedRefreshToken = '';
     let cachedGuarded = true;
-    if (steampassUuid && steampassUuid !== 'FAKE') {
+    if (steampassUuid && steampassUuid !== 'FAKE' && !(accountOverride && accountOverride.login)) {
       try {
         const session = await (prisma as any).steamSession.findUnique({
           where: { guildId_steampassUuid: { guildId: sessionGuildKey, steampassUuid } },
@@ -328,13 +331,27 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
           console.error(`[TokenGen:Headless] Process error for AppID ${appId}:`, error.message);
           // Bump failure count on the SteamSession row so we don't keep
           // hammering a dead account silently.
+          // When using a pool account override, the cached session row
+          // belongs to whichever pool account last wrote it — NOT the one
+          // that just failed. Bumping the wrong account's failure count
+          // would be misleading. Instead, DELETE the stale cached session
+          // so the next attempt does a fresh steampass fetch.
           if (steampassUuid && steampassUuid !== 'FAKE') {
-            try {
-              await (prisma as any).steamSession.update({
-                where: { guildId_steampassUuid: { guildId: sessionGuildKey, steampassUuid } },
-                data: { failureCount: { increment: 1 }, lastFailureAt: new Date() },
-              });
-            } catch { /* row may not exist yet — fine */ }
+            if (accountOverride && accountOverride.login) {
+              try {
+                await (prisma as any).steamSession.delete({
+                  where: { guildId_steampassUuid: { guildId: sessionGuildKey, steampassUuid } },
+                });
+                console.log(`[TokenGen] Cleared stale SteamSession cache for UUID ${steampassUuid.slice(0, 8)}… after pool-account failure`);
+              } catch { /* row may not exist — fine */ }
+            } else {
+              try {
+                await (prisma as any).steamSession.update({
+                  where: { guildId_steampassUuid: { guildId: sessionGuildKey, steampassUuid } },
+                  data: { failureCount: { increment: 1 }, lastFailureAt: new Date() },
+                });
+              } catch { /* row may not exist yet — fine */ }
+            }
           }
           resolve({ zipPath: null, logs, installerKey });
           return;
@@ -370,10 +387,16 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
           }
 
           // Persist the (possibly refreshed) Steam session back to DB so
-          // the next gen on this UUID can skip steampass. Skipped for
-          // FAKE UUIDs (test mode) since those don't represent a real
-          // account.
-          if (meta && steampassUuid && steampassUuid !== 'FAKE' && meta.steam_login) {
+          // the next gen on this UUID can skip steampass. Skipped for:
+          //  - FAKE UUIDs (test mode) since those don't represent a real account.
+          //  - Pool account overrides — the SteamSession row is keyed by
+          //    (guildId, steampassUuid) and shared across ALL pool accounts on
+          //    the owner server. Saving pool account A's Steam creds here
+          //    would poison the cache for pool account B (different Steam
+          //    login/password behind a different steampass account). Each pool
+          //    attempt should do a fresh steampass fetch instead.
+          if (meta && steampassUuid && steampassUuid !== 'FAKE' && meta.steam_login
+              && !(accountOverride && accountOverride.login)) {
             try {
               await (prisma as any).steamSession.upsert({
                 where: { guildId_steampassUuid: { guildId: sessionGuildKey, steampassUuid } },
@@ -407,6 +430,8 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
             } catch (e) {
               console.warn('[TokenGen] SteamSession upsert failed (non-fatal):', e);
             }
+          } else if (meta && accountOverride && accountOverride.login && meta.steam_login) {
+            console.log(`[TokenGen] Skipping SteamSession upsert for pool-account override (would poison shared cache)`);
           }
 
           resolve({ zipPath: lastLine, logs, installerKey, ticketHash, expectedHmac, appIdBound });
