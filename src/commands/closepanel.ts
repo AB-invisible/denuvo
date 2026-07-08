@@ -33,8 +33,10 @@ export async function execute(interaction: any): Promise<void> {
       const endTime = new Date(Date.now() + duration * 60000);
 
       if (maintenanceMessage) {
-        await prisma.maintenance.create({
-          data: { channelId: interaction.channelId, messageId: maintenanceMessage.id, endTime: endTime }
+        await prisma.maintenance.upsert({
+          where: { channelId: interaction.channelId },
+          update: { messageId: maintenanceMessage.id, endTime: endTime },
+          create: { channelId: interaction.channelId, messageId: maintenanceMessage.id, endTime: endTime }
         }).catch((e: Error) => console.error('Failed to persist maintenance state:', e));
       }
 

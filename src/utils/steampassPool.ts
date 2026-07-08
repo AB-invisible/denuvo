@@ -18,6 +18,7 @@ export interface PooledAccount {
   id: number;
   login: string;
   password: string;
+  token: string;
 }
 
 /** UTC "YYYY-MM-DD" for today — the daily-reset bucket key. */
@@ -61,7 +62,7 @@ export async function pickOwnerAccount(
       used = 0;
     }
     if (used < cap) {
-      return { account: { id: acct.id, login: acct.login, password: acct.password }, exhausted: false };
+      return { account: { id: acct.id, login: acct.login, password: acct.password, token: (acct.token || '').trim() }, exhausted: false };
     }
   }
 
@@ -84,7 +85,7 @@ export async function recordOwnerUsage(accountId: number, appId: number): Promis
 
 /** Owner /steampass status — each account with today's total usage. */
 export async function getPoolStatus(): Promise<
-  { id: number; label: string | null; login: string; active: boolean; priority: number; usedToday: number }[]
+  { id: number; label: string | null; login: string; active: boolean; priority: number; usedToday: number; hasToken: boolean }[]
 > {
   const today = utcDateKey();
   const accounts = await (prisma as any).steampassAccount.findMany({
@@ -108,5 +109,6 @@ export async function getPoolStatus(): Promise<
   return accounts.map((a: any) => ({
     id: a.id, label: a.label, login: a.login, active: a.active, priority: a.priority,
     usedToday: usageMap.get(a.id) ?? 0,
+    hasToken: !!(a.token || '').trim(),
   }));
 }
