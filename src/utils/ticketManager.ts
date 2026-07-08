@@ -18,7 +18,7 @@ import prisma from '../lib/prisma';
 import { CONFIG } from '../config';
 import fs from 'fs';
 import path from 'path';
-import { consumeStock } from './gameManager';
+import { consumeStock, processGuildRestocks, getOrCreateServerStock } from './gameManager';
 import { logAction } from './logging';
 import { refreshAllPanels } from './panelManager';
 import { createVerificationPromptEmbed, createTicketSuccessEmbed } from './embeds';
@@ -126,6 +126,10 @@ export async function createTicket(interaction: StringSelectMenuInteraction, gam
       }
     }
 
+    // Process any pending auto-restocks for this server before checking stock
+    const ticketGuildId = interaction.guildId || '';
+    await processGuildRestocks(ticketGuildId);
+
     // --- ATOMIC TRANSACTION START ---
     const result = await prisma.$transaction(async (tx) => {
       const now = new Date();
@@ -156,19 +160,19 @@ export async function createTicket(interaction: StringSelectMenuInteraction, gam
 
       const game = await tx.game.findUnique({
         where: { name: gameName, disabled: false },
-        include: {
-          _count: {
-            select: {
-              tickets: { where: { status: { in: ['OPEN', 'CLAIMED'] } } }
-            }
-          }
-        }
       });
 
       if (!game) return { error: '❌ **Target Invalid:** The selected game is currently offline or does not exist.' };
 
-      const activeReservations = game._count?.tickets || 0;
-      const availableResources = game.stock - activeReservations;
+      // Per-server stock check
+      const serverStock = await tx.serverStock.findUnique({
+        where: { gameId_guildId: { gameId: game.id, guildId: ticketGuildId } },
+      });
+      const currentStock = serverStock?.stock ?? 5;
+      const serverReservations = await tx.ticket.count({
+        where: { gameId: game.id, guildId: ticketGuildId, status: { in: ['OPEN', 'CLAIMED'] } },
+      });
+      const availableResources = currentStock - serverReservations;
 
       if (availableResources <= 0) {
         const existing = await tx.waitlist.findUnique({
@@ -502,7 +506,7 @@ export async function handleDeductionChoice(interaction: ButtonInteraction, choi
   const deduct = choice === 'yes';
 
   if (deduct) {
-    await consumeStock(ticket.gameId).catch(console.error);
+    await consumeStock(ticket.gameId, effectiveGuildId).catch(console.error);
   }
 
   const until = new Date();
@@ -549,12 +553,12 @@ export async function handleCooldownSelection(interaction: StringSelectMenuInter
 
   const deduct = interaction.customId.endsWith('YES');
   const hours = parseFloat(interaction.values[0]);
+  const csGuildId = ticket.guildId || interaction.guildId || '';
 
   if (deduct) {
-    await consumeStock(ticket.gameId).catch(console.error);
+    await consumeStock(ticket.gameId, csGuildId).catch(console.error);
   }
 
-  const csGuildId = ticket.guildId || interaction.guildId || '';
   const until = new Date();
   until.setTime(until.getTime() + (hours * 60 * 60 * 1000));
   await prisma.cooldown.upsert({ where: { userId_guildId: { userId: ticket.userId, guildId: csGuildId } }, update: { until }, create: { userId: ticket.userId, guildId: csGuildId, until } });

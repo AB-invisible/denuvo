@@ -7,9 +7,10 @@ export async function execute(interaction: any): Promise<void> {
   const sub = interaction.options.getSubcommand() as 'add' | 'remove' | 'set' | 'clear';
   const gameName = interaction.options.getString('game')!;
   const amount = interaction.options.getInteger('amount') || 0;
+  const guildId = interaction.guildId || '';
 
   if (sub === 'set' && gameName.toUpperCase() === 'ALL') {
-    const result = await updateStockForAllGames(amount);
+    const result = await updateStockForAllGames(amount, guildId);
     await refreshAllPanels();
     let content = `✅ **Bulk stock set:** \`${result.count}\` game(s) now have \`${amount}\` token(s).`;
     if (result.restocksCleared > 0) {
@@ -34,7 +35,7 @@ export async function execute(interaction: any): Promise<void> {
     });
   }
 
-  await updateStock(gameName, sub, amount);
+  await updateStock(gameName, sub, amount, guildId);
   await refreshAllPanels();
   await interaction.editReply({ content: `✅ **Systems Sync:** Stock for **${gameName}** updated.` });
 }

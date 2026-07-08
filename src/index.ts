@@ -12,14 +12,13 @@ import { logAction } from './utils/logging';
 import { refreshAllPanels, resumeFromMaintenance } from './utils/panelManager';
 import { verifyScreenshot, VERIFY_BYPASS_REASON } from './utils/groq';
 import { initFileWatcher, syncGamesFromFile } from './utils/syncManager';
-import { generateToken } from './utils/tokenGenerator';
+import { generateToken, generateTokenWithRetry } from './utils/tokenGenerator';
 import { uploadFile } from './utils/fileHost';
 import { updateTicketWaitTimes, checkWeeklyStaffStats, checkDutyStatusReset, checkStaleTickets, cleanupExpiredCooldowns } from './utils/scheduler';
 import { addSubscription } from './utils/subscriptionManager';
 import { logTenant } from './utils/logging';
 import { checkGuild, shouldLeaveGuild } from './utils/guildAccess';
 import { getAllowedGuildIds, invalidateTenantCache } from './utils/tenant';
-import { pickOwnerAccount, recordOwnerUsage } from './utils/steampassPool';
 import { OWNER_COMMANDS, SETLOGS_COMMAND, SETVOUCH_COMMAND, ADDSUPPORT_COMMAND, OWNER_COMMAND_NAMES, handleTenantCommand } from './utils/tenantCommands';
 // Spin up the payload HTTP server immediately so Railway's PORT-based
 // healthcheck has something to talk to even before the Discord client
@@ -1070,31 +1069,21 @@ client.on(Events.MessageCreate, async (message) => {
           const appId = ticket.game.appId;
           if (!appId) throw new Error('Game has no AppID configured.');
 
-          // Owner server: pick a pool account with daily quota left for this
-          // game; if all are used up, tell the user (generic — no mechanism).
-          // Buyer server: pass guildId so its OWN account is used.
-          let poolAccountId: number | null = null;
-          let accountOverride: { login: string; password: string } | undefined;
-          if (message.guildId === CONFIG.OWNER_GUILD_ID) {
-            const picked = await pickOwnerAccount(appId);
-            if (picked.exhausted) {
-              const outEmbed = new EmbedBuilder()
-                .setTitle('🔴 Out of Tokens Today')
-                .setDescription(`**${ticket.game.name}** is **out of tokens for today.** Fresh tokens unlock at 00:00 UTC — please try again tomorrow.`)
-                .setColor(0xED4245)
-                .setTimestamp();
-              await genMsg.edit({ embeds: [outEmbed] });
-              return;
-            }
-            if (picked.account) {
-              poolAccountId = picked.account.id;
-              accountOverride = { login: picked.account.login, password: picked.account.password };
-            }
+          // Owner server: tries each pool account in priority order, then
+          // falls back to the env-var account. Stops on first success.
+          // Buyer server: uses its own single account (no retry).
+          const retryResult = await generateTokenWithRetry(appId, ticket.game.name, message.guildId ?? undefined);
+          const { zipPath, logs, installerKey, ticketHash, expectedHmac, appIdBound } = retryResult;
+          if (retryResult.exhausted) {
+            const outEmbed = new EmbedBuilder()
+              .setTitle('🔴 Out of Tokens Today')
+              .setDescription(`**${ticket.game.name}** is **out of tokens for today.** Fresh tokens unlock at 00:00 UTC — please try again tomorrow.`)
+              .setColor(0xED4245)
+              .setTimestamp();
+            await genMsg.edit({ embeds: [outEmbed] });
+            return;
           }
-
-          const { zipPath, logs, installerKey, ticketHash, expectedHmac, appIdBound } = await generateToken(appId, ticket.game.name, message.guildId ?? undefined, accountOverride);
           console.log(`[TokenGen] Logs for ${ticket.game.name}:\n${logs}`);
-          if (poolAccountId) await recordOwnerUsage(poolAccountId, appId);
 
           if (zipPath) {
             const safeGameName = ticket.game.name.replace(/[<>:"/\\|?*]/g, '').trim();

@@ -1,7 +1,7 @@
 import { EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, TextChannel, User, TextBasedChannel, GuildMember } from 'discord.js';
 import { Game, Ticket, Cooldown, Subscription } from '@prisma/client';
 import { CONFIG } from '../config';
-import { getActiveGames, REGEN_TIME } from './gameManager';
+import { getActiveGames, REGEN_TIME, processGuildRestocks, getOrCreateServerStock } from './gameManager';
 import { getEstimatedWaitTime, getStaffStats } from './stats';
 import { getActiveStaffCount } from './dutyManager';
 import prisma from '../lib/prisma';
@@ -13,6 +13,9 @@ export type GameWithCount = Game & {
 };
 
 export async function createMainPanel(guildId?: string) {
+  // Process any pending auto-restocks for this server before building panel
+  if (guildId) await processGuildRestocks(guildId);
+
   const allGames = await getActiveGames() as GameWithCount[];
   const now = new Date();
 
@@ -23,7 +26,7 @@ export async function createMainPanel(guildId?: string) {
   const waitlistMap = new Map(waitlistCounts.map(w => [w.gameId, w._count]));
 
   // Per-server reserved counts: only count tickets from this server
-  let serverReservedMap: Map<number, number> | null = null;
+  let serverReservedMap = new Map<number, number>();
   if (guildId) {
     const serverCounts = await prisma.ticket.groupBy({
       by: ['gameId'],
@@ -33,9 +36,19 @@ export async function createMainPanel(guildId?: string) {
     serverReservedMap = new Map(serverCounts.map(c => [c.gameId, c._count]));
   }
 
-  const totalStock = allGames.reduce((acc: number, game: GameWithCount) => acc + game.stock, 0);
+  // Per-server stock: fetch all ServerStock entries for this guild
+  let serverStockMap = new Map<number, { stock: number; lastDepletedAt: Date | null }>();
+  if (guildId) {
+    const stocks = await prisma.serverStock.findMany({ where: { guildId } });
+    serverStockMap = new Map(stocks.map(s => [s.gameId, { stock: s.stock, lastDepletedAt: s.lastDepletedAt }]));
+  }
+
+  const totalStock = allGames.reduce((acc: number, game: GameWithCount) => {
+    const ss = serverStockMap.get(game.id);
+    return acc + (ss ? ss.stock : 5);
+  }, 0);
   const totalReserved = allGames.reduce((acc: number, game: GameWithCount) => {
-    return acc + (serverReservedMap ? (serverReservedMap.get(game.id) || 0) : (game._count?.tickets || 0));
+    return acc + (serverReservedMap.get(game.id) || 0);
   }, 0);
   const totalGames = allGames.length;
 
@@ -51,7 +64,7 @@ export async function createMainPanel(guildId?: string) {
       { name: '━━━━━━━━━━━━━━━━━━━━━━', value: ' ', inline: false },
       { name: '💎 Status Indicators', value: '🟢 **Optimal** (10+ Tokens)\n🟡 **Low Stock** (<10 Tokens)\n🔴 **Empty** (Waiting for Regen)', inline: false }
     )
-    .setColor(0x5865F2) // Blurple
+    .setColor(0x5865F2)
     .setImage('attachment://gamegen.png')
     .setTimestamp()
     .setFooter({ text: `${CONFIG.NAME} Management • Premium Experience • ${new Date().toLocaleDateString()}` });
@@ -77,8 +90,11 @@ export async function createMainPanel(guildId?: string) {
       .setPlaceholder(`🎮 Browse Games [${startLetter}-${endLetter}]`)
       .addOptions(
         chunk.map((game: GameWithCount) => {
-          const reserved = serverReservedMap ? (serverReservedMap.get(game.id) || 0) : (game._count?.tickets || 0);
-          const availableStock = Math.max(0, game.stock - (game._count?.tickets || 0));
+          const ss = serverStockMap.get(game.id);
+          const gameStock = ss ? ss.stock : 5;
+          const gameLastDepleted = ss ? ss.lastDepletedAt : null;
+          const reserved = serverReservedMap.get(game.id) || 0;
+          const availableStock = Math.max(0, gameStock - reserved);
           const queueCount = waitlistMap.get(game.id) || 0;
 
           let emoji = '🔴';
@@ -86,8 +102,8 @@ export async function createMainPanel(guildId?: string) {
 
           if (availableStock >= 10) emoji = '🟢';
           else if (availableStock > 0) emoji = '🟡';
-          else if (availableStock === 0 && game.lastDepletedAt) {
-            const timeDiff = now.getTime() - game.lastDepletedAt.getTime();
+          else if (availableStock === 0 && gameLastDepleted) {
+            const timeDiff = now.getTime() - gameLastDepleted.getTime();
             const remaining = Math.max(0, REGEN_TIME - timeDiff);
             const hours = Math.floor(remaining / (1000 * 60 * 60));
             const minutes = Math.floor((remaining % (1000 * 60 * 60)) / (1000 * 60));
@@ -99,8 +115,6 @@ export async function createMainPanel(guildId?: string) {
             description = `ID: ${game.appId || 'N/A'} • ⏳ Out of stock (${reserved} reserved${queueText})`;
           }
 
-          // Tier overrides — order matters: donor > booster > high > stock-based
-          // (donor games are the most restrictive)
           if (game.donatorOnly) {
             emoji = '💎';
             description = `💎 Donator Only (2h cd) • ${description}`;
@@ -108,11 +122,9 @@ export async function createMainPanel(guildId?: string) {
             emoji = '✨';
             description = `✨ Booster Only • ${description}`;
           } else if (game.highDemand) {
-            // Don't override emoji if game is out of stock (keep the red)
             if (availableStock > 0) emoji = '🔥';
             description = `🔥 High Demand (48h cd) • ${description}`;
           }
-
 
           return new StringSelectMenuOptionBuilder()
             .setLabel(game.name)

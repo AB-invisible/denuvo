@@ -1,204 +1,209 @@
 import prisma from '../lib/prisma';
-import { Game, Prisma } from '@prisma/client';
+import { Game, Prisma, ServerStock } from '@prisma/client';
 import { logGlobal, logStockNotification } from './logging';
 import { notifySubscribers } from './subscriptionManager';
 import { notifyWaitlist } from './waitlistManager';
+import { getAllowedGuildIds } from './tenant';
+import { CONFIG } from '../config';
 
 export const REGEN_TIME = 24 * 60 * 60 * 1000; // 24 hours
 
-export async function checkRegeneration(game: Game): Promise<Game> {
-  // Skip regeneration entirely for excluded games
-  if (game.excludeRegen) return game;
-
-  const now = new Date();
-  
-  // Find all pending restocks for this game that are due
-  const pendingRestocks = await prisma.restock.findMany({
-    where: {
-      gameId: game.id,
-      restockAt: { lte: now }
-    }
+export async function getOrCreateServerStock(gameId: number, guildId: string): Promise<ServerStock> {
+  const existing = await prisma.serverStock.findUnique({
+    where: { gameId_guildId: { gameId, guildId } },
   });
+  if (existing) return existing;
+  return prisma.serverStock.create({
+    data: { gameId, guildId, stock: 5 },
+  });
+}
 
-  if (pendingRestocks.length > 0) {
-    const amountToRestock = pendingRestocks.length;
-    
-    // Atomic update: increment stock and delete processed restock records
-    const [updatedGame] = await prisma.$transaction([
-      prisma.game.update({
-        where: { id: game.id },
-        data: { stock: { increment: amountToRestock }, lastDepletedAt: null }
-      }),
-      prisma.restock.deleteMany({
-        where: {
-          id: { in: pendingRestocks.map((r) => r.id) }
-        }
-      })
-    ]);
+export async function processGuildRestocks(guildId: string): Promise<void> {
+  const now = new Date();
+  const pendingRestocks = await prisma.restock.findMany({
+    where: { guildId, restockAt: { lte: now } },
+    include: { game: true },
+  });
+  if (pendingRestocks.length === 0) return;
 
-    await logGlobal('✅ Auto-Restock', `**${amountToRestock} token(s)** auto-restocked for **${game.name}**.`, 0x57F287);
-    await notifySubscribers(game.id, game.name, amountToRestock);
-    await notifyWaitlist(game.id, game.name, amountToRestock);
-    return updatedGame;
+  const byGame = new Map<number, typeof pendingRestocks>();
+  for (const r of pendingRestocks) {
+    if (r.game.excludeRegen) continue;
+    if (!byGame.has(r.gameId)) byGame.set(r.gameId, []);
+    byGame.get(r.gameId)!.push(r);
   }
 
-  return game;
+  for (const [gameId, restocks] of byGame) {
+    const amount = restocks.length;
+    const serverStock = await getOrCreateServerStock(gameId, guildId);
+
+    await prisma.$transaction([
+      prisma.serverStock.update({
+        where: { gameId_guildId: { gameId, guildId } },
+        data: { stock: serverStock.stock + amount, lastDepletedAt: null },
+      }),
+      prisma.restock.deleteMany({
+        where: { id: { in: restocks.map(r => r.id) } },
+      }),
+    ]);
+
+    const gameName = restocks[0].game.name;
+    await logGlobal('✅ Auto-Restock', `**${amount} token(s)** auto-restocked for **${gameName}**.`, 0x57F287);
+    await notifySubscribers(gameId, gameName, amount);
+    await notifyWaitlist(gameId, gameName, amount);
+  }
+}
+
+export async function initServerStocksForGame(gameId: number): Promise<void> {
+  const guildIds = await getAllowedGuildIds();
+  for (const guildId of guildIds) {
+    await prisma.serverStock.upsert({
+      where: { gameId_guildId: { gameId, guildId } },
+      update: {},
+      create: { gameId, guildId, stock: 5 },
+    });
+  }
 }
 
 export async function getActiveGames() {
-  const games = await prisma.game.findMany({
-    where: { disabled: false },
-    orderBy: { name: 'asc' },
-  });
-
-  await Promise.all(games.map((game: Game) => checkRegeneration(game)));
-
-  return await prisma.game.findMany({
+  return prisma.game.findMany({
     where: { disabled: false },
     include: {
       _count: {
         select: {
           tickets: {
-            where: {
-              status: { in: ['OPEN', 'CLAIMED'] }
-            }
-          }
-        }
-      }
+            where: { status: { in: ['OPEN', 'CLAIMED'] } },
+          },
+        },
+      },
     },
     orderBy: { name: 'asc' },
   });
 }
 
 export async function getGameByName(name: string) {
-  const game = await prisma.game.findUnique({
+  return prisma.game.findUnique({
     where: { name, disabled: false },
   });
-  if (!game) return null;
-  return await checkRegeneration(game);
 }
 
-export async function updateStock(gameName: string, sub: 'add' | 'remove' | 'set' | 'clear', amount: number = 0) {
-  let updateData: Prisma.GameUpdateInput = {};
-  
+export async function updateStock(gameName: string, sub: 'add' | 'remove' | 'set' | 'clear', amount: number = 0, guildId: string = '') {
+  const game = await prisma.game.findUnique({ where: { name: gameName } });
+  if (!game) throw new Error(`Game "${gameName}" not found.`);
+
+  const serverStock = await getOrCreateServerStock(game.id, guildId);
+
+  let newStock: number;
   if (sub === 'add') {
-    updateData = { stock: { increment: amount }, lastDepletedAt: null };
+    newStock = serverStock.stock + amount;
   } else if (sub === 'remove') {
-    updateData = { stock: { decrement: amount } };
+    newStock = Math.max(0, serverStock.stock - amount);
   } else if (sub === 'set') {
-    updateData = { stock: amount, lastDepletedAt: amount > 0 ? null : new Date() };
-  } else if (sub === 'clear') {
-    updateData = { stock: 0, lastDepletedAt: new Date() };
+    newStock = amount;
+  } else {
+    newStock = 0;
   }
+  if (newStock < 0) newStock = 0;
 
-  const updatedGame = await prisma.game.update({
-    where: { name: gameName },
-    data: updateData
+  const lastDepletedAt = newStock === 0 ? new Date() : null;
+
+  await prisma.serverStock.update({
+    where: { gameId_guildId: { gameId: game.id, guildId } },
+    data: { stock: newStock, lastDepletedAt },
   });
-
-  // Post-update: Ensure stock isn't negative
-  if (updatedGame.stock < 0) {
-    await prisma.game.update({ where: { id: updatedGame.id }, data: { stock: 0, lastDepletedAt: new Date() } });
-    updatedGame.stock = 0;
-  }
 
   if (sub === 'add' || (sub === 'set' && amount > 0)) {
-    const amountAdded = sub === 'add' ? amount : amount;
-    await notifySubscribers(updatedGame.id, updatedGame.name, amountAdded);
-    await notifyWaitlist(updatedGame.id, updatedGame.name, amountAdded);
+    await notifySubscribers(game.id, game.name, amount);
+    await notifyWaitlist(game.id, game.name, amount);
   }
 
-  if (updatedGame.stock === 0) {
+  if (newStock === 0) {
     await logGlobal('🚨 Game Depleted', `Stock for **${gameName}** has reached zero. Individual regeneration tracking active.`, 0xED4245);
     await logStockNotification(gameName, 'DEPLETED');
-  } else if (updatedGame.stock > 0 && updatedGame.stock <= 3) {
-    await logGlobal('⚠️ Low Stock Warning', `Stock for **${gameName}** is critically low (**${updatedGame.stock}** remaining).`, 0xFEE75C);
+  } else if (newStock > 0 && newStock <= 3) {
+    await logGlobal('⚠️ Low Stock Warning', `Stock for **${gameName}** is critically low (**${newStock}** remaining).`, 0xFEE75C);
   }
 
-  return updatedGame;
+  return { ...game, stock: newStock, lastDepletedAt };
 }
 
-export async function updateStockForAllGames(amount: number) {
+export async function updateStockForAllGames(amount: number, guildId: string = '') {
+  const games = await prisma.game.findMany({ where: { disabled: false } });
+  const depletedAt = amount === 0 ? new Date() : null;
+
+  for (const game of games) {
+    await prisma.serverStock.upsert({
+      where: { gameId_guildId: { gameId: game.id, guildId } },
+      update: { stock: amount, lastDepletedAt: depletedAt },
+      create: { gameId: game.id, guildId, stock: amount, lastDepletedAt: depletedAt },
+    });
+  }
+
+  let restocksCleared = 0;
   if (amount === 0) {
-    const depletedAt = new Date();
-    const [gamesResult, restocksResult] = await prisma.$transaction([
-      prisma.game.updateMany({
-        data: { stock: 0, lastDepletedAt: depletedAt },
-      }),
-      prisma.restock.deleteMany({}),
-    ]);
-    await logGlobal(
-      '🚨 Bulk Depletion',
-      `Stock for **all games** set to **0** (${gamesResult.count} game(s) updated).`,
-      0xED4245
-    );
-    return { count: gamesResult.count, restocksCleared: restocksResult.count };
+    const result = await prisma.restock.deleteMany({ where: { guildId } });
+    restocksCleared = result.count;
+    await logGlobal('🚨 Bulk Depletion', `Stock for **all games** set to **0** (${games.length} game(s) updated).`, 0xED4245);
+  } else {
+    await prisma.restock.deleteMany({ where: { guildId } });
+    await logGlobal('📦 Bulk Stock Set', `Stock for **all games** set to **${amount}** (${games.length} game(s) updated).`, 0x57F287);
   }
 
-  const gamesResult = await prisma.game.updateMany({
-    data: { stock: amount, lastDepletedAt: null },
-  });
-  await logGlobal(
-    '📦 Bulk Stock Set',
-    `Stock for **all games** set to **${amount}** (${gamesResult.count} game(s) updated).`,
-    0x57F287
-  );
-  return { count: gamesResult.count, restocksCleared: 0 };
+  return { count: games.length, restocksCleared };
 }
 
-export async function consumeStock(gameId: number) {
+export async function consumeStock(gameId: number, guildId: string) {
   const game = await prisma.game.findUnique({ where: { id: gameId } });
   if (!game) throw new Error('Game not found.');
 
-  // Always check/run regeneration first
-  await checkRegeneration(game);
+  await processGuildRestocks(guildId);
   const restockAt = new Date(Date.now() + REGEN_TIME);
 
-  // Atomic: handle consumption and restock scheduling
-  const updatedGame = await prisma.$transaction(async (tx) => {
-    const freshGame = await tx.game.findUnique({ where: { id: gameId } });
-    if (!freshGame) throw new Error('Game not found.');
+  const updatedStock = await prisma.$transaction(async (tx) => {
+    const ss = await tx.serverStock.findUnique({
+      where: { gameId_guildId: { gameId, guildId } },
+    });
+    const currentStock = ss?.stock ?? 5;
+    const finalStock = Math.max(0, currentStock - 1);
 
-    // Only decrement if we actually have stock
-    // If stock is 0, we treat it as "consumed" but it stays 0 while queuing the restock
-    const finalStock = Math.max(0, freshGame.stock - 1);
-
-    const updated = await tx.game.update({
-      where: { id: gameId },
-      data: { 
+    const updated = await tx.serverStock.upsert({
+      where: { gameId_guildId: { gameId, guildId } },
+      update: {
         stock: finalStock,
-        lastDepletedAt: finalStock === 0 ? new Date() : undefined
+        lastDepletedAt: finalStock === 0 ? new Date() : null,
+      },
+      create: {
+        gameId,
+        guildId,
+        stock: finalStock,
+        lastDepletedAt: finalStock === 0 ? new Date() : null,
       },
     });
 
-    // Only schedule auto-restock if the game is not excluded from regeneration
-    if (!freshGame.excludeRegen) {
+    if (!game.excludeRegen) {
       await tx.restock.create({
-        data: {
-          gameId,
-          restockAt
-        }
+        data: { gameId, guildId, restockAt },
       });
     }
 
     return updated;
   });
 
-  if (updatedGame.stock === 0) {
-    await logGlobal('🚨 Game Depleted', `Stock for **${updatedGame.name}** has reached zero via consumption. Individual regeneration tracking active.`, 0xED4245);
-  } else if (updatedGame.stock === 1) {
-    await logGlobal('⚠️ Last Token Alert', `Only **1 token** remains for **${updatedGame.name}**.`, 0xFEE75C);
+  if (updatedStock.stock === 0) {
+    await logGlobal('🚨 Game Depleted', `Stock for **${game.name}** has reached zero via consumption. Individual regeneration tracking active.`, 0xED4245);
+  } else if (updatedStock.stock === 1) {
+    await logGlobal('⚠️ Last Token Alert', `Only **1 token** remains for **${game.name}**.`, 0xFEE75C);
   }
 
-  if (updatedGame.stock > 0) {
+  if (updatedStock.stock > 0) {
     const thresholdSetting = await prisma.metadata.findUnique({ where: { key: 'lowStockThreshold' } });
     const threshold = thresholdSetting ? parseInt(thresholdSetting.value) : 3;
-    if (updatedGame.stock <= threshold && updatedGame.stock > 0) {
-      await logGlobal('⚠️ Low Stock Warning', `**${updatedGame.name}** is running low — only **${updatedGame.stock}** token(s) remaining.`, 0xFEE75C);
+    if (updatedStock.stock <= threshold) {
+      await logGlobal('⚠️ Low Stock Warning', `**${game.name}** is running low — only **${updatedStock.stock}** token(s) remaining.`, 0xFEE75C);
     }
   }
 
-  return updatedGame;
+  return { ...game, stock: updatedStock.stock };
 }
 
 export async function purgeGameCascade(gameId: number) {
@@ -209,5 +214,6 @@ export async function purgeGameCascade(gameId: number) {
   await prisma.restock.deleteMany({ where: { gameId } });
   await prisma.subscription.deleteMany({ where: { gameId } });
   await prisma.waitlist.deleteMany({ where: { gameId } });
+  await prisma.serverStock.deleteMany({ where: { gameId } });
   await prisma.game.delete({ where: { id: gameId } });
 }

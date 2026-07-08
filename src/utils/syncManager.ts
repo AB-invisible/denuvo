@@ -5,6 +5,7 @@ import * as path from 'path';
 import { refreshAllPanels } from './panelManager';
 import { client } from '../client';
 import { CONFIG } from '../config';
+import { initServerStocksForGame } from './gameManager';
 
 const JSON_PATH = path.join(__dirname, '../../denuvo.json');
 
@@ -66,6 +67,8 @@ export async function syncGamesFromFile() {
       });
 
       if (isNew) {
+        const createdGame = await prisma.game.findUnique({ where: { name: gameData.name } });
+        if (createdGame) await initServerStocksForGame(createdGame.id);
         const guild = client.guilds.cache.get(CONFIG.GUILD_ID);
         if (guild) {
           await logAction(guild, '🆕 New Game Detected', `**${gameData.name}** has been automatically added to the system and is now available in the selection panel.`, 0x5865F2);
