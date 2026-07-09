@@ -6,11 +6,12 @@ import { REST, Routes, InteractionType, PermissionsBitField, PermissionFlagsBits
 import { createMainPanel, createVerificationPromptEmbed, createVerificationProcessingEmbed, createVerificationSuccessEmbed, createVerificationFailureEmbed, createTokenDeliveryEmbed, createVouchRequestEmbed } from './utils/embeds';
 import { createTicket, claimTicket, closeTicket, handleCooldownSelection, handleDeductionChoice, unclaimTicket, autoCloseTicketForVerificationTimeout, triggerSessionFailure, pendingVerificationTimers, vouchTimers } from './utils/ticketManager';
 import { getEstimatedWaitTime } from './utils/stats';
+import { computeCooldownHours } from './utils/cooldown';
 import { consumeStock } from './utils/gameManager';
 import prisma from './lib/prisma';
 import { logAction } from './utils/logging';
 import { refreshAllPanels, resumeFromMaintenance } from './utils/panelManager';
-import { verifyScreenshot, VERIFY_BYPASS_REASON } from './utils/groq';
+import { verifyScreenshot, VERIFY_BYPASS_REASON, VERIFY_ERROR_REASON } from './utils/groq';
 import { initFileWatcher, syncGamesFromFile } from './utils/syncManager';
 import { generateToken, generateTokenWithRetry } from './utils/tokenGenerator';
 import { uploadFile } from './utils/fileHost';
@@ -1013,16 +1014,21 @@ client.on(Events.MessageCreate, async (message) => {
         // If GROQ_API_KEY isn't set, verifyScreenshot() returned the sentinel
         // reason and isValid=true so the user sees a friendly state, but we
         // MUST NOT auto-generate against an unverified image. Route to staff.
-        if (reasoning === VERIFY_BYPASS_REASON) {
+        if (reasoning === VERIFY_BYPASS_REASON || reasoning === VERIFY_ERROR_REASON) {
+          const isAiError = reasoning === VERIFY_ERROR_REASON;
           const bypassEmbed = new EmbedBuilder()
-            .setTitle('⚠️ Verification Disabled')
+            .setTitle('⚠️ Verification Unavailable')
             .setDescription(`Your screenshot has been received for **${ticket.game.name}**.\n\nAutomatic AI verification is currently unavailable. A staff member will review it manually and deliver your token shortly.`)
             .setColor(0xFEE75C)
             .setTimestamp();
           await (message.channel as TextChannel).send({ embeds: [bypassEmbed] });
-          await (message.channel as TextChannel).send({ content: `${staffPing} **GROQ_API_KEY not configured.** Screenshot received for **${ticket.game.name}** (AppID \`${ticket.game.appId}\`). Please review and deliver manually with \`/tokengen\`.` });
+          const staffReason = isAiError
+            ? '**AI verification errored** (Groq API outage/rate-limit).'
+            : '**GROQ_API_KEY not configured.**';
+          await (message.channel as TextChannel).send({ content: `${staffPing} ${staffReason} Screenshot received for **${ticket.game.name}** (AppID \`${ticket.game.appId}\`). Please review and deliver manually with \`/tokengen\`.` });
           if (homeGuild) {
-            await logAction(homeGuild, '⚠️ AI Verify Bypassed', `Screenshot for **${ticket.game.name}** in <#${message.channelId}> wasn't verified by AI (GROQ_API_KEY missing). Manual staff review required.`, 0xFEE75C);
+            const logReason = isAiError ? 'transient Groq API failure' : 'GROQ_API_KEY missing';
+            await logAction(homeGuild, '⚠️ AI Verify Bypassed', `Screenshot for **${ticket.game.name}** in <#${message.channelId}> wasn't verified by AI (${logReason}). Manual staff review required.`, 0xFEE75C);
           }
           return;
         }
@@ -1406,17 +1412,20 @@ client.on(Events.MessageCreate, async (message) => {
             vouchTimers.delete(ticket.userId);
           }
 
-          // Cooldown based on game's tier (set via /game tier)
-          // Donor games:  2h  — donors get a fast reset as a perk
-          // High demand:  48h — slow down repeat requests on popular games
-          // Booster/Normal: 24h — standard
-          const g = ticket.game as any;
-          const cooldownHours = g.donatorOnly ? 2 : g.highDemand ? 48 : 24;
+          // Cooldown from the shared helper — membership tier (Gold/Silver/
+          // Bronze) + any active temp_tier promo. Same logic as staff /close
+          // and the reaction-close path, so paid perks and /redeem codes
+          // apply on the normal vouch flow too (they used to be ignored here).
+          const cdGuildId = ticket.guildId || message.guildId || '';
+          const cdMember = (message.member as GuildMember | null)
+            ?? (await message.guild?.members.fetch(ticket.userId).catch(() => null))
+            ?? null;
+          const { hours: cooldownHours } = await computeCooldownHours(cdMember, ticket.userId, cdGuildId);
           const until = new Date(Date.now() + cooldownHours * 60 * 60 * 1000);
           await prisma.cooldown.upsert({
-            where: { userId_guildId: { userId: ticket.userId, guildId: ticket.guildId || message.guildId || '' } },
+            where: { userId_guildId: { userId: ticket.userId, guildId: cdGuildId } },
             update: { until },
-            create: { userId: ticket.userId, guildId: ticket.guildId || message.guildId || '', until }
+            create: { userId: ticket.userId, guildId: cdGuildId, until }
           });
 
           // Deduct one token from stock
@@ -1502,11 +1511,11 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
            vouchTimers.delete(ticket.userId);
         }
 
-        const ticketWithGame = await prisma.ticket.findUnique({ where: { id: ticket.id }, include: { game: true } });
-        const g = ticketWithGame?.game as any;
-        const cooldownHours = g?.donatorOnly ? 2 : g?.highDemand ? 48 : 24;
+        const cdGuildId = ticket.guildId || reaction.message.guildId || '';
+        const cdMember = (await message.guild?.members.fetch(ticket.userId).catch(() => null)) ?? null;
+        const { hours: cooldownHours } = await computeCooldownHours(cdMember, ticket.userId, cdGuildId);
         const until = new Date(Date.now() + cooldownHours * 60 * 60 * 1000);
-        await prisma.cooldown.upsert({ where: { userId_guildId: { userId: ticket.userId, guildId: ticket.guildId || reaction.message.guildId || '' } }, update: { until }, create: { userId: ticket.userId, guildId: ticket.guildId || reaction.message.guildId || '', until } });
+        await prisma.cooldown.upsert({ where: { userId_guildId: { userId: ticket.userId, guildId: cdGuildId } }, update: { until }, create: { userId: ticket.userId, guildId: cdGuildId, until } });
 
         await prisma.ticket.update({ where: { id: ticket.id }, data: { status: 'CLOSED', closedAt: new Date(), vouchExpiresAt: null } });
 
