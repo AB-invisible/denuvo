@@ -697,8 +697,9 @@ class SteampassClient:
         )
         if not resp.ok:
             # Surface the actual API error message (credits exhausted, etc.)
-            log(f"Steampass credentials API {resp.status_code} for UUID {product_uuid}: {resp.text[:500]}")
-            resp.raise_for_status()
+            body = resp.text[:500]
+            log(f"Steampass credentials API {resp.status_code} for UUID {product_uuid}: {body}")
+            raise RuntimeError(f"Steampass product-credentials failed: HTTP {resp.status_code} — {body}")
         raw = resp.json()
         data = raw.get("data", {})
         # Log the response structure so we can detect API format changes
@@ -732,9 +733,12 @@ class SteampassClient:
         )
         if not resp.ok:
             # 422 here usually means: credits exhausted, UUID expired,
-            # account currently in use by another session, or rate-limited.
-            log(f"Steampass guard-code API {resp.status_code} for UUID {product_uuid}: {resp.text[:500]}")
-            resp.raise_for_status()
+            # account currently in use by another session, or the email-code
+            # endpoint is throttled (requested again too soon). The body says
+            # which — surface it in the exception so it reaches the logs.
+            body = resp.text[:500]
+            log(f"Steampass guard-code API {resp.status_code} for UUID {product_uuid}: {body}")
+            raise RuntimeError(f"Steampass guard-code (email/code/main) failed: HTTP {resp.status_code} — {body}")
         data = resp.json().get("data", {})
         code = data.get("code")
         valid_until = data.get("valid_until")
@@ -1807,14 +1811,17 @@ def main(app_id, game_name, steampass_uuid, generation_mode="gbe"):
             steam_login = cached_login
             steam_password = cached_password
             guarded = cached_guarded
-            if guarded:
-                # Still need a fresh guard code from steampass — that's
-                # the only call this path makes.
-                log("Requesting Steam Guard code (only steampass call needed)...")
-                sp = SteampassClient(sp_login, sp_password)
-                sp.authenticate()
-                guard_code = sp.get_guard_code(steampass_uuid)
             try:
+                guard_code = None
+                if guarded:
+                    # Still need a fresh guard code from steampass — that's
+                    # the only call this path makes. INSIDE the try so a
+                    # guard-code failure (e.g. 422) falls through to the full
+                    # flow below instead of crashing the whole process.
+                    log("Requesting Steam Guard code (only steampass call needed)...")
+                    sp = SteampassClient(sp_login, sp_password)
+                    sp.authenticate()
+                    guard_code = sp.get_guard_code(steampass_uuid)
                 ticket_bytes, steam_id, new_refresh_token = get_encrypted_ticket_headless(
                     app_id, steam_login, steam_password, guard_code,
                 )
@@ -1831,22 +1838,25 @@ def main(app_id, game_name, steampass_uuid, generation_mode="gbe"):
         if session_source is None:
             log("No cached session usable — running full steampass flow "
                 "(/profile/product-credentials + /email/code/main)")
-            if sp is None:
-                sp = SteampassClient(sp_login, sp_password)
-                sp.authenticate()
-            steam_login, steam_password, guarded = sp.get_steam_credentials(steampass_uuid)
-            guard_code = None
-            if guarded:
-                log("Requesting Steam Guard code...")
-                guard_code = sp.get_guard_code(steampass_uuid)
-
-            log("Connecting to Steam servers (headless)...")
             try:
+                if sp is None:
+                    sp = SteampassClient(sp_login, sp_password)
+                    sp.authenticate()
+                steam_login, steam_password, guarded = sp.get_steam_credentials(steampass_uuid)
+                guard_code = None
+                if guarded:
+                    log("Requesting Steam Guard code...")
+                    guard_code = sp.get_guard_code(steampass_uuid)
+
+                log("Connecting to Steam servers (headless)...")
                 ticket_bytes, steam_id, new_refresh_token = get_encrypted_ticket_headless(
                     app_id, steam_login, steam_password, guard_code,
                 )
-            except RuntimeError as e:
-                log(f"ERROR: {e}")
+            except Exception as e:
+                # Clean exit (not a raw traceback) so the Node retry loop can
+                # rotate to the next pool account, and the log shows WHY it
+                # failed (the steampass response body is in the message).
+                log(f"ERROR: steampass/steam flow failed: {e}")
                 sys.exit(1)
             session_source = "steampass"
 
