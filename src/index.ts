@@ -816,6 +816,180 @@ async function runSimulation(channel: any, game: any, user: any, member: GuildMe
   setTimeout(() => channel.delete().catch(() => {}), 15000);
 }
 
+/**
+ * Generate a token for `ticket`'s game and deliver it into `channel` with
+ * the Confirm-Working / Report-Issue buttons. Shared by the screenshot-
+ * verified auto-gen path AND the staff "Approve & Deliver" button, so both
+ * behave identically. Resolves staffPing / home guild internally.
+ */
+async function autoGenerateAndDeliver(channel: TextChannel, ticket: any, guild: Guild | null): Promise<void> {
+  const guildId = ticket.guildId ?? guild?.id ?? '';
+  const sc = await (await import('./utils/tenant')).resolveServerConfig(guildId);
+  const staffPing = sc.staffPing;
+  const homeGuild = client.guilds.cache.get(CONFIG.GUILD_ID);
+
+  const genEmbed = new EmbedBuilder()
+    .setTitle('⚙️ Generating Token...')
+    .setDescription(`Denuvo token is being generated for **${ticket.game.name}** (AppID: \`${ticket.game.appId}\`).\nPlease wait, this may take up to 30 seconds.`)
+    .setColor(0x5865F2)
+    .setTimestamp();
+  const genMsg = await channel.send({ embeds: [genEmbed] });
+
+  try {
+    const appId = ticket.game.appId;
+    if (!appId) throw new Error('Game has no AppID configured.');
+
+    // Owner server: tries each pool account in priority order, then falls
+    // back to the env-var account. Buyer server: its own single account.
+    const retryResult = await generateTokenWithRetry(appId, ticket.game.name, guildId || undefined);
+    const { zipPath, logs, installerKey, ticketHash, expectedHmac, appIdBound } = retryResult;
+    if (retryResult.exhausted) {
+      const outEmbed = new EmbedBuilder()
+        .setTitle('🔴 Out of Tokens Today')
+        .setDescription(`**${ticket.game.name}** is **out of tokens for today.** Fresh tokens unlock at 00:00 UTC — please try again tomorrow.`)
+        .setColor(0xED4245)
+        .setTimestamp();
+      await genMsg.edit({ embeds: [outEmbed] });
+      return;
+    }
+    console.log(`[TokenGen] Logs for ${ticket.game.name}:\n${logs}`);
+
+    if (zipPath) {
+      const fsMod = await import('fs');
+      const zipBytes = fsMod.statSync(zipPath).size;
+      const tier = guild?.premiumTier ?? 0;
+      const limitMB = tier >= 3 ? 100 : tier >= 2 ? 50 : 10;
+      const zipMB = zipBytes / (1024 * 1024);
+
+      console.log(`[TokenGen] Routing zip ${zipMB.toFixed(1)} MB through uploadFile for 30-min self-hosted link`);
+
+      const uploadingEmbed = new EmbedBuilder()
+        .setTitle('📤 Uploading Token')
+        .setDescription(
+          `Preparing your **${zipMB.toFixed(1)} MB** token zip.\n\n` +
+          `Uploading to our secure host so you can download it directly. This takes up to a minute for large files.`
+        )
+        .setColor(0xFEE75C)
+        .setTimestamp();
+      await genMsg.edit({ embeds: [uploadingEmbed] });
+
+      let upload: Awaited<ReturnType<typeof uploadFile>> | null = null;
+      try {
+        upload = await uploadFile(zipPath, '72h', installerKey, { ticketHash, expectedHmac, appIdBound });
+        console.log(`[TokenGen] Uploaded via ${upload.provider}: ${upload.url}`);
+      } catch (uploadErr) {
+        const ue = uploadErr as Error;
+        console.error('[TokenGen] Litterbox upload failed:', ue);
+        const failEmbed = new EmbedBuilder()
+          .setTitle('⚠️ Upload Failed')
+          .setDescription(
+            `Token zip (${zipMB.toFixed(1)} MB) upload to file host failed.\n\n` +
+            `\`\`\`\n${(ue?.message || String(ue)).slice(0, 300)}\n\`\`\`\n` +
+            `Staff has been notified for manual delivery.`
+          )
+          .setColor(0xED4245)
+          .setTimestamp();
+        await genMsg.edit({ embeds: [failEmbed] });
+        await channel.send({ content: `${staffPing} Auto-gen worked but the zip is ${zipMB.toFixed(1)} MB and won't fit Discord (${limitMB} MB). External upload also failed. Manual delivery needed.` });
+        if (homeGuild) {
+          await logAction(homeGuild, '⚠️ Token Upload Failed', `**${ticket.game.name}** — zip ${zipMB.toFixed(1)} MB > Discord limit ${limitMB} MB. Litterbox upload error:\n\`\`\`\n${(ue?.message || String(ue)).slice(0, 500)}\n\`\`\``, 0xED4245);
+        }
+        try { fsMod.unlinkSync(zipPath); } catch {}
+        return;
+      }
+
+      const linkEmbed = createTokenDeliveryEmbed(
+        ticket.game.name,
+        ticket.userId,
+        client.user!,
+        { url: upload.url, expiryText: upload.expiryText, sizeMB: zipMB.toFixed(1) },
+      );
+
+      const worksRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder().setCustomId('works_yes').setLabel('Confirm Working').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('works_no').setLabel('Report Issue').setStyle(ButtonStyle.Danger)
+      );
+
+      const deliveryMsg = await channel.send({ embeds: [linkEmbed], components: [worksRow] });
+
+      await prisma.ticket.update({
+        where: { id: ticket.id },
+        data: { deliveryMessageId: deliveryMsg.id, staffId: client.user!.id }
+      });
+
+      await genMsg.delete().catch(() => {});
+      await deliveryMsg.react('❤️').catch(() => {});
+
+      if (homeGuild) {
+        await logAction(homeGuild, '🤖 Auto-Token Delivered (External Host)', `Bot auto-generated and delivered token for **${ticket.game.name}** (${zipMB.toFixed(1)} MB) via ${upload.provider} in <#${channel.id}>. Link: ${upload.url}`, 0x57F287);
+      }
+      if (guildId) {
+        await logTenant(guildId, '📦 Token Delivered', `A token for **${ticket.game.name}** was delivered to <@${ticket.userId}>.`, 0x57F287);
+      }
+
+      try { fsMod.unlinkSync(zipPath); } catch {}
+    } else {
+      const failEmbed = new EmbedBuilder()
+        .setTitle('⚠️ Auto-Generation Failed')
+        .setDescription(`Could not auto-generate token for **${ticket.game.name}**.\nA staff member will need to handle this manually.`)
+        .setColor(0xED4245)
+        .setTimestamp();
+      await genMsg.edit({ embeds: [failEmbed] });
+      await channel.send({ content: `${staffPing} Auto-generation failed. Manual token delivery needed.` });
+      if (homeGuild) {
+        await logAction(homeGuild, '⚠️ Auto-Gen Failed', `Auto-generation failed for **${ticket.game.name}** (AppID \`${(ticket.game as any).appId}\`).\n\n\`\`\`\n${logs.slice(-500)}\n\`\`\``, 0xED4245);
+      }
+    }
+  } catch (genError) {
+    const ge = genError as Error;
+    console.error('[TokenGen] Error:', ge);
+    const detail = ge?.message || String(ge);
+    let hint = '';
+    if (detail.includes('Request entity too large') || detail.includes('Payload Too Large') || detail.includes('25 MB') || detail.includes('413')) {
+      hint = '\n\n*The zip exceeds this server\'s Discord upload limit. Server needs to be boosted, or the template needs to be slimmed down.*';
+    } else if (detail.includes('ENOENT') || detail.includes('no such file')) {
+      hint = '\n\n*The Python script reported success but the zip path it returned doesn\'t exist on disk.*';
+    } else if (detail.includes('timed out') || detail.includes('timeout')) {
+      hint = '\n\n*Python script ran past the 120-second timeout.*';
+    }
+    const errEmbed = new EmbedBuilder()
+      .setTitle('⚠️ Generation Error')
+      .setDescription(`Token generation encountered an error for **${ticket.game.name}**.\nA staff member has been notified and will handle this manually.`)
+      .setColor(0xED4245);
+    await genMsg.edit({ embeds: [errEmbed] });
+    await channel.send({ content: `${staffPing} Auto-generation error. Please handle manually.` });
+    if (homeGuild) {
+      await logAction(homeGuild, '🚨 Token Generation Error', `User <@${ticket.userId}> hit a token-gen error for **${ticket.game.name}** (AppID \`${ticket.game.appId}\`):\n\`\`\`\n${detail.slice(0, 800)}\n\`\`\`${hint}`, 0xED4245);
+    }
+  }
+}
+
+/**
+ * Post a staff-approval prompt when the bot couldn't auto-verify a
+ * screenshot (AI disabled or errored). A staff member reviews the
+ * screenshot and clicks Approve → the bot generates + delivers the token
+ * automatically (same flow as a passing AI verification), or Reject →
+ * the user is asked to re-submit a corrected screenshot.
+ */
+async function postScreenshotApproval(channel: TextChannel, ticket: any, reasonLine: string): Promise<void> {
+  const sc = await (await import('./utils/tenant')).resolveServerConfig(ticket.guildId ?? channel.guildId ?? '');
+  const embed = new EmbedBuilder()
+    .setTitle('🔎 Awaiting Staff Confirmation')
+    .setDescription(
+      `Your screenshot for **${ticket.game.name}** has been received.\n\n` +
+      `Automatic AI verification is unavailable right now, so a staff member will confirm it manually. ` +
+      `Once approved, your token is generated and delivered automatically — no further action needed.`
+    )
+    .setColor(0xFEE75C)
+    .setTimestamp();
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId(`verify_approve_${ticket.id}`).setLabel('Approve & Deliver').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(`verify_reject_${ticket.id}`).setLabel('Reject Screenshot').setStyle(ButtonStyle.Danger),
+  );
+  await channel.send({ embeds: [embed], components: [row] });
+  await channel.send({ content: `${sc.staffPing} ${reasonLine} Please review the screenshot above for **${ticket.game.name}** (AppID \`${ticket.game.appId}\`) and click **Approve & Deliver** if it meets the requirements.` });
+}
+
 async function handleSelectMenu(interaction: any) {
   if (interaction.customId.startsWith('select_game_')) {
     await createTicket(interaction, interaction.values[0]);
@@ -840,6 +1014,90 @@ async function handleButtonInteraction(interaction: any) {
     await handleWorksYes(interaction);
   } else if (interaction.customId === 'works_no') {
     await handleWorksNo(interaction);
+  } else if (interaction.customId.startsWith('verify_approve_')) {
+    await handleVerifyApprove(interaction);
+  } else if (interaction.customId.startsWith('verify_reject_')) {
+    await handleVerifyReject(interaction);
+  }
+}
+
+/**
+ * Staff clicked "Approve & Deliver" on a screenshot the bot couldn't
+ * auto-verify. Confirm staff clearance, mark the ticket verified, then run
+ * the normal auto-gen + delivery flow.
+ */
+async function handleVerifyApprove(interaction: any) {
+  const member = interaction.member as GuildMember | null;
+  const { isStaffForGuild } = await import('./utils/permissions');
+  if (!member || !(await isStaffForGuild(member, interaction.guildId ?? ''))) {
+    return interaction.reply({ content: '❌ Only staff can approve screenshots.', flags: [MessageFlags.Ephemeral] }).catch(() => {});
+  }
+
+  const ticketId = parseInt(interaction.customId.split('_').pop()!, 10);
+  const ticket = await prisma.ticket.findUnique({ where: { id: ticketId }, include: { game: true } });
+  if (!ticket || ticket.status === 'CLOSED') {
+    return interaction.reply({ content: '❌ This ticket is no longer active.', flags: [MessageFlags.Ephemeral] }).catch(() => {});
+  }
+
+  await interaction.update({
+    embeds: [new EmbedBuilder().setTitle('✅ Screenshot Approved').setDescription(`Approved by ${interaction.user}. Generating your token now…`).setColor(0x57F287).setTimestamp()],
+    components: [],
+  }).catch(() => {});
+
+  // Lock in the verified state and clear any leftover verification timer.
+  await prisma.ticket.update({ where: { id: ticket.id }, data: { screenshotVerified: true } }).catch(() => {});
+  await prisma.pendingVerification.deleteMany({ where: { ticketId: ticket.id } }).catch(() => {});
+  const t = pendingVerificationTimers.get(ticket.channelId);
+  if (t) { clearTimeout(t); pendingVerificationTimers.delete(ticket.channelId); }
+
+  const homeGuild = client.guilds.cache.get(CONFIG.GUILD_ID);
+  if (homeGuild) {
+    await logAction(homeGuild, '✅ Screenshot Approved (Staff)', `${interaction.user} approved the screenshot for **${ticket.game.name}** in <#${ticket.channelId}>. Auto-delivering.`, 0x57F287);
+  }
+
+  await autoGenerateAndDeliver(interaction.channel as TextChannel, ticket, interaction.guild);
+}
+
+/**
+ * Staff clicked "Reject Screenshot". Re-open verification so the user can
+ * upload a corrected screenshot, and restart the 10-minute timer.
+ */
+async function handleVerifyReject(interaction: any) {
+  const member = interaction.member as GuildMember | null;
+  const { isStaffForGuild } = await import('./utils/permissions');
+  if (!member || !(await isStaffForGuild(member, interaction.guildId ?? ''))) {
+    return interaction.reply({ content: '❌ Only staff can reject screenshots.', flags: [MessageFlags.Ephemeral] }).catch(() => {});
+  }
+
+  const ticketId = parseInt(interaction.customId.split('_').pop()!, 10);
+  const ticket = await prisma.ticket.findUnique({ where: { id: ticketId }, include: { game: true } });
+  if (!ticket || ticket.status === 'CLOSED') {
+    return interaction.reply({ content: '❌ This ticket is no longer active.', flags: [MessageFlags.Ephemeral] }).catch(() => {});
+  }
+
+  await interaction.update({
+    embeds: [new EmbedBuilder().setTitle('❌ Screenshot Rejected').setDescription(`Rejected by ${interaction.user}. <@${ticket.userId}>, please re-upload a screenshot that clearly shows all three required windows (game folder, Windows Update Blocker disabled, file properties).`).setColor(0xED4245).setTimestamp()],
+    components: [],
+  }).catch(() => {});
+
+  // Re-open verification: allow the user to resubmit a corrected screenshot.
+  await prisma.ticket.update({ where: { id: ticket.id }, data: { screenshotVerified: false } }).catch(() => {});
+  await prisma.pendingVerification.upsert({
+    where: { ticketId: ticket.id },
+    update: { isProcessing: false },
+    create: { ticketId: ticket.id },
+  }).catch(() => {});
+
+  // Restart the 10-minute verification timer.
+  const guild = interaction.guild as Guild | null;
+  const timer = setTimeout(async () => {
+    if (guild) await autoCloseTicketForVerificationTimeout(ticket.channelId, guild);
+  }, 10 * 60 * 1000);
+  pendingVerificationTimers.set(ticket.channelId, timer);
+
+  const homeGuild = client.guilds.cache.get(CONFIG.GUILD_ID);
+  if (homeGuild) {
+    await logAction(homeGuild, '❌ Screenshot Rejected (Staff)', `${interaction.user} rejected the screenshot for **${ticket.game.name}** in <#${ticket.channelId}>. User asked to resubmit.`, 0xED4245);
   }
 }
 
@@ -997,7 +1255,6 @@ client.on(Events.MessageCreate, async (message) => {
         await waitMessage.edit({ embeds: [successEmbed] });
 
         const homeGuild = client.guilds.cache.get(CONFIG.GUILD_ID);
-        const guild = message.guild;
         if (homeGuild) {
           await logAction(homeGuild, '✅ Screenshot Verified', `User ${message.author} has posted a valid screenshot for **${ticket.game.name}** in <#${message.channelId}>.`, 0x57F287);
         }
@@ -1016,19 +1273,15 @@ client.on(Events.MessageCreate, async (message) => {
         // MUST NOT auto-generate against an unverified image. Route to staff.
         if (reasoning === VERIFY_BYPASS_REASON || reasoning === VERIFY_ERROR_REASON) {
           const isAiError = reasoning === VERIFY_ERROR_REASON;
-          const bypassEmbed = new EmbedBuilder()
-            .setTitle('⚠️ Verification Unavailable')
-            .setDescription(`Your screenshot has been received for **${ticket.game.name}**.\n\nAutomatic AI verification is currently unavailable. A staff member will review it manually and deliver your token shortly.`)
-            .setColor(0xFEE75C)
-            .setTimestamp();
-          await (message.channel as TextChannel).send({ embeds: [bypassEmbed] });
           const staffReason = isAiError
             ? '**AI verification errored** (Groq API outage/rate-limit).'
             : '**GROQ_API_KEY not configured.**';
-          await (message.channel as TextChannel).send({ content: `${staffPing} ${staffReason} Screenshot received for **${ticket.game.name}** (AppID \`${ticket.game.appId}\`). Please review and deliver manually with \`/tokengen\`.` });
+          // Instead of asking staff to deliver by hand, post an approval
+          // prompt — staff clicks Approve & the bot auto-delivers the token.
+          await postScreenshotApproval(message.channel as TextChannel, ticket, staffReason);
           if (homeGuild) {
             const logReason = isAiError ? 'transient Groq API failure' : 'GROQ_API_KEY missing';
-            await logAction(homeGuild, '⚠️ AI Verify Bypassed', `Screenshot for **${ticket.game.name}** in <#${message.channelId}> wasn't verified by AI (${logReason}). Manual staff review required.`, 0xFEE75C);
+            await logAction(homeGuild, '🔎 Awaiting Staff Confirmation', `Screenshot for **${ticket.game.name}** in <#${message.channelId}> couldn't be AI-verified (${logReason}). Staff approval requested.`, 0xFEE75C);
           }
           return;
         }
@@ -1064,165 +1317,7 @@ client.on(Events.MessageCreate, async (message) => {
           return; // Skip the rest of the auto-gen block
         }
 
-        const genEmbed = new EmbedBuilder()
-          .setTitle('⚙️ Generating Token...')
-          .setDescription(`Denuvo token is being generated for **${ticket.game.name}** (AppID: \`${ticket.game.appId}\`).\nPlease wait, this may take up to 30 seconds.`)
-          .setColor(0x5865F2)
-          .setTimestamp();
-        const genMsg = await (message.channel as TextChannel).send({ embeds: [genEmbed] });
-
-        try {
-          const appId = ticket.game.appId;
-          if (!appId) throw new Error('Game has no AppID configured.');
-
-          // Owner server: tries each pool account in priority order, then
-          // falls back to the env-var account. Stops on first success.
-          // Buyer server: uses its own single account (no retry).
-          const retryResult = await generateTokenWithRetry(appId, ticket.game.name, message.guildId ?? undefined);
-          const { zipPath, logs, installerKey, ticketHash, expectedHmac, appIdBound } = retryResult;
-          if (retryResult.exhausted) {
-            const outEmbed = new EmbedBuilder()
-              .setTitle('🔴 Out of Tokens Today')
-              .setDescription(`**${ticket.game.name}** is **out of tokens for today.** Fresh tokens unlock at 00:00 UTC — please try again tomorrow.`)
-              .setColor(0xED4245)
-              .setTimestamp();
-            await genMsg.edit({ embeds: [outEmbed] });
-            return;
-          }
-          console.log(`[TokenGen] Logs for ${ticket.game.name}:\n${logs}`);
-
-          if (zipPath) {
-            const safeGameName = ticket.game.name.replace(/[<>:"/\\|?*]/g, '').trim();
-
-            // Pre-flight: check zip size against Discord's upload limit before attempting.
-            // Default tier = 10 MiB, boost level 2 = 50 MiB, boost level 3 = 100 MiB.
-            // discord.js v14: `guild.premiumTier` gives 0/1/2/3.
-            const fsMod = await import('fs');
-            const zipBytes = fsMod.statSync(zipPath).size;
-            const tier = guild?.premiumTier ?? 0;
-            const limitMB = tier >= 3 ? 100 : tier >= 2 ? 50 : 10;
-            const zipMB = zipBytes / (1024 * 1024);
-
-            // Always route through self-hosted upload for 30-min link.
-              console.log(`[TokenGen] Routing zip ${zipMB.toFixed(1)} MB through uploadFile for 30-min self-hosted link`);
-
-              const uploadingEmbed = new EmbedBuilder()
-                .setTitle('📤 Uploading Token')
-                .setDescription(
-                  `Preparing your **${zipMB.toFixed(1)} MB** token zip.\n\n` +
-                  `Uploading to our secure host so you can download it directly. This takes up to a minute for large files.`
-                )
-                .setColor(0xFEE75C)
-                .setTimestamp();
-              await genMsg.edit({ embeds: [uploadingEmbed] });
-
-              let upload: Awaited<ReturnType<typeof uploadFile>> | null = null;
-              try {
-                upload = await uploadFile(zipPath, '72h', installerKey, { ticketHash, expectedHmac, appIdBound });
-                console.log(`[TokenGen] Uploaded via ${upload.provider}: ${upload.url}`);
-              } catch (uploadErr) {
-                const ue = uploadErr as Error;
-                console.error('[TokenGen] Litterbox upload failed:', ue);
-                const failEmbed = new EmbedBuilder()
-                  .setTitle('⚠️ Upload Failed')
-                  .setDescription(
-                    `Token zip (${zipMB.toFixed(1)} MB) upload to file host failed.\n\n` +
-                    `\`\`\`\n${(ue?.message || String(ue)).slice(0, 300)}\n\`\`\`\n` +
-                    `Staff has been notified for manual delivery.`
-                  )
-                  .setColor(0xED4245)
-                  .setTimestamp();
-                await genMsg.edit({ embeds: [failEmbed] });
-                await (message.channel as TextChannel).send({ content: `${staffPing} Auto-gen worked but the zip is ${zipMB.toFixed(1)} MB and won't fit Discord (${limitMB} MB). External upload also failed. Manual delivery needed.` });
-                if (homeGuild) {
-                  await logAction(homeGuild, '⚠️ Token Upload Failed', `**${ticket.game.name}** — zip ${zipMB.toFixed(1)} MB > Discord limit ${limitMB} MB. Litterbox upload error:\n\`\`\`\n${(ue?.message || String(ue)).slice(0, 500)}\n\`\`\``, 0xED4245);
-                }
-                try { fsMod.unlinkSync(zipPath); } catch {}
-                return;
-              }
-
-              // Success: post the link using the unified delivery embed
-              const linkEmbed = createTokenDeliveryEmbed(
-                ticket.game.name,
-                ticket.userId,
-                client.user!,
-                { url: upload.url, expiryText: upload.expiryText, sizeMB: zipMB.toFixed(1) },
-              );
-
-              const worksRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
-                new ButtonBuilder().setCustomId('works_yes').setLabel('Confirm Working').setStyle(ButtonStyle.Success),
-                new ButtonBuilder().setCustomId('works_no').setLabel('Report Issue').setStyle(ButtonStyle.Danger)
-              );
-
-              const deliveryMsg = await (message.channel as TextChannel).send({
-                embeds: [linkEmbed],
-                components: [worksRow]
-              });
-
-              await prisma.ticket.update({
-                where: { id: ticket.id },
-                data: { deliveryMessageId: deliveryMsg.id, staffId: client.user!.id }
-              });
-
-              await genMsg.delete().catch(() => {});
-              await deliveryMsg.react('❤️').catch(() => {});
-
-              if (homeGuild) {
-                await logAction(homeGuild, '🤖 Auto-Token Delivered (External Host)', `Bot auto-generated and delivered token for **${ticket.game.name}** (${zipMB.toFixed(1)} MB) via ${upload.provider} in <#${message.channelId}>. Link: ${upload.url}`, 0x57F287);
-              }
-              // Basic sanitized log for a buyer server (no-op on home server).
-              if (message.guildId) {
-                await logTenant(message.guildId, '📦 Token Delivered', `A token for **${ticket.game.name}** was delivered to <@${ticket.userId}>.`, 0x57F287);
-              }
-
-              // Clean up local zip — we have the hosted copy
-              try { fsMod.unlinkSync(zipPath); } catch {}
-
-          } else {
-            const failEmbed = new EmbedBuilder()
-              .setTitle('⚠️ Auto-Generation Failed')
-              .setDescription(`Could not auto-generate token for **${ticket.game.name}**.\nA staff member will need to handle this manually.`)
-              .setColor(0xED4245)
-              .setTimestamp();
-            await genMsg.edit({ embeds: [failEmbed] });
-
-            await (message.channel as TextChannel).send({ content: `${staffPing} Auto-generation failed. Manual token delivery needed.` });
-
-            try {
-              const homeGuild = client.guilds.cache.get(CONFIG.GUILD_ID);
-              if (homeGuild) {
-                await logAction(homeGuild, '⚠️ Auto-Gen Failed', `Auto-generation failed for **${ticket.game.name}** (AppID \`${(ticket.game as any).appId}\`).\n\n\`\`\`\n${logs.slice(-500)}\n\`\`\``, 0xED4245);
-              }
-            } catch {}
-          }
-        } catch (genError) {
-          const ge = genError as Error;
-          console.error('[TokenGen] Error:', ge);
-
-          const detail = ge?.message || String(ge);
-          let hint = '';
-          if (detail.includes('Request entity too large') || detail.includes('Payload Too Large') || detail.includes('25 MB') || detail.includes('413')) {
-            hint = '\n\n*The zip exceeds this server\'s Discord upload limit. Server needs to be boosted, or the template needs to be slimmed down.*';
-          } else if (detail.includes('ENOENT') || detail.includes('no such file')) {
-            hint = '\n\n*The Python script reported success but the zip path it returned doesn\'t exist on disk.*';
-          } else if (detail.includes('timed out') || detail.includes('timeout')) {
-            hint = '\n\n*Python script ran past the 120-second timeout.*';
-          }
-
-          const errEmbed = new EmbedBuilder()
-            .setTitle('⚠️ Generation Error')
-            .setDescription(`Token generation encountered an error for **${ticket.game.name}**.\nA staff member has been notified and will handle this manually.`)
-            .setColor(0xED4245);
-          await genMsg.edit({ embeds: [errEmbed] });
-          await (message.channel as TextChannel).send({ content: `${staffPing} Auto-generation error. Please handle manually.` });
-
-          try {
-            const homeGuild = client.guilds.cache.get(CONFIG.GUILD_ID);
-            if (homeGuild) {
-              await logAction(homeGuild, '🚨 Token Generation Error', `User <@${ticket.userId}> hit a token-gen error for **${ticket.game.name}** (AppID \`${ticket.game.appId}\`):\n\`\`\`\n${detail.slice(0, 800)}\n\`\`\`${hint}`, 0xED4245);
-            }
-          } catch {}
-        }
+        await autoGenerateAndDeliver(message.channel as TextChannel, ticket, message.guild);
       } else {
         const newRetryCount = ticket.verification.retryCount + 1;
         await prisma.pendingVerification.update({
