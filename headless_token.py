@@ -746,32 +746,60 @@ def _cm_logon_with_token(client, username, token):
       * CMsgClientLogon.access_token (proto field 108) must carry the
         *refresh_token*, not the short-lived web access_token — the CM
         rejects the latter (wrong audience).
-      * client_os_type (field 7) is a proto uint32. The old
-        EOSType.Windows10 constant (-203) overflows the unsigned range
-        checker and raises "ValueError: Value out of range: -203"
-        *before* any token is even set. It's optional and the CM doesn't
-        need it for a token logon, so we omit it.
+      * The message must carry the SAME client-identity fields the steam
+        library's own client.login() sends (client_package_version,
+        client_os_type, obfuscated_private_ip, chat_mode,
+        eresult_sentryfile). A ClientLogon missing these is silently
+        DROPPED by the CM — no ClientLogOnResponse comes back at all, so
+        wait_msg() below times out instead of returning an EResult. That
+        exact "no response (timeout)" is what killed the new-auth finalize
+        step. We now mirror client.login() field-for-field and just swap
+        password → access_token.
+      * client_os_type = EOSType.Windows10 is 16 (a small positive uint),
+        NOT -203 — the library sets it on every successful login, so
+        there is no overflow. (An earlier version of this code omitted it
+        on a bad diagnosis; that's part of why the CM dropped the logon.)
 
     Returns the EResult from ClientLogOnResponse (EResult.OK on success).
     On OK, CMClient._handle_logon has already populated client.steam_id /
     session_id and started the heartbeat by the time this returns.
     """
-    from steam.enums import EResult
+    from steam.enums import EResult, EOSType
     try:
         from steam.enums import EMsg
     except ImportError:
         from steam.enums.emsg import EMsg
     from steam.core.msg import MsgProto
     from steam.steamid import SteamID
+    from steam.utils import ip4_to_int
+
+    # The CM only processes a ClientLogon once the encryption handshake is
+    # done. NewAuth's HTTP round-trips take seconds, so the channel is
+    # normally secured by now — but wait defensively so we never fire the
+    # logon into an unsecured (and thus silently-dropped) channel.
+    if not getattr(client, "channel_secured", True):
+        client.wait_event(client.EVENT_CHANNEL_SECURED, timeout=10)
 
     msg = MsgProto(EMsg.ClientLogon)
     msg.header.steamid = SteamID(type='Individual', universe='Public')
     msg.body.protocol_version = 65580
+    msg.body.client_package_version = 1561159470
+    msg.body.client_os_type = EOSType.Windows10
     msg.body.client_language = "english"
     msg.body.should_remember_password = True
     msg.body.supports_rate_limit_response = True
+    msg.body.chat_mode = getattr(client, "chat_mode", 2)
+    # Steam CM requires obfuscated_private_ip on a real-client logon; the
+    # library XORs the local IP with 0xF00DBAAD. Best-effort — if the
+    # socket has no local address yet, skip it rather than crash.
+    try:
+        msg.body.obfuscated_private_ip.v4 = ip4_to_int(client.connection.local_address) ^ 0xF00DBAAD
+    except Exception as e:
+        log(f"Steam: could not set obfuscated_private_ip ({type(e).__name__}: {e}) — continuing")
     msg.body.account_name = username
     msg.body.access_token = token
+    # No sentry file for a headless token logon — mirror login()'s no-sentry branch.
+    msg.body.eresult_sentryfile = EResult.FileNotFound
 
     client.send(msg)
     resp_msg = client.wait_msg(EMsg.ClientLogOnResponse, timeout=30)
