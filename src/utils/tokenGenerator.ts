@@ -227,23 +227,30 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
       }
     }
 
-    // Load the cached steampass bearer token from DB (Metadata table) so
-    // Python can skip POST /auth/login entirely. Set via /setsteampass.
-    // Falls back gracefully if the row doesn't exist — Python will then
-    // attempt a fresh login and surface a clear error if it 422s.
-    //
-    // The cached bearer belongs to the GLOBAL (home) account only — a
-    // tenant has a different steampass account, so reusing the home
-    // bearer would auth as the wrong account. Tenants therefore skip the
-    // cached bearer and do a fresh /auth/login with their own creds.
-    // The owner-pool override also skips it (it's a different account too).
+    // Load the cached steampass bearer so Python can skip POST /auth/login
+    // (the endpoint steampass rate-limits / IP-bans). The bearer is tied to
+    // a specific steampass ACCOUNT, so we resolve it by spLogin — NOT by
+    // "is there an override". That's the key fix: every owner gen (pool AND
+    // env) routes through the override path, so the old "skip if override"
+    // check meant the bearer was NEVER used and /auth/login ran every time.
+    //   - pool account  → SteampassAccount.token (keyed by unique login)
+    //   - global env    → Metadata "steampass_token"
+    //   - tenant        → not cached here (still gets the refresh_token cache)
+    // Python auto-refreshes a stale bearer, and we persist the fresh one
+    // back on success below — so this self-heals without manual /setsteampass.
     let cachedToken = '';
-    if (!isTenant && !(accountOverride && accountOverride.login)) {
+    if (spLogin) {
       try {
-        const row = await prisma.metadata.findUnique({ where: { key: 'steampass_token' } });
-        cachedToken = (row?.value || '').trim();
+        const acct = await (prisma as any).steampassAccount.findUnique({ where: { login: spLogin } });
+        if (acct) {
+          cachedToken = (acct.token || '').trim();
+        } else if (!isTenant) {
+          const row = await prisma.metadata.findUnique({ where: { key: 'steampass_token' } });
+          cachedToken = (row?.value || '').trim();
+        }
       } catch {
-        // Metadata table issue is non-fatal — proceed without cached token.
+        // DB issue is non-fatal — proceed without cached token (Python
+        // falls back to /auth/login).
       }
     }
 
@@ -424,6 +431,32 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
               );
             } catch (e) {
               console.warn('[TokenGen] SteamSession upsert failed (non-fatal):', e);
+            }
+          }
+
+          // Persist a freshly-captured steampass bearer so future gens on
+          // this account skip /auth/login. Python only emits
+          // meta.steampass_token when it did a REAL /auth/login this run
+          // (not when it reused a cached bearer), so this writes at most
+          // once per account per bearer lifetime — and re-writes after a
+          // 401 self-heal. Saved to the pool account row (by unique login)
+          // if spLogin is one, else to the global Metadata slot.
+          if (meta && meta.steampass_token && spLogin) {
+            try {
+              const upd = await (prisma as any).steampassAccount.updateMany({
+                where: { login: spLogin },
+                data: { token: meta.steampass_token },
+              });
+              if (upd.count === 0 && !isTenant) {
+                await prisma.metadata.upsert({
+                  where: { key: 'steampass_token' },
+                  update: { value: meta.steampass_token },
+                  create: { key: 'steampass_token', value: meta.steampass_token },
+                });
+              }
+              console.log(`[TokenGen] Cached fresh steampass bearer for account ${spLogin} (future gens skip /auth/login)`);
+            } catch (e) {
+              console.warn('[TokenGen] steampass bearer cache save failed (non-fatal):', e);
             }
           }
 

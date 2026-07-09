@@ -397,6 +397,10 @@ def build_thin_zip(out, app_id, game_name, generation_mode, token_b64, steam_id,
             "steam_id":       os.environ.get("_GAMEGEN_NEW_STEAM_ID") or None,
             "refresh_token":  os.environ.get("_GAMEGEN_NEW_REFRESH_TOKEN") or None,
             "guarded":        (os.environ.get("_GAMEGEN_NEW_STEAM_GUARDED") or "true").lower() == "true",
+            # Freshly-captured steampass bearer (empty unless we did a real
+            # /auth/login this run). Node saves it to the account so future
+            # gens skip /auth/login.
+            "steampass_token": os.environ.get("_GAMEGEN_NEW_STEAMPASS_TOKEN") or None,
         }
         Path(zip_path + ".meta.json").write_text(json.dumps(meta), encoding="utf-8")
     except OSError as e:
@@ -592,6 +596,16 @@ class SteampassClient:
         self.login = login
         self.password = password
         self.token = None
+        # True only when self.token came from a real POST /auth/login this
+        # run (not from a reused cached bearer). Node reads this to decide
+        # whether to persist the bearer — so we save at most once per
+        # account per bearer lifetime instead of on every gen.
+        self.token_is_fresh = False
+        # True while we're operating on a bearer that came from the cache.
+        # Lets _authed_request() transparently re-login once if the cached
+        # bearer turns out to be stale (401/403), so a dead cache never
+        # fails a gen — it just gets replaced.
+        self.used_cached_token = False
         self.session = requests.Session()
         self.session.headers.update({
             "Accept": "application/json",
@@ -604,28 +618,38 @@ class SteampassClient:
 
         Priority order:
           1. Cached bearer token in STEAMPASS_TOKEN env var (set by the
-             Node bot from its DB-stored session). Skips POST /auth/login
-             entirely — no email code prompt, no rate-limit hit, no IP-
-             ban risk. This is the normal path 99% of the time.
+             Node bot from its DB-stored per-account session). Skips POST
+             /auth/login entirely — no email code prompt, no rate-limit
+             hit, no IP-ban risk. This is the normal path 99% of the time.
           2. Fresh username+password login via POST /auth/login. Only
-             happens if no cached token exists, or if a previous call
-             returned 401 and the caller cleared STEAMPASS_TOKEN.
+             happens if no cached token exists, or the cached one was
+             rejected as stale (see _authed_request).
 
         Steampass.gg started requiring an email verification code for
         password logins, AND rate-limits / IP-bans accounts that hit
-        /auth/login too often. Caching the bearer token means we
-        basically never hit /auth/login from the bot, and the user only
-        needs to refresh it manually when steampass invalidates the
-        session (typically weeks/months).
+        /auth/login too often. Caching the bearer means we basically never
+        hit /auth/login, and the bot auto-refreshes it when steampass
+        invalidates the session (typically weeks/months).
         """
         cached = (os.environ.get("STEAMPASS_TOKEN") or "").strip()
         if cached:
             self.token = cached
+            self.token_is_fresh = False
+            self.used_cached_token = True
             self.session.headers["Authorization"] = f"Bearer {self.token}"
             log("Steampass: using cached bearer token (skipping /auth/login)")
             return
 
-        log("Steampass: no cached token — falling back to /auth/login (rate-limited!)")
+        self._password_login()
+
+    def _password_login(self):
+        """POST /auth/login with username+password and set a fresh bearer.
+
+        This is the rate-limited path — only reached with no cached bearer,
+        or when a cached bearer was rejected mid-run. Sets token_is_fresh so
+        Node persists the newly obtained bearer for reuse.
+        """
+        log("Steampass: no usable cached token — POST /auth/login (rate-limited!)")
         resp = _steampass_request(self.session.post,
             f"{STEAMPASS_API}/auth/login",
             json={"login": self.login, "password": self.password})
@@ -645,12 +669,29 @@ class SteampassClient:
         self.token = data.get("data", {}).get("token")
         if not self.token:
             raise RuntimeError(f"Steampass login succeeded but no token in response: {data}")
+        self.token_is_fresh = True
+        self.used_cached_token = False
         self.session.headers["Authorization"] = f"Bearer {self.token}"
         log("Steampass: authenticated via password login")
 
+    def _authed_request(self, session_callable, *args, **kwargs):
+        """Make an authenticated steampass call, transparently recovering
+        from a stale cached bearer. If we're using a cached token and the
+        call comes back 401/403, re-login ONCE with the password and retry
+        — so a dead cache costs a single extra /auth/login instead of
+        failing the whole gen. The fresh bearer is then captured by Node.
+        """
+        resp = _steampass_request(session_callable, *args, **kwargs)
+        if resp is not None and resp.status_code in (401, 403) and self.used_cached_token:
+            log(f"Steampass: cached bearer rejected ({resp.status_code}) — "
+                "re-authenticating with password once and retrying")
+            self._password_login()  # updates self.session Authorization header
+            resp = _steampass_request(session_callable, *args, **kwargs)
+        return resp
+
     def get_steam_credentials(self, product_uuid):
         """Get Steam username + password for a product."""
-        resp = _steampass_request(self.session.get,
+        resp = self._authed_request(self.session.get,
             f"{STEAMPASS_API}/profile/product-credentials/{product_uuid}",
             params={"account_platform": 1},
         )
@@ -685,7 +726,7 @@ class SteampassClient:
 
     def get_guard_code(self, product_uuid):
         """Request a Steam Guard authorization code."""
-        resp = _steampass_request(self.session.post,
+        resp = self._authed_request(self.session.post,
             f"{STEAMPASS_API}/email/code/main",
             json={"uuid": product_uuid},
         )
@@ -1821,6 +1862,15 @@ def main(app_id, game_name, steampass_uuid, generation_mode="gbe"):
         os.environ["_GAMEGEN_NEW_STEAM_PASSWORD"] = steam_password or ""
         os.environ["_GAMEGEN_NEW_STEAM_ID"] = steam_id or ""
         os.environ["_GAMEGEN_NEW_STEAM_GUARDED"] = "true" if guarded else "false"
+        # Capture a freshly-obtained steampass bearer so Node can persist it
+        # for this account and skip /auth/login next time. Only set when we
+        # actually did a password login this run (token_is_fresh) — reusing a
+        # cached bearer leaves it empty so Node doesn't churn the same value.
+        os.environ["_GAMEGEN_NEW_STEAMPASS_TOKEN"] = (
+            sp.token if (sp is not None and getattr(sp, "token", None)
+                         and getattr(sp, "token_is_fresh", False))
+            else ""
+        )
 
     # ── Step 4: Build output zip ──
     # Two paths:
