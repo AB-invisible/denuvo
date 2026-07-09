@@ -971,20 +971,32 @@ async function autoGenerateAndDeliver(channel: TextChannel, ticket: any, guild: 
  * automatically (same flow as a passing AI verification), or Reject →
  * the user is asked to re-submit a corrected screenshot.
  */
-async function postScreenshotApproval(channel: TextChannel, ticket: any, reasonLine: string): Promise<void> {
+async function postScreenshotApproval(
+  channel: TextChannel,
+  ticket: any,
+  reasonLine: string,
+  rejectMode: 'resubmit' | 'fail' = 'resubmit',
+): Promise<void> {
   const sc = await (await import('./utils/tenant')).resolveServerConfig(ticket.guildId ?? channel.guildId ?? '');
+  const desc = rejectMode === 'fail'
+    ? `Your screenshot for **${ticket.game.name}** didn't pass automatic verification after 3 attempts.\n\n` +
+      `A staff member will review it manually. If it's correct they'll approve it and your token is delivered automatically; otherwise the request is closed.`
+    : `Your screenshot for **${ticket.game.name}** has been received.\n\n` +
+      `Automatic AI verification is unavailable right now, so a staff member will confirm it manually. ` +
+      `Once approved, your token is generated and delivered automatically — no further action needed.`;
   const embed = new EmbedBuilder()
     .setTitle('🔎 Awaiting Staff Confirmation')
-    .setDescription(
-      `Your screenshot for **${ticket.game.name}** has been received.\n\n` +
-      `Automatic AI verification is unavailable right now, so a staff member will confirm it manually. ` +
-      `Once approved, your token is generated and delivered automatically — no further action needed.`
-    )
+    .setDescription(desc)
     .setColor(0xFEE75C)
     .setTimestamp();
+  // The reject button differs by context: after an AI OUTAGE the user did
+  // nothing wrong, so Reject just asks them to resubmit. After 3 genuine AI
+  // rejections, Reject closes the session with the standard cooldown.
+  const rejectId = rejectMode === 'fail' ? `verify_deny_${ticket.id}` : `verify_reject_${ticket.id}`;
+  const rejectLabel = rejectMode === 'fail' ? 'Reject (Close + Cooldown)' : 'Reject (Ask Resubmit)';
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder().setCustomId(`verify_approve_${ticket.id}`).setLabel('Approve & Deliver').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId(`verify_reject_${ticket.id}`).setLabel('Reject Screenshot').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId(rejectId).setLabel(rejectLabel).setStyle(ButtonStyle.Danger),
   );
   await channel.send({ embeds: [embed], components: [row] });
   await channel.send({ content: `${sc.staffPing} ${reasonLine} Please review the screenshot above for **${ticket.game.name}** (AppID \`${ticket.game.appId}\`) and click **Approve & Deliver** if it meets the requirements.` });
@@ -1018,6 +1030,8 @@ async function handleButtonInteraction(interaction: any) {
     await handleVerifyApprove(interaction);
   } else if (interaction.customId.startsWith('verify_reject_')) {
     await handleVerifyReject(interaction);
+  } else if (interaction.customId.startsWith('verify_deny_')) {
+    await handleVerifyDeny(interaction);
   }
 }
 
@@ -1098,6 +1112,43 @@ async function handleVerifyReject(interaction: any) {
   const homeGuild = client.guilds.cache.get(CONFIG.GUILD_ID);
   if (homeGuild) {
     await logAction(homeGuild, '❌ Screenshot Rejected (Staff)', `${interaction.user} rejected the screenshot for **${ticket.game.name}** in <#${ticket.channelId}>. User asked to resubmit.`, 0xED4245);
+  }
+}
+
+/**
+ * Staff clicked "Reject (Close + Cooldown)" after the screenshot failed AI
+ * verification 3×. Closes the session with the standard failure cooldown —
+ * the same outcome the bot used to apply automatically after 3 fails.
+ */
+async function handleVerifyDeny(interaction: any) {
+  const member = interaction.member as GuildMember | null;
+  const { isStaffForGuild } = await import('./utils/permissions');
+  if (!member || !(await isStaffForGuild(member, interaction.guildId ?? ''))) {
+    return interaction.reply({ content: '❌ Only staff can reject screenshots.', flags: [MessageFlags.Ephemeral] }).catch(() => {});
+  }
+
+  const ticketId = parseInt(interaction.customId.split('_').pop()!, 10);
+  const ticket = await prisma.ticket.findUnique({ where: { id: ticketId }, include: { game: true } });
+  if (!ticket || ticket.status === 'CLOSED') {
+    return interaction.reply({ content: '❌ This ticket is no longer active.', flags: [MessageFlags.Ephemeral] }).catch(() => {});
+  }
+
+  await interaction.update({
+    embeds: [new EmbedBuilder().setTitle('❌ Screenshot Rejected').setDescription(`Rejected by ${interaction.user}. This request is closed and a cooldown has been applied.`).setColor(0xED4245).setTimestamp()],
+    components: [],
+  }).catch(() => {});
+
+  await prisma.pendingVerification.deleteMany({ where: { ticketId: ticket.id } }).catch(() => {});
+  const t = pendingVerificationTimers.get(ticket.channelId);
+  if (t) { clearTimeout(t); pendingVerificationTimers.delete(ticket.channelId); }
+
+  const channel = interaction.channel as TextChannel;
+  await triggerSessionFailure(ticket.channelId, ticket.userId, channel, false, ticket.guildId ?? interaction.guildId ?? '');
+  await refreshAllPanels();
+
+  const homeGuild = client.guilds.cache.get(CONFIG.GUILD_ID);
+  if (homeGuild) {
+    await logAction(homeGuild, '❌ Screenshot Denied (Staff)', `${interaction.user} rejected <@${ticket.userId}>'s screenshot for **${ticket.game.name}** in <#${ticket.channelId}> after 3 failed AI attempts. Session closed + cooldown applied.`, 0xED4245);
   }
 }
 
@@ -1331,14 +1382,19 @@ client.on(Events.MessageCreate, async (message) => {
         if (remaining <= 0) {
           const tTimer = pendingVerificationTimers.get(message.channelId);
           if (tTimer) clearTimeout(tTimer);
-          
+
           await prisma.pendingVerification.delete({ where: { ticketId: ticket.id } });
-          
+
           await waitMessage.edit({ embeds: [failureEmbed] });
-          
-          const channel = message.channel as TextChannel;
-          await triggerSessionFailure(message.channelId, ticket.userId, channel, false, ticket.guildId || message.guildId || '');
-          await refreshAllPanels();
+
+          // After 3 failed AI attempts, don't auto-strike — hand off to
+          // staff. They can Approve & Deliver (if the AI was wrong) or
+          // Reject, which closes the session with the standard cooldown.
+          await postScreenshotApproval(message.channel as TextChannel, ticket, '**Screenshot failed AI verification 3×.**', 'fail');
+          const homeGuild = client.guilds.cache.get(CONFIG.GUILD_ID);
+          if (homeGuild) {
+            await logAction(homeGuild, '🔎 Awaiting Staff Confirmation', `User <@${ticket.userId}>'s screenshot for **${ticket.game.name}** failed AI verification 3× in <#${message.channelId}>. Staff to approve or reject.`, 0xFEE75C);
+          }
         } else {
           await waitMessage.edit({ embeds: [failureEmbed] });
 
