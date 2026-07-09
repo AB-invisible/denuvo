@@ -832,8 +832,8 @@ def _new_auth_login(client, username, password, guard_code):
         from Cryptodome.PublicKey import RSA as CryptoRSA
         from Cryptodome.Cipher import PKCS1_v1_5
     except ImportError:
-        from Crypto.PublicKey import RSA as CryptoRSA
-        from Crypto.Cipher import PKCS1_v1_5
+        from Crypto.PublicKey import RSA as CryptoRSA  # type: ignore
+        from Crypto.Cipher import PKCS1_v1_5  # type: ignore
 
     # ── Step 1: Get RSA public key for this account ──
     log("Steam [NewAuth]: requesting RSA public key via HTTP...")
