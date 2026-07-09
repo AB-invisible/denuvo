@@ -732,6 +732,54 @@ def _extract_refresh_token(client):
     return None
 
 
+def _cm_logon_with_token(client, username, token):
+    """Send a raw CMsgClientLogon authenticated by a CAuthentication
+    refresh_token (JWT) and wait for the response.
+
+    This is the one CM-login shape that actually works on
+    steam[client] 1.4.4, whose high-level ``client.login()`` predates
+    token auth entirely. It's used both to finalize a fresh
+    CAuthentication handshake and to reuse a cached refresh_token on
+    later gens (skipping steampass completely).
+
+    Two hard-won details are baked in here:
+      * CMsgClientLogon.access_token (proto field 108) must carry the
+        *refresh_token*, not the short-lived web access_token — the CM
+        rejects the latter (wrong audience).
+      * client_os_type (field 7) is a proto uint32. The old
+        EOSType.Windows10 constant (-203) overflows the unsigned range
+        checker and raises "ValueError: Value out of range: -203"
+        *before* any token is even set. It's optional and the CM doesn't
+        need it for a token logon, so we omit it.
+
+    Returns the EResult from ClientLogOnResponse (EResult.OK on success).
+    On OK, CMClient._handle_logon has already populated client.steam_id /
+    session_id and started the heartbeat by the time this returns.
+    """
+    from steam.enums import EResult
+    try:
+        from steam.enums import EMsg
+    except ImportError:
+        from steam.enums.emsg import EMsg
+    from steam.core.msg import MsgProto
+    from steam.steamid import SteamID
+
+    msg = MsgProto(EMsg.ClientLogon)
+    msg.header.steamid = SteamID(type='Individual', universe='Public')
+    msg.body.protocol_version = 65580
+    msg.body.client_language = "english"
+    msg.body.should_remember_password = True
+    msg.body.supports_rate_limit_response = True
+    msg.body.account_name = username
+    msg.body.access_token = token
+
+    client.send(msg)
+    resp_msg = client.wait_msg(EMsg.ClientLogOnResponse, timeout=30)
+    if not resp_msg:
+        raise RuntimeError("CM ClientLogon: no response (timeout)")
+    return EResult(resp_msg.body.eresult)
+
+
 def _login_with_refresh_token(client, username, refresh_token):
     """Attempt Steam CM login using a saved refresh_token (skip
     username+password+guard code entirely). Returns EResult on attempt;
@@ -758,9 +806,21 @@ def _login_with_refresh_token(client, username, refresh_token):
             log(f"Steam: login({kwarg}=...) threw {type(e).__name__}: {e}")
             continue
 
-    # Shape B: WebAuth → access_token → client.login. This is the modern
-    # Steam Authentication path. Defensive about which renewal method
-    # the installed library version exposes.
+    # Shape B: raw CMsgClientLogon carrying the refresh_token. This is the
+    # path that works on steam[client] 1.4.4 (whose client.login() has no
+    # token kwarg, so Shape A above always TypeErrors out). Same message
+    # the fresh CAuthentication handshake uses to finalize — so a cached
+    # refresh_token genuinely skips steampass on repeat gens.
+    try:
+        log("Steam: trying refresh_token via raw ClientLogon...")
+        result = _cm_logon_with_token(client, username, refresh_token)
+        log(f"Steam: raw ClientLogon(refresh_token) → {result}")
+        return result
+    except Exception as e:
+        log(f"Steam: raw ClientLogon(refresh_token) threw {type(e).__name__}: {e}")
+
+    # Shape C: WebAuth → access_token → client.login. Legacy fallback for
+    # library versions whose WebAuth exposes a renewal helper.
     try:
         from steam.webauth import WebAuth
         wa = WebAuth(username)
@@ -784,7 +844,7 @@ def _login_with_refresh_token(client, username, refresh_token):
                 except TypeError:
                     pass
     except ImportError:
-        log("Steam: steam.webauth not importable — Shape B unavailable")
+        log("Steam: steam.webauth not importable — Shape C unavailable")
     except Exception as e:
         log(f"Steam: WebAuth path threw {type(e).__name__}: {e}")
 
@@ -915,6 +975,11 @@ def _new_auth_login(client, username, password, guard_code):
     log("Steam [NewAuth]: guard code accepted!")
 
     # ── Step 5: Poll for tokens ──
+    # We specifically need the *refresh_token* — that's the credential the
+    # CM's ClientLogon accepts (SteamKit sets LogOnDetails.AccessToken =
+    # pollResponse.RefreshToken). The short-lived web access_token has a
+    # different audience and the CM rejects it, so refresh_token is what
+    # gates the loop; access_token is captured only for completeness.
     log("Steam [NewAuth]: polling for auth session status...")
     access_token = None
     refresh_token_new = None
@@ -935,9 +1000,9 @@ def _new_auth_login(client, username, password, guard_code):
         access_token = poll_data.get("access_token")
         refresh_token_new = poll_data.get("refresh_token")
 
-        if access_token:
-            log(f"Steam [NewAuth]: got access_token (len={len(access_token)}), "
-                f"refresh_token={'yes' if refresh_token_new else 'no'}")
+        if refresh_token_new:
+            log(f"Steam [NewAuth]: got refresh_token (len={len(refresh_token_new)}), "
+                f"access_token={'yes' if access_token else 'no'}")
             break
             
         if poll_data.get("new_client_id"):
@@ -945,34 +1010,24 @@ def _new_auth_login(client, username, password, guard_code):
     else:
         raise RuntimeError("PollAuthSessionStatus: no tokens after 10 attempts")
 
-    if not access_token:
-        raise RuntimeError("PollAuthSessionStatus returned empty access_token")
+    if not refresh_token_new:
+        raise RuntimeError("PollAuthSessionStatus returned empty refresh_token")
 
-    # ── Step 6: Finalize CM login with access_token ──
-    log("Steam [NewAuth]: finalizing CM login with access_token...")
-    msg = MsgProto(EMsg.ClientLogon)
-    msg.header.steamid = SteamID(type='Individual', universe='Public')
-    msg.body.protocol_version = 65580
-    msg.body.client_os_type = -203  # EOSType.Windows10
-    msg.body.client_language = "english"
-    msg.body.should_remember_password = True
-    msg.body.supports_rate_limit_response = True
-    msg.body.account_name = username
-    msg.body.access_token = access_token
+    # ── Step 6: Finalize CM login with the refresh_token ──
+    # _cm_logon_with_token() carries the fixes that were killing this path:
+    # it sends the refresh_token (not the web access_token) in field 108
+    # and omits client_os_type (the -203 uint32 overflow). See its docstring.
+    log("Steam [NewAuth]: finalizing CM login with refresh_token...")
+    result = _cm_logon_with_token(client, username, refresh_token_new)
 
-    client.send(msg)
-    resp_msg = client.wait_msg(EMsg.ClientLogOnResponse, timeout=30)
-
-    if resp_msg and resp_msg.body.eresult == EResult.OK:
+    if result == EResult.OK:
         client.sleep(0.5)
         log("Steam [NewAuth]: CM login succeeded!")
         # Stash the refresh_token so _extract_refresh_token() can find it
-        if refresh_token_new:
-            client.refresh_token = refresh_token_new
+        client.refresh_token = refresh_token_new
         return True
     else:
-        eresult = EResult(resp_msg.body.eresult) if resp_msg else "timeout"
-        raise RuntimeError(f"CM ClientLogon with access_token failed: {eresult}")
+        raise RuntimeError(f"CM ClientLogon with refresh_token failed: {result}")
 
 
 def get_encrypted_ticket_headless(app_id, steam_login, steam_password, guard_code,
