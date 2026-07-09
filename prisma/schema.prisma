@@ -171,6 +171,16 @@ model SteamSession {
   // STEAMPASS_LOGIN/PASSWORD env account. Defaulting to "" keeps every
   // pre-multitenant row valid (they were all the home account).
   guildId         String    @default("")
+  // WHICH steampass account fetched this session. Critical for the owner
+  // account POOL: every pool account shares guildId="" but backs a
+  // DIFFERENT Steam account, so (guildId, steampassUuid) alone would let
+  // pool account A's cached refresh_token be reused for account B (wrong
+  // creds — "cache poisoning"). Including the steampass login in the key
+  // gives each pool account its own cached session per game, so the cache
+  // can be safely reused for pool gens instead of being disabled.
+  // Defaults to "" so pre-existing rows stay valid (they get re-seeded
+  // with the real login on their next successful gen).
+  steampassLogin  String    @default("")
   steampassUuid   String
   // Cached Steam credentials from a prior /profile/product-credentials fetch.
   steamLogin      String
@@ -191,7 +201,7 @@ model SteamSession {
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @default(now()) @updatedAt
 
-  @@unique([guildId, steampassUuid])
+  @@unique([guildId, steampassLogin, steampassUuid])
 }
 
 // A buyer server that has been sold/authorized to use the bot. The
