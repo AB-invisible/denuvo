@@ -809,7 +809,17 @@ def _new_auth_login(client, username, password, guard_code):
     catch exceptions and fall back to the legacy ClientLogon path.
     """
     from steam.enums import EResult
-    from steam.enums.emsg import EMsg
+    try:
+        from steam.enums import EMsg
+    except ImportError:
+        try:
+            from steam.enums.emsg import EMsg
+        except ImportError:
+            # Last resort: use raw integer for ClientLogon
+            class _EMsg:
+                ClientLogon = 5514
+                ClientLogOnResponse = 751
+            EMsg = _EMsg
     from steam.core.msg import MsgProto
     from steam.steamid import SteamID
     import base64
