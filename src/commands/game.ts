@@ -1,5 +1,5 @@
 import prisma from '../lib/prisma';
-import { purgeGameCascade } from '../utils/gameManager';
+import { purgeGameCascade, initServerStocksForGame } from '../utils/gameManager';
 import { refreshAllPanels } from '../utils/panelManager';
 import { logAction } from '../utils/logging';
 
@@ -37,6 +37,9 @@ export async function execute(interaction: any): Promise<void> {
         ...tierFlags,
       } as any,
     });
+
+    const newGame = await prisma.game.findUnique({ where: { name } });
+    if (newGame) await initServerStocksForGame(newGame.id);
 
     await refreshAllPanels();
 

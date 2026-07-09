@@ -1,13 +1,11 @@
 import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, GuildMember } from 'discord.js';
 import prisma from '../lib/prisma';
-import { CONFIG } from '../config';
 import { isStaff } from '../utils/permissions';
-import { generateToken } from '../utils/tokenGenerator';
+import { generateTokenWithRetry } from '../utils/tokenGenerator';
 import { uploadFile } from '../utils/fileHost';
 import { consumeStock } from '../utils/gameManager';
 import { createTokenDeliveryEmbed } from '../utils/embeds';
 import { logAction, logTenant } from '../utils/logging';
-import { pickOwnerAccount, recordOwnerUsage } from '../utils/steampassPool';
 import { pendingVerificationTimers } from '../utils/ticketManager';
 
 export async function execute(interaction: any): Promise<void> {
@@ -30,24 +28,15 @@ export async function execute(interaction: any): Promise<void> {
   await interaction.editReply({ embeds: [startEmbed] });
 
   let poolAccountId: number | null = null;
-  let accountOverride: { login: string; password: string; token?: string } | undefined;
-  if (interaction.guildId === CONFIG.OWNER_GUILD_ID) {
-    const picked = await pickOwnerAccount(game.appId);
-    if (picked.exhausted) {
-      return interaction.editReply({ content: `🔴 **${game.name}** is **out of tokens for today.** Fresh tokens unlock at 00:00 UTC — please try again tomorrow.` });
-    }
-    if (picked.account) {
-      poolAccountId = picked.account.id;
-      accountOverride = { login: picked.account.login, password: picked.account.password, token: picked.account.token };
-    }
-  }
 
   try {
-    const { zipPath, logs, installerKey, ticketHash, expectedHmac, appIdBound, usedFallbackAccount } = await generateToken(game.appId, game.name, interaction.guildId, accountOverride);
+    const retryResult = await generateTokenWithRetry(game.appId, game.name, interaction.guildId);
+    const { zipPath, logs, installerKey, ticketHash, expectedHmac, appIdBound } = retryResult;
+    poolAccountId = retryResult.poolAccountId;
+    if (retryResult.exhausted) {
+      return interaction.editReply({ content: `🔴 **${game.name}** is **out of tokens for today.** Fresh tokens unlock at 00:00 UTC — please try again tomorrow.` });
+    }
     console.log(`[TokenGen-Cmd] Logs for ${game.name}:\n${logs}`);
-    // Only charge the pool account's daily quota if IT actually produced the
-    // token — a fallback to the global env account doesn't count against it.
-    if (poolAccountId && zipPath && !usedFallbackAccount) await recordOwnerUsage(poolAccountId, game.appId);
 
     if (!zipPath) {
       const failEmbed = new EmbedBuilder()
@@ -63,7 +52,7 @@ export async function execute(interaction: any): Promise<void> {
     }
 
     if (deduct) {
-      await consumeStock(game.id).catch(e => console.error('[TokenGen-Cmd] consumeStock failed:', e));
+      await consumeStock(game.id, interaction.guildId || '').catch(e => console.error('[TokenGen-Cmd] consumeStock failed:', e));
     }
 
     const safeGameName = game.name.replace(/[<>:"/\\|?*]/g, '').trim();

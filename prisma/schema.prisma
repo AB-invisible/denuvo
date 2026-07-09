@@ -17,27 +17,16 @@ model Game {
   donatorOnly     Boolean  @default(false)
   boosterOnly     Boolean  @default(false)
   excludeRegen    Boolean  @default(false)
-  // Per-game pause for auto token generation after AI screenshot verify.
-  // When true, the bot still verifies the user's screenshot but routes the
-  // ticket to staff for manual delivery instead of running headless_token.py.
-  // Independent of the global `autoGenEnabled` metadata flag — either one
-  // being "off" is enough to bypass auto-gen for a ticket on this game.
   autoGenDisabled Boolean  @default(false)
-  steampassUuid   String?  // steampass.gg product UUID for headless token generation
-  // Generation mode for token zips. Valid values:
-  //   "gbe"               -> flat GBE Normal (steam_api64.dll + steamclient64.dll + steam_settings)
-  //   "coldloader"        -> V2 DLL hijack (coldloader.dll + version/dinput8/winmm proxy)
-  //   "coldclientloader"  -> V1 launcher (START_<game>.exe + ColdClientLoader.ini)
+  steampassUuid   String?
   generationMode  String   @default("gbe")
-  // True for games created via /game add slash command (not from denuvo.json).
-  // syncManager.ts skips the auto-disable pass for these so the next JSON
-  // sync doesn't hide manually-added games.
   manuallyAdded   Boolean  @default(false)
   updatedAt       DateTime @default(now()) @updatedAt
   tickets         Ticket[]
   restocks        Restock[]
   subscriptions   Subscription[]
   waitlist        Waitlist[]
+  serverStocks    ServerStock[]
 }
 
 model Ticket {
@@ -102,6 +91,7 @@ model Panel {
 model Restock {
   id        Int      @id @default(autoincrement())
   gameId    Int
+  guildId   String   @default("")
   game      Game     @relation(fields: [gameId], references: [id])
   restockAt DateTime
   createdAt DateTime @default(now())
@@ -111,6 +101,17 @@ model Metadata {
   id    Int    @id @default(autoincrement())
   key   String @unique
   value String
+}
+
+model ServerStock {
+  id             Int       @id @default(autoincrement())
+  gameId         Int
+  guildId        String
+  stock          Int       @default(5)
+  lastDepletedAt DateTime?
+  game           Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  @@unique([gameId, guildId])
 }
 
 model Subscription {
@@ -245,7 +246,6 @@ model SteampassAccount {
   label     String?               // human label, e.g. "acct-1"
   login     String   @unique      // steampass email
   password  String                // steampass password
-  token     String   @default("") // cached bearer token — lets this account skip /auth/login (set via /setsteampass account:<id>)
   active    Boolean  @default(true)
   priority  Int      @default(100) // lower = tried first
   createdAt DateTime @default(now())

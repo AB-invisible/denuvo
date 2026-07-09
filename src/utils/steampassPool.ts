@@ -83,6 +83,49 @@ export async function recordOwnerUsage(accountId: number, appId: number): Promis
   }
 }
 
+/**
+ * Return ALL owner-pool accounts with remaining daily quota for `appId`,
+ * in priority order. Used by the retry loop to try each account on failure.
+ */
+export async function getAllAvailableOwnerAccounts(
+  appId: number,
+): Promise<{ accounts: PooledAccount[]; exhausted: boolean }> {
+  const cap = CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
+  const today = utcDateKey();
+
+  let accounts: any[] = [];
+  try {
+    accounts = await (prisma as any).steampassAccount.findMany({
+      where: { active: true },
+      orderBy: [{ priority: 'asc' }, { id: 'asc' }],
+    });
+  } catch (e) {
+    console.warn('[steampassPool] account lookup failed (treating as empty pool):', (e as Error).message);
+    return { accounts: [], exhausted: false };
+  }
+
+  if (accounts.length === 0) return { accounts: [], exhausted: false };
+
+  const available: PooledAccount[] = [];
+  for (const acct of accounts) {
+    let used = 0;
+    try {
+      const usage = await (prisma as any).steampassUsage.findUnique({
+        where: { accountId_appId_usageDate: { accountId: acct.id, appId, usageDate: today } },
+      });
+      used = usage?.count ?? 0;
+    } catch {
+      used = 0;
+    }
+    if (used < cap) {
+      available.push({ id: acct.id, login: acct.login, password: acct.password, token: (acct.token || '').trim() });
+    }
+  }
+
+  if (available.length === 0) return { accounts: [], exhausted: true };
+  return { accounts: available, exhausted: false };
+}
+
 /** Owner /steampass status — each account with today's total usage. */
 export async function getPoolStatus(): Promise<
   { id: number; label: string | null; login: string; active: boolean; priority: number; usedToday: number; hasToken: boolean }[]
