@@ -7,13 +7,18 @@ export interface StaffStat {
   };
 }
 
-export async function getEstimatedWaitTime(): Promise<string> {
+export async function getEstimatedWaitTime(guildId?: string): Promise<string> {
   try {
     const windowStart = new Date();
     windowStart.setHours(windowStart.getHours() - 6);
 
+    // Scope to one server when a guildId is given so a tenant sees ITS OWN
+    // queue, not the global cross-tenant total. Omit → global (back-compat).
+    const guildScope = guildId ? { guildId } : {};
+
     const data = await prisma.ticket.findMany({
       where: {
+        ...guildScope,
         status: 'CLOSED',
         claimedAt: { not: null },
         closedAt: { not: null },
@@ -24,7 +29,7 @@ export async function getEstimatedWaitTime(): Promise<string> {
     });
 
     const openCount = await prisma.ticket.count({
-      where: { status: 'OPEN' }
+      where: { ...guildScope, status: 'OPEN' }
     });
 
     if (data.length === 0) {
@@ -69,7 +74,7 @@ export async function getEstimatedWaitTime(): Promise<string> {
   }
 }
 
-export async function getStaffStats(): Promise<StaffStat[]> {
+export async function getStaffStats(guildId?: string): Promise<StaffStat[]> {
   try {
     const oneWeekAgo = new Date();
     oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
@@ -78,6 +83,7 @@ export async function getStaffStats(): Promise<StaffStat[]> {
     const stats = await prisma.ticket.groupBy({
       by: ['staffId'],
       where: {
+        ...(guildId ? { guildId } : {}),
         staffId: { not: null },
         status: 'CLOSED',
         claimedAt: { gte: oneWeekAgo }

@@ -97,6 +97,19 @@ export interface RetryResult extends TokenGenResult {
   exhausted: boolean;
 }
 
+/**
+ * Detect steampass throttle/ban signals in a failed gen's logs. HTTP 429
+ * (too many requests) and 403 (IP ban) are per-IP / global — so once we
+ * see one, marching through the remaining pool accounts from the same
+ * server IP only deepens the block. Matches ACTUAL HTTP responses from
+ * steampass, NOT the pre-call "rate-limited!" warning line.
+ */
+function steampassIsThrottling(logs: string): boolean {
+  if (!logs) return false;
+  return /\/auth\/login returned HTTP (?:429|403)\b/i.test(logs)
+    || /Steampass (?:credentials|guard-code) API (?:429|403)\b/i.test(logs);
+}
+
 export async function generateTokenWithRetry(
   appId: number,
   gameName: string,
@@ -155,6 +168,15 @@ export async function generateTokenWithRetry(
     }
 
     console.warn(`[TokenGen:Retry] Account ${label} failed, ${candidates.length - i - 1} remaining`);
+
+    // ── Block-avoidance: bail out early on a steampass throttle/ban ──
+    // If steampass answered 429/403, every remaining account would hit the
+    // SAME rate-limited IP — retrying just digs the hole deeper (and risks
+    // a longer ban). Stop now and let the caller route to manual delivery.
+    if (steampassIsThrottling(result.logs)) {
+      console.warn(`[TokenGen:Retry] Steampass is throttling/blocking (HTTP 429/403) — aborting the remaining ${candidates.length - i - 1} account attempt(s) so we don't deepen the block.`);
+      break;
+    }
   }
 
   console.error(`[TokenGen:Retry] All ${candidates.length} accounts failed for AppID ${appId}`);

@@ -50,6 +50,45 @@ const MODE_DIRS: Record<string, string> = {
   v2: '',
 };
 
+// Constant-time string compare for secrets (API bearer tokens, HMACs).
+// Plain `===`/`!==` short-circuits on the first differing byte, leaking
+// length/prefix info via response timing. timingSafeEqual needs equal
+// lengths, so we length-check first (a length mismatch is already a
+// guaranteed non-match, so revealing it via timing costs nothing).
+function safeEqual(a: string, b: string): boolean {
+  const ba = Buffer.from(a, 'utf8');
+  const bb = Buffer.from(b, 'utf8');
+  if (ba.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ba, bb);
+}
+
+// ── Lightweight in-memory rate limiter for the /admin/* endpoints ──
+// The admin routes can drive token generation (which burns steampass
+// quota) and are protected only by a bearer token. If that token ever
+// leaks, an unthrottled attacker could hammer generation. Cap requests
+// per client IP per window. In-memory is fine — payloadServer is a
+// single process; a restart just resets the counters.
+const adminHits = new Map<string, number[]>();
+function clientIp(req: http.IncomingMessage): string {
+  const xff = (req.headers['x-forwarded-for'] || '').toString();
+  // Railway/most proxies prepend the real client IP as the first hop.
+  if (xff) return xff.split(',')[0].trim();
+  return req.socket?.remoteAddress || 'unknown';
+}
+function adminRateLimited(ip: string, limit = 12, windowMs = 60_000): boolean {
+  const now = Date.now();
+  const recent = (adminHits.get(ip) || []).filter(t => now - t < windowMs);
+  recent.push(now);
+  adminHits.set(ip, recent);
+  // Opportunistic cleanup so the map doesn't grow unbounded across IPs.
+  if (adminHits.size > 1000) {
+    for (const [k, v] of adminHits) {
+      if (v.every(t => now - t >= windowMs)) adminHits.delete(k);
+    }
+  }
+  return recent.length > limit;
+}
+
 function resolveFile(mode: string, filename: string): string | null {
   if (!(mode in MODE_DIRS)) return null;
   // Reject anything that escapes the mode dir: no slashes, no parent-dir hops.
@@ -128,6 +167,11 @@ export function startPayloadServer(): void {
       // an end user runs the installer — same consumed flag, same HMAC
       // binding, same 30-min lifetime.
       if (url.pathname === '/admin/register-key' && req.method === 'POST') {
+        if (adminRateLimited(clientIp(req))) {
+          res.writeHead(429, { 'Content-Type': 'text/plain' });
+          res.end('Too many requests — slow down.');
+          return;
+        }
         const expectedToken = (process.env.STAFF_API_TOKEN || '').trim();
         if (!expectedToken) {
           res.writeHead(503, { 'Content-Type': 'text/plain' });
@@ -135,7 +179,7 @@ export function startPayloadServer(): void {
           return;
         }
         const auth = (req.headers.authorization || '').trim();
-        if (auth !== `Bearer ${expectedToken}`) {
+        if (!safeEqual(auth, `Bearer ${expectedToken}`)) {
           res.writeHead(401, { 'Content-Type': 'text/plain' });
           res.end('Unauthorized — bad or missing Bearer token.');
           return;
@@ -247,6 +291,11 @@ export function startPayloadServer(): void {
       // consumed flag, HMAC binding (if HMAC_SECRET is set), 30-min
       // link expiry, installer self-destruct on rejection.
       if (url.pathname === '/admin/generate-token' && req.method === 'POST') {
+        if (adminRateLimited(clientIp(req))) {
+          res.writeHead(429, { 'Content-Type': 'text/plain' });
+          res.end('Too many requests — slow down.');
+          return;
+        }
         const expectedToken = (process.env.STAFF_API_TOKEN || '').trim();
         if (!expectedToken) {
           res.writeHead(503, { 'Content-Type': 'text/plain' });
@@ -254,7 +303,7 @@ export function startPayloadServer(): void {
           return;
         }
         const auth = (req.headers.authorization || '').trim();
-        if (auth !== `Bearer ${expectedToken}`) {
+        if (!safeEqual(auth, `Bearer ${expectedToken}`)) {
           res.writeHead(401, { 'Content-Type': 'text/plain' });
           res.end('Unauthorized — bad or missing Bearer token.');
           return;
@@ -392,13 +441,13 @@ export function startPayloadServer(): void {
             }
             // 1. Ticket-hash tamper detection: the installer's claimed
             //    ticket hash must match what we stored.
-            if (providedTh !== row.ticketHash) {
+            if (!safeEqual(providedTh, row.ticketHash)) {
               res.writeHead(410, { 'Content-Type': 'text/plain' });
               res.end('Activation key is paired with a different zip.');
               return;
             }
             // 2. Basic HMAC equality: provided must match stored.
-            if (providedHmac !== row.expectedHmac) {
+            if (!safeEqual(providedHmac, row.expectedHmac)) {
               res.writeHead(410, { 'Content-Type': 'text/plain' });
               res.end('Activation signature does not match.');
               return;
@@ -411,7 +460,7 @@ export function startPayloadServer(): void {
                 .createHmac('sha256', secret)
                 .update(payload)
                 .digest('hex');
-              if (recomputed !== row.expectedHmac) {
+              if (!safeEqual(recomputed, row.expectedHmac)) {
                 console.warn('[PayloadServer] HMAC mismatch on validate — DB row may be tampered.');
                 res.writeHead(410, { 'Content-Type': 'text/plain' });
                 res.end('Activation signature failed cryptographic verification.');

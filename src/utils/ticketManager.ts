@@ -263,7 +263,7 @@ export async function createTicket(interaction: StringSelectMenuInteraction, gam
 
     const userTier = await getTierForGuild(interaction.member as GuildMember, guild.id);
     const infoContent = await getInfoContent();
-    const waitTime = await getEstimatedWaitTime();
+    const waitTime = await getEstimatedWaitTime(interaction.guildId ?? undefined);
 
     const embed = new EmbedBuilder()
       .setTitle(`🎫 ${CONFIG.NAME} • Denuvo Check`)

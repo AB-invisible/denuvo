@@ -697,7 +697,7 @@ async function runSimulation(channel: any, game: any, user: any, member: GuildMe
   await sleep(2000);
 
   // Step 2: Ticket control message (what staff sees)
-  const waitTime = await getEstimatedWaitTime();
+  const waitTime = await getEstimatedWaitTime(guild.id);
   const controlEmbed = new EmbedBuilder()
     .setTitle(`🎫 ${CONFIG.NAME} • Denuvo Check`)
     .setDescription(`Denuvo check initialized for ${user}.\n\n━━━━━━━━━━━━━━━━━━━━━━\n*(info.md content would appear here)*\n━━━━━━━━━━━━━━━━━━━━━━`)
