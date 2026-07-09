@@ -797,7 +797,9 @@ def _login_with_refresh_token(client, username, refresh_token):
 def _new_auth_login(client, username, password, guard_code):
     """Authenticate via Steam's modern CAuthentication service (2023+).
 
-    Uses Unified Messages to perform the OAuth2-like flow:
+    Uses the HTTP IAuthenticationService to perform the OAuth2-like flow
+    without relying on the CM connection (which drops unauthenticated
+    UMs on some servers/versions):
       1. GetPasswordRSAPublicKey → get RSA key for the account
       2. RSA-encrypt the password
       3. BeginAuthSessionViaCredentials → submit encrypted password
@@ -823,6 +825,8 @@ def _new_auth_login(client, username, password, guard_code):
     from steam.core.msg import MsgProto
     from steam.steamid import SteamID
     import base64
+    import requests
+    import time
 
     try:
         from Cryptodome.PublicKey import RSA as CryptoRSA
@@ -832,19 +836,20 @@ def _new_auth_login(client, username, password, guard_code):
         from Crypto.Cipher import PKCS1_v1_5
 
     # ── Step 1: Get RSA public key for this account ──
-    log("Steam [NewAuth]: requesting RSA public key...")
-    rsa_resp = client.send_um_and_wait(
-        "Authentication.GetPasswordRSAPublicKey#1",
-        {"account_name": username},
-        timeout=15,
-    )
-    if rsa_resp is None or rsa_resp.header.eresult != EResult.OK:
-        eresult = rsa_resp.header.eresult if rsa_resp else "timeout"
-        raise RuntimeError(f"GetPasswordRSAPublicKey failed: {eresult}")
+    log("Steam [NewAuth]: requesting RSA public key via HTTP...")
+    rsa_url = "https://api.steampowered.com/IAuthenticationService/GetPasswordRSAPublicKey/v1"
+    resp = requests.get(rsa_url, params={"account_name": username}, timeout=15)
+    if not resp.ok:
+        raise RuntimeError(f"GetPasswordRSAPublicKey HTTP failed: {resp.status_code} {resp.text[:100]}")
+    
+    rsa_data = resp.json().get("response", {})
+    mod_hex = rsa_data.get("publickey_mod")
+    exp_hex = rsa_data.get("publickey_exp")
+    timestamp = rsa_data.get("timestamp")
+    
+    if not mod_hex or not exp_hex:
+        raise RuntimeError(f"GetPasswordRSAPublicKey invalid response: {rsa_data}")
 
-    mod_hex = rsa_resp.body.publickey_mod
-    exp_hex = rsa_resp.body.publickey_exp
-    timestamp = rsa_resp.body.timestamp
     log(f"Steam [NewAuth]: got RSA key (timestamp={timestamp})")
 
     # ── Step 2: RSA-encrypt the password ──
@@ -857,110 +862,86 @@ def _new_auth_login(client, username, password, guard_code):
     ).decode("ascii")
 
     # ── Step 3: BeginAuthSessionViaCredentials ──
-    log("Steam [NewAuth]: BeginAuthSessionViaCredentials...")
-    # EAuthTokenPlatformType: SteamClient=1
-    begin_resp = client.send_um_and_wait(
-        "Authentication.BeginAuthSessionViaCredentials#1",
-        {
-            "device_friendly_name": "GameGen Bot",
-            "account_name": username,
-            "encrypted_password": encrypted_password,
-            "encryption_timestamp": timestamp,
-            "remember_login": True,
-            "platform_type": 1,  # k_EAuthTokenPlatformType_SteamClient
-            "website_id": "Client",
-            "device_details": {
-                "device_friendly_name": "GameGen Bot",
-                "platform_type": 1,
-                "os_type": -203,  # Windows 10
-            },
-        },
-        timeout=15,
-    )
-    if begin_resp is None:
-        raise RuntimeError("BeginAuthSessionViaCredentials timed out")
-    if begin_resp.header.eresult != EResult.OK:
-        raise RuntimeError(
-            f"BeginAuthSessionViaCredentials failed: "
-            f"{EResult(begin_resp.header.eresult)}"
-        )
+    log("Steam [NewAuth]: BeginAuthSessionViaCredentials via HTTP...")
+    begin_url = "https://api.steampowered.com/IAuthenticationService/BeginAuthSessionViaCredentials/v1"
+    resp = requests.post(begin_url, data={
+        "device_friendly_name": "GameGen Bot",
+        "account_name": username,
+        "encrypted_password": encrypted_password,
+        "encryption_timestamp": timestamp,
+        "remember_login": "true",
+        "platform_type": 1,  # k_EAuthTokenPlatformType_SteamClient
+        "website_id": "Client"
+    }, timeout=15)
+    
+    if not resp.ok:
+        raise RuntimeError(f"BeginAuthSessionViaCredentials HTTP failed: {resp.status_code} {resp.text[:100]}")
+    
+    begin_data = resp.json().get("response", {})
+    client_id = begin_data.get("client_id")
+    request_id = begin_data.get("request_id")
+    steamid = begin_data.get("steamid")
+    interval = begin_data.get("interval", 5)
+    allowed = begin_data.get("allowed_confirmations", [])
 
-    client_id = begin_resp.body.client_id
-    request_id = begin_resp.body.request_id
-    steamid = begin_resp.body.steamid
-    interval = begin_resp.body.interval or 5
-    allowed = begin_resp.body.allowed_confirmations
+    if not client_id:
+        raise RuntimeError(f"BeginAuthSessionViaCredentials invalid response: {begin_data}")
 
-    # Log what confirmation types are allowed
-    confirm_types = []
-    for ac in allowed:
-        confirm_types.append(f"{ac.confirmation_type}({ac.associated_message})")
-    log(f"Steam [NewAuth]: session started (steamid={steamid}, "
-        f"allowed_confirmations={confirm_types})")
+    confirm_types = [f"{ac.get('confirmation_type')}({ac.get('associated_message')})" for ac in allowed]
+    log(f"Steam [NewAuth]: session started (steamid={steamid}, allowed_confirmations={confirm_types})")
 
     # ── Step 4: Submit guard code ──
-    # Determine code_type from allowed_confirmations:
-    #   2 = k_EAuthSessionGuardType_EmailCode
-    #   3 = k_EAuthSessionGuardType_DeviceCode (TOTP)
     code_type = 2  # default to email code (steampass uses email)
     for ac in allowed:
-        if ac.confirmation_type == 3:
+        if ac.get("confirmation_type") == 3:
             code_type = 3  # TOTP takes priority if offered
             break
-        elif ac.confirmation_type == 2:
+        elif ac.get("confirmation_type") == 2:
             code_type = 2
             break
 
     log(f"Steam [NewAuth]: submitting guard code (type={'TOTP' if code_type == 3 else 'email'})...")
-    guard_resp = client.send_um_and_wait(
-        "Authentication.UpdateAuthSessionWithSteamGuardCode#1",
-        {
-            "client_id": client_id,
-            "steamid": steamid,
-            "code": guard_code,
-            "code_type": code_type,
-        },
-        timeout=15,
-    )
-    if guard_resp is None:
-        raise RuntimeError("UpdateAuthSessionWithSteamGuardCode timed out")
-    if guard_resp.header.eresult != EResult.OK:
-        raise RuntimeError(
-            f"UpdateAuthSessionWithSteamGuardCode failed: "
-            f"{EResult(guard_resp.header.eresult)}"
-        )
+    update_url = "https://api.steampowered.com/IAuthenticationService/UpdateAuthSessionWithSteamGuardCode/v1"
+    resp = requests.post(update_url, data={
+        "client_id": client_id,
+        "steamid": steamid,
+        "code": guard_code,
+        "code_type": code_type,
+    }, timeout=15)
+    
+    if not resp.ok:
+        raise RuntimeError(f"UpdateAuthSessionWithSteamGuardCode HTTP failed: {resp.status_code} {resp.text[:100]}")
+    
     log("Steam [NewAuth]: guard code accepted!")
 
     # ── Step 5: Poll for tokens ──
     log("Steam [NewAuth]: polling for auth session status...")
     access_token = None
     refresh_token_new = None
+    poll_url = "https://api.steampowered.com/IAuthenticationService/PollAuthSessionStatus/v1"
+    
     for attempt in range(10):
         time.sleep(interval)
-        poll_resp = client.send_um_and_wait(
-            "Authentication.PollAuthSessionStatus#1",
-            {
-                "client_id": client_id,
-                "request_id": request_id,
-            },
-            timeout=15,
-        )
-        if poll_resp is None:
+        resp = requests.post(poll_url, data={
+            "client_id": client_id,
+            "request_id": request_id,
+        }, timeout=15)
+        
+        if not resp.ok:
+            log(f"Steam [NewAuth]: poll HTTP failed {resp.status_code} {resp.text[:100]}")
             continue
-        if poll_resp.header.eresult != EResult.OK:
-            log(f"Steam [NewAuth]: poll returned {EResult(poll_resp.header.eresult)}")
-            continue
-
-        access_token = poll_resp.body.access_token or None
-        refresh_token_new = poll_resp.body.refresh_token or None
+            
+        poll_data = resp.json().get("response", {})
+        access_token = poll_data.get("access_token")
+        refresh_token_new = poll_data.get("refresh_token")
 
         if access_token:
             log(f"Steam [NewAuth]: got access_token (len={len(access_token)}), "
                 f"refresh_token={'yes' if refresh_token_new else 'no'}")
             break
-        # Update client_id if server rotated it
-        if poll_resp.body.new_client_id:
-            client_id = poll_resp.body.new_client_id
+            
+        if poll_data.get("new_client_id"):
+            client_id = poll_data.get("new_client_id")
     else:
         raise RuntimeError("PollAuthSessionStatus: no tokens after 10 attempts")
 
@@ -980,9 +961,9 @@ def _new_auth_login(client, username, password, guard_code):
     msg.body.access_token = access_token
 
     client.send(msg)
-    resp = client.wait_msg(EMsg.ClientLogOnResponse, timeout=30)
+    resp_msg = client.wait_msg(EMsg.ClientLogOnResponse, timeout=30)
 
-    if resp and resp.body.eresult == EResult.OK:
+    if resp_msg and resp_msg.body.eresult == EResult.OK:
         client.sleep(0.5)
         log("Steam [NewAuth]: CM login succeeded!")
         # Stash the refresh_token so _extract_refresh_token() can find it
@@ -990,7 +971,7 @@ def _new_auth_login(client, username, password, guard_code):
             client.refresh_token = refresh_token_new
         return True
     else:
-        eresult = EResult(resp.body.eresult) if resp else "timeout"
+        eresult = EResult(resp_msg.body.eresult) if resp_msg else "timeout"
         raise RuntimeError(f"CM ClientLogon with access_token failed: {eresult}")
 
 
