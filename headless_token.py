@@ -808,7 +808,8 @@ def _new_auth_login(client, username, password, guard_code):
     Returns True on success, raises on fatal errors. The caller should
     catch exceptions and fall back to the legacy ClientLogon path.
     """
-    from steam.enums import EResult, EMsg
+    from steam.enums import EResult
+    from steam.enums.emsg import EMsg
     from steam.core.msg import MsgProto
     from steam.steamid import SteamID
     import base64
