@@ -15,35 +15,8 @@ Outputs the zip file path on the last line of stdout on success.
 """
 import sys, os, json, shutil, re, time, base64, struct, hashlib, hmac
 import requests
-import socket
 from pathlib import Path
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
-# -- NETWORK PATCHES --
-# 1. Force IPv4 to prevent IPv6 blackholing by Steam API on cloud hosts (Railway, etc)
-_old_getaddrinfo = socket.getaddrinfo
-def _ipv4_getaddrinfo(*args, **kwargs):
-    responses = _old_getaddrinfo(*args, **kwargs)
-    return [r for r in responses if r[0] == socket.AF_INET]
-socket.getaddrinfo = _ipv4_getaddrinfo
-
-# 2. Add aggressive retries to requests.Session to survive Steam API timeouts
-class RetryingSession(requests.Session):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        retry_strategy = Retry(
-            total=5,
-            backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["HEAD", "GET", "OPTIONS", "POST"]
-        )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        self.mount("https://", adapter)
-        self.mount("http://", adapter)
-
-requests.Session = RetryingSession
-# ---------------------
 # ─── CONFIG ───────────────────────────────────────
 # Templates are CONSULTED when present (the installer's capture webhook
 # grows _Template/ over time for troubleshooting), but every game without
@@ -685,14 +658,29 @@ class SteampassClient:
             # Surface the actual API error message (credits exhausted, etc.)
             log(f"Steampass credentials API {resp.status_code} for UUID {product_uuid}: {resp.text[:500]}")
             resp.raise_for_status()
-        data = resp.json().get("data", {})
+        raw = resp.json()
+        data = raw.get("data", {})
+        # Log the response structure so we can detect API format changes
+        log(f"Steampass: raw response keys={list(raw.keys())}, "
+            f"data keys={list(data.keys())}")
         steam = data.get("steam", data)  # Handle both nested and flat responses
+        if steam is not data:
+            log(f"Steampass: using nested 'steam' object, keys={list(steam.keys())}")
         login = steam.get("login")
         password = steam.get("password")
         guarded = steam.get("guarded", True)
         if not login or not password:
+            log(f"Steampass: MISSING credentials! login={'set' if login else 'EMPTY'}, "
+                f"password={'set' if password else 'EMPTY'}, "
+                f"available keys={list(steam.keys())}")
             raise RuntimeError(f"No Steam credentials returned for {product_uuid}")
-        log(f"Steampass: got credentials (guarded={guarded})")
+        # Masked diagnostic: show username + password shape without
+        # revealing the actual password. Enough to tell if it's
+        # truncated, has weird chars, or is from the wrong account.
+        pw_preview = f"{password[0]}{'*' * (len(password) - 2)}{password[-1]}" if len(password) > 2 else "***"
+        log(f"Steampass: got credentials (login={login}, "
+            f"pw_len={len(password)}, pw_preview={pw_preview}, "
+            f"guarded={guarded})")
         return login, password, guarded
 
     def get_guard_code(self, product_uuid):
@@ -806,37 +794,204 @@ def _login_with_refresh_token(client, username, refresh_token):
     )
 
 
-# Marker text the caller (Node) greps for to decide whether the failure was
-# an ACCOUNT-level credential problem (worth retrying on a different steampass
-# account) versus a generic Steam/packaging failure (retry won't help).
-STEAM_BAD_CREDENTIALS_MARKER = "[steam-bad-credentials]"
+def _new_auth_login(client, username, password, guard_code):
+    """Authenticate via Steam's modern CAuthentication service (2023+).
 
+    Uses Unified Messages to perform the OAuth2-like flow:
+      1. GetPasswordRSAPublicKey → get RSA key for the account
+      2. RSA-encrypt the password
+      3. BeginAuthSessionViaCredentials → submit encrypted password
+      4. UpdateAuthSessionWithSteamGuardCode → submit guard code
+      5. PollAuthSessionStatus → get refresh_token + access_token
+      6. Use access_token to finalize CM login
 
-def _describe_login_result(result):
-    """Turn a raw Steam EResult into a human-readable, actionable string.
-
-    A bare `result: 5` forces whoever reads the logs to memorize EResult
-    codes. This spells out the common login-failure causes and what to do,
-    and tags credential-level failures with STEAM_BAD_CREDENTIALS_MARKER so
-    the Node side can route them into the account-fallback path.
+    Returns True on success, raises on fatal errors. The caller should
+    catch exceptions and fall back to the legacy ClientLogon path.
     """
     from steam.enums import EResult
+    try:
+        from steam.enums import EMsg
+    except ImportError:
+        try:
+            from steam.enums.emsg import EMsg
+        except ImportError:
+            # Last resort: use raw integer for ClientLogon
+            class _EMsg:
+                ClientLogon = 5514
+                ClientLogOnResponse = 751
+            EMsg = _EMsg
+    from steam.core.msg import MsgProto
+    from steam.steamid import SteamID
+    import base64
 
-    if result == EResult.InvalidPassword:
-        return (f"InvalidPassword (5) {STEAM_BAD_CREDENTIALS_MARKER} — the Steam "
-                f"password steampass returned for this account is stale/wrong. "
-                f"steampass needs to re-sync this account's credentials.")
-    if result == EResult.TwoFactorCodeMismatch:
-        return (f"TwoFactorCodeMismatch (88) {STEAM_BAD_CREDENTIALS_MARKER} — the "
-                f"guard code was wrong or expired before login completed. "
-                f"Request a fresh one / check the steampass authenticator clock.")
-    if result in (EResult.AccountLoginDeniedNeedTwoFactor, EResult.AccountLogonDenied):
-        return (f"{result} {STEAM_BAD_CREDENTIALS_MARKER} — Steam wanted a guard "
-                f"code we didn't supply (account may have switched guard type).")
-    if result == EResult.RateLimitExceeded:
-        return (f"RateLimitExceeded (84) — too many Steam login attempts. "
-                f"Back off before retrying this account.")
-    return str(result)
+    try:
+        from Cryptodome.PublicKey import RSA as CryptoRSA
+        from Cryptodome.Cipher import PKCS1_v1_5
+    except ImportError:
+        from Crypto.PublicKey import RSA as CryptoRSA
+        from Crypto.Cipher import PKCS1_v1_5
+
+    # ── Step 1: Get RSA public key for this account ──
+    log("Steam [NewAuth]: requesting RSA public key...")
+    rsa_resp = client.send_um_and_wait(
+        "Authentication.GetPasswordRSAPublicKey#1",
+        {"account_name": username},
+        timeout=15,
+    )
+    if rsa_resp is None or rsa_resp.header.eresult != EResult.OK:
+        eresult = rsa_resp.header.eresult if rsa_resp else "timeout"
+        raise RuntimeError(f"GetPasswordRSAPublicKey failed: {eresult}")
+
+    mod_hex = rsa_resp.body.publickey_mod
+    exp_hex = rsa_resp.body.publickey_exp
+    timestamp = rsa_resp.body.timestamp
+    log(f"Steam [NewAuth]: got RSA key (timestamp={timestamp})")
+
+    # ── Step 2: RSA-encrypt the password ──
+    mod = int(mod_hex, 16)
+    exp = int(exp_hex, 16)
+    rsa_key = CryptoRSA.construct((mod, exp))
+    cipher = PKCS1_v1_5.new(rsa_key)
+    encrypted_password = base64.b64encode(
+        cipher.encrypt(password.encode("utf-8"))
+    ).decode("ascii")
+
+    # ── Step 3: BeginAuthSessionViaCredentials ──
+    log("Steam [NewAuth]: BeginAuthSessionViaCredentials...")
+    # EAuthTokenPlatformType: SteamClient=1
+    begin_resp = client.send_um_and_wait(
+        "Authentication.BeginAuthSessionViaCredentials#1",
+        {
+            "device_friendly_name": "GameGen Bot",
+            "account_name": username,
+            "encrypted_password": encrypted_password,
+            "encryption_timestamp": timestamp,
+            "remember_login": True,
+            "platform_type": 1,  # k_EAuthTokenPlatformType_SteamClient
+            "website_id": "Client",
+            "device_details": {
+                "device_friendly_name": "GameGen Bot",
+                "platform_type": 1,
+                "os_type": -203,  # Windows 10
+            },
+        },
+        timeout=15,
+    )
+    if begin_resp is None:
+        raise RuntimeError("BeginAuthSessionViaCredentials timed out")
+    if begin_resp.header.eresult != EResult.OK:
+        raise RuntimeError(
+            f"BeginAuthSessionViaCredentials failed: "
+            f"{EResult(begin_resp.header.eresult)}"
+        )
+
+    client_id = begin_resp.body.client_id
+    request_id = begin_resp.body.request_id
+    steamid = begin_resp.body.steamid
+    interval = begin_resp.body.interval or 5
+    allowed = begin_resp.body.allowed_confirmations
+
+    # Log what confirmation types are allowed
+    confirm_types = []
+    for ac in allowed:
+        confirm_types.append(f"{ac.confirmation_type}({ac.associated_message})")
+    log(f"Steam [NewAuth]: session started (steamid={steamid}, "
+        f"allowed_confirmations={confirm_types})")
+
+    # ── Step 4: Submit guard code ──
+    # Determine code_type from allowed_confirmations:
+    #   2 = k_EAuthSessionGuardType_EmailCode
+    #   3 = k_EAuthSessionGuardType_DeviceCode (TOTP)
+    code_type = 2  # default to email code (steampass uses email)
+    for ac in allowed:
+        if ac.confirmation_type == 3:
+            code_type = 3  # TOTP takes priority if offered
+            break
+        elif ac.confirmation_type == 2:
+            code_type = 2
+            break
+
+    log(f"Steam [NewAuth]: submitting guard code (type={'TOTP' if code_type == 3 else 'email'})...")
+    guard_resp = client.send_um_and_wait(
+        "Authentication.UpdateAuthSessionWithSteamGuardCode#1",
+        {
+            "client_id": client_id,
+            "steamid": steamid,
+            "code": guard_code,
+            "code_type": code_type,
+        },
+        timeout=15,
+    )
+    if guard_resp is None:
+        raise RuntimeError("UpdateAuthSessionWithSteamGuardCode timed out")
+    if guard_resp.header.eresult != EResult.OK:
+        raise RuntimeError(
+            f"UpdateAuthSessionWithSteamGuardCode failed: "
+            f"{EResult(guard_resp.header.eresult)}"
+        )
+    log("Steam [NewAuth]: guard code accepted!")
+
+    # ── Step 5: Poll for tokens ──
+    log("Steam [NewAuth]: polling for auth session status...")
+    access_token = None
+    refresh_token_new = None
+    for attempt in range(10):
+        time.sleep(interval)
+        poll_resp = client.send_um_and_wait(
+            "Authentication.PollAuthSessionStatus#1",
+            {
+                "client_id": client_id,
+                "request_id": request_id,
+            },
+            timeout=15,
+        )
+        if poll_resp is None:
+            continue
+        if poll_resp.header.eresult != EResult.OK:
+            log(f"Steam [NewAuth]: poll returned {EResult(poll_resp.header.eresult)}")
+            continue
+
+        access_token = poll_resp.body.access_token or None
+        refresh_token_new = poll_resp.body.refresh_token or None
+
+        if access_token:
+            log(f"Steam [NewAuth]: got access_token (len={len(access_token)}), "
+                f"refresh_token={'yes' if refresh_token_new else 'no'}")
+            break
+        # Update client_id if server rotated it
+        if poll_resp.body.new_client_id:
+            client_id = poll_resp.body.new_client_id
+    else:
+        raise RuntimeError("PollAuthSessionStatus: no tokens after 10 attempts")
+
+    if not access_token:
+        raise RuntimeError("PollAuthSessionStatus returned empty access_token")
+
+    # ── Step 6: Finalize CM login with access_token ──
+    log("Steam [NewAuth]: finalizing CM login with access_token...")
+    msg = MsgProto(EMsg.ClientLogon)
+    msg.header.steamid = SteamID(type='Individual', universe='Public')
+    msg.body.protocol_version = 65580
+    msg.body.client_os_type = -203  # EOSType.Windows10
+    msg.body.client_language = "english"
+    msg.body.should_remember_password = True
+    msg.body.supports_rate_limit_response = True
+    msg.body.account_name = username
+    msg.body.access_token = access_token
+
+    client.send(msg)
+    resp = client.wait_msg(EMsg.ClientLogOnResponse, timeout=30)
+
+    if resp and resp.body.eresult == EResult.OK:
+        client.sleep(0.5)
+        log("Steam [NewAuth]: CM login succeeded!")
+        # Stash the refresh_token so _extract_refresh_token() can find it
+        if refresh_token_new:
+            client.refresh_token = refresh_token_new
+        return True
+    else:
+        eresult = EResult(resp.body.eresult) if resp else "timeout"
+        raise RuntimeError(f"CM ClientLogon with access_token failed: {eresult}")
 
 
 def get_encrypted_ticket_headless(app_id, steam_login, steam_password, guard_code,
@@ -898,15 +1053,52 @@ def get_encrypted_ticket_headless(app_id, steam_login, steam_password, guard_cod
                 "steampass before retrying."
             )
         log("Steam: authenticating with credentials + guard code...")
-        result = client.login(
-            username=steam_login,
-            password=steam_password,
-            two_factor_code=guard_code,
-        )
-        if result != EResult.OK:
-            client.disconnect()
-            raise RuntimeError(f"Steam: login failed with result: {_describe_login_result(result)}")
-        logged_in_via = "credentials"
+
+        # ── NEW AUTH FLOW (CAuthentication service) ──
+        # Valve deprecated the old ClientLogon CM message in 2023. Accounts
+        # migrated to the new auth system reject the old method with
+        # EResult.InvalidPassword (5) even with correct credentials. The
+        # new flow uses IAuthenticationService Unified Messages:
+        #   1. GetPasswordRSAPublicKey → RSA-encrypt the password
+        #   2. BeginAuthSessionViaCredentials → submit encrypted password
+        #   3. UpdateAuthSessionWithSteamGuardCode → submit guard code
+        #   4. PollAuthSessionStatus → get refresh_token + access_token
+        #   5. Use access_token to finalize CM login
+        new_auth_ok = False
+        try:
+            new_auth_ok = _new_auth_login(client, steam_login, steam_password, guard_code)
+        except Exception as e:
+            log(f"Steam: new CAuthentication flow failed ({type(e).__name__}: {e}), "
+                "falling back to legacy ClientLogon...")
+
+        if new_auth_ok:
+            logged_in_via = "credentials_new_auth"
+        else:
+            # ── LEGACY FALLBACK: old ClientLogon CM message ──
+            # Try both two_factor_code and auth_code in case the account
+            # still supports the old protocol.
+            log("Steam: trying legacy login (two_factor_code)...")
+            result = client.login(
+                username=steam_login,
+                password=steam_password,
+                two_factor_code=guard_code,
+            )
+            if result != EResult.OK:
+                log(f"Steam: legacy two_factor_code returned {result}, "
+                    "trying auth_code...")
+                client.disconnect()
+                client.connect()
+                if not client.connected:
+                    raise RuntimeError("Steam: failed to reconnect for auth_code retry")
+                result = client.login(
+                    username=steam_login,
+                    password=steam_password,
+                    auth_code=guard_code,
+                )
+            if result != EResult.OK:
+                client.disconnect()
+                raise RuntimeError(f"Steam: login failed with result: {result}")
+            logged_in_via = "credentials"
 
     steam_id = str(client.steam_id.as_64)
     log(f"Steam: logged in via {logged_in_via} (SteamID: {steam_id})")
