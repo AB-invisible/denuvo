@@ -15,8 +15,35 @@ Outputs the zip file path on the last line of stdout on success.
 """
 import sys, os, json, shutil, re, time, base64, struct, hashlib, hmac
 import requests
+import socket
 from pathlib import Path
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
+# -- NETWORK PATCHES --
+# 1. Force IPv4 to prevent IPv6 blackholing by Steam API on cloud hosts (Railway, etc)
+_old_getaddrinfo = socket.getaddrinfo
+def _ipv4_getaddrinfo(*args, **kwargs):
+    responses = _old_getaddrinfo(*args, **kwargs)
+    return [r for r in responses if r[0] == socket.AF_INET]
+socket.getaddrinfo = _ipv4_getaddrinfo
+
+# 2. Add aggressive retries to requests.Session to survive Steam API timeouts
+class RetryingSession(requests.Session):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        retry_strategy = Retry(
+            total=5,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["HEAD", "GET", "OPTIONS", "POST"]
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        self.mount("https://", adapter)
+        self.mount("http://", adapter)
+
+requests.Session = RetryingSession
+# ---------------------
 # ─── CONFIG ───────────────────────────────────────
 # Templates are CONSULTED when present (the installer's capture webhook
 # grows _Template/ over time for troubleshooting), but every game without
@@ -779,6 +806,39 @@ def _login_with_refresh_token(client, username, refresh_token):
     )
 
 
+# Marker text the caller (Node) greps for to decide whether the failure was
+# an ACCOUNT-level credential problem (worth retrying on a different steampass
+# account) versus a generic Steam/packaging failure (retry won't help).
+STEAM_BAD_CREDENTIALS_MARKER = "[steam-bad-credentials]"
+
+
+def _describe_login_result(result):
+    """Turn a raw Steam EResult into a human-readable, actionable string.
+
+    A bare `result: 5` forces whoever reads the logs to memorize EResult
+    codes. This spells out the common login-failure causes and what to do,
+    and tags credential-level failures with STEAM_BAD_CREDENTIALS_MARKER so
+    the Node side can route them into the account-fallback path.
+    """
+    from steam.enums import EResult
+
+    if result == EResult.InvalidPassword:
+        return (f"InvalidPassword (5) {STEAM_BAD_CREDENTIALS_MARKER} — the Steam "
+                f"password steampass returned for this account is stale/wrong. "
+                f"steampass needs to re-sync this account's credentials.")
+    if result == EResult.TwoFactorCodeMismatch:
+        return (f"TwoFactorCodeMismatch (88) {STEAM_BAD_CREDENTIALS_MARKER} — the "
+                f"guard code was wrong or expired before login completed. "
+                f"Request a fresh one / check the steampass authenticator clock.")
+    if result in (EResult.AccountLoginDeniedNeedTwoFactor, EResult.AccountLogonDenied):
+        return (f"{result} {STEAM_BAD_CREDENTIALS_MARKER} — Steam wanted a guard "
+                f"code we didn't supply (account may have switched guard type).")
+    if result == EResult.RateLimitExceeded:
+        return (f"RateLimitExceeded (84) — too many Steam login attempts. "
+                f"Back off before retrying this account.")
+    return str(result)
+
+
 def get_encrypted_ticket_headless(app_id, steam_login, steam_password, guard_code,
                                   refresh_token=None):
     """Connect to Steam CM servers headlessly and get an encrypted app ticket.
@@ -845,7 +905,7 @@ def get_encrypted_ticket_headless(app_id, steam_login, steam_password, guard_cod
         )
         if result != EResult.OK:
             client.disconnect()
-            raise RuntimeError(f"Steam: login failed with result: {result}")
+            raise RuntimeError(f"Steam: login failed with result: {_describe_login_result(result)}")
         logged_in_via = "credentials"
 
     steam_id = str(client.steam_id.as_64)
