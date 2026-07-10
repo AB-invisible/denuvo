@@ -4,7 +4,7 @@ import prisma from '../lib/prisma';
 import { getStaffStats } from '../utils/stats';
 
 export async function execute(interaction: any): Promise<void> {
-  const stats = await getStaffStats();
+  const stats = await getStaffStats(interaction.guildId ?? undefined);
   if (stats.length === 0) return interaction.editReply({ content: '📊 **Staff Stats:** No activity recorded.' });
 
   const oneWeekAgo = new Date();

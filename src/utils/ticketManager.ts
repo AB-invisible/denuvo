@@ -24,6 +24,7 @@ import { refreshAllPanels } from './panelManager';
 import { createVerificationPromptEmbed, createTicketSuccessEmbed } from './embeds';
 import { getEstimatedWaitTime } from './stats';
 import { isStaff, getTier, getTierForGuild } from './permissions';
+import { computeCooldownHours } from './cooldown';
 import { resolveServerConfig } from './tenant';
 
 // Note: The Maps below now only store active timers to handle timeouts.
@@ -263,7 +264,7 @@ export async function createTicket(interaction: StringSelectMenuInteraction, gam
 
     const userTier = await getTierForGuild(interaction.member as GuildMember, guild.id);
     const infoContent = await getInfoContent();
-    const waitTime = await getEstimatedWaitTime();
+    const waitTime = await getEstimatedWaitTime(interaction.guildId ?? undefined);
 
     const embed = new EmbedBuilder()
       .setTitle(`🎫 ${CONFIG.NAME} • Denuvo Check`)
@@ -486,23 +487,10 @@ export async function handleDeductionChoice(interaction: ButtonInteraction, choi
   }
 
   const member = await interaction.guild?.members.fetch(ticket.userId).catch(() => null);
-  let userTier: string = member ? await getTierForGuild(member, interaction.guildId!) : 'None';
-
   const effectiveGuildId = ticket.guildId || interaction.guildId || '';
 
-  const promoTier = await prisma.promoRedemption.findFirst({
-    where: { userId: ticket.userId, guildId: effectiveGuildId, expiresAt: { gt: new Date() } },
-    include: { promo: true },
-    orderBy: { expiresAt: 'desc' },
-  });
-  if (promoTier?.promo.effect === 'temp_tier' && promoTier.promo.tierGrant) {
-    const tierRank: Record<string, number> = { Gold: 3, Silver: 2, Bronze: 1, None: 0 };
-    if ((tierRank[promoTier.promo.tierGrant] || 0) > (tierRank[userTier] || 0)) {
-      userTier = promoTier.promo.tierGrant;
-    }
-  }
-
-  const hours = CONFIG.TIER_COOLDOWNS[userTier.toUpperCase() as keyof typeof CONFIG.TIER_COOLDOWNS] || CONFIG.TIER_COOLDOWNS.DEFAULT;
+  // Shared cooldown logic — membership tier + active temp_tier promo.
+  const { hours, tier: userTier, viaPromo } = await computeCooldownHours(member, ticket.userId, effectiveGuildId);
   const deduct = choice === 'yes';
 
   if (deduct) {
@@ -530,7 +518,7 @@ export async function handleDeductionChoice(interaction: ButtonInteraction, choi
     vouchTimers.delete(ticket.userId);
   }
 
-  const promoNote = promoTier?.promo.effect === 'temp_tier' ? ` (Promo: ${promoTier.promo.tierGrant})` : '';
+  const promoNote = viaPromo ? ` (Promo: ${userTier})` : '';
   await interaction.editReply({ content: `✅ Session closed. Tier: **${userTier}${promoNote}** • Cooldown: **${hours}h**.`, components: [] });
 
   if (interaction.guild) {

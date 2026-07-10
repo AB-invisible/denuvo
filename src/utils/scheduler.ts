@@ -15,7 +15,14 @@ export async function updateTicketWaitTimes(client: Client) {
       where: { status: { in: ['OPEN', 'CLAIMED'] } }
     });
 
-    const globalWait = await getEstimatedWaitTime();
+    // Cache the wait estimate per guild for this cycle so a server's tickets
+    // show ITS queue (not the global total) without re-querying per ticket.
+    const waitByGuild = new Map<string, string>();
+    const waitFor = async (gid: string | null): Promise<string> => {
+      const key = gid || '';
+      if (!waitByGuild.has(key)) waitByGuild.set(key, await getEstimatedWaitTime(gid || undefined));
+      return waitByGuild.get(key)!;
+    };
 
     for (const ticket of activeTickets) {
       try {
@@ -59,7 +66,7 @@ export async function updateTicketWaitTimes(client: Client) {
 
         if (ticket.status === 'OPEN') {
           statusString = '🟢 **Awaiting Staff Response**';
-          waitDisplay = `${globalWait}\n└─ *Elapsed: ${createdAgo}m*`;
+          waitDisplay = `${await waitFor(ticket.guildId)}\n└─ *Elapsed: ${createdAgo}m*`;
         } else if (ticket.status === 'CLAIMED' && ticket.claimedAt) {
           const claimedAgo = Math.floor((now.getTime() - ticket.claimedAt.getTime()) / 60000);
           statusString = `🟡 **Session Active with Staff** (\`${claimedAgo}m\`)`;
@@ -86,31 +93,47 @@ export async function updateTicketWaitTimes(client: Client) {
 }
 
 /**
- * Checks and sends weekly staff statistics to the log channel.
+ * Checks and sends weekly staff statistics. Each authorized server gets
+ * its OWN report (scoped to that server's tickets) posted to that server's
+ * log channel — home → owner log channel, tenants → their basic log
+ * channel. Previously this aggregated every server into one global report
+ * posted only to the home channel.
  */
 export async function checkWeeklyStaffStats(client: Client) {
   try {
     const meta = await prisma.metadata.findUnique({ where: { key: 'lastWeeklyStatsAt' } });
     const lastAt = meta ? new Date(meta.value) : new Date(0);
     const oneWeekMs = 7 * 24 * 60 * 60 * 1000;
+    if (Date.now() - lastAt.getTime() < oneWeekMs) return;
 
-    if (Date.now() - lastAt.getTime() >= oneWeekMs) {
-      const stats = await getStaffStats();
-      if (stats.length === 0) return;
+    const { getAllowedGuildIds, resolveServerConfig } = await import('./tenant');
+    let guildIds: string[] = [];
+    try { guildIds = await getAllowedGuildIds(); } catch { guildIds = []; }
+    if (!guildIds.includes(CONFIG.GUILD_ID)) guildIds.push(CONFIG.GUILD_ID);
 
-      const channel = await client.channels.fetch(CONFIG.LOG_CHANNEL_ID).catch(() => null) as TextChannel;
-      if (channel) {
-        const oneWeekAgo = new Date();
-        oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+    const oneWeekAgo = new Date();
+    oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+
+    let postedAny = false;
+    for (const gid of guildIds) {
+      try {
+        const stats = await getStaffStats(gid);
+        if (stats.length === 0) continue;
+
+        const sc = await resolveServerConfig(gid);
+        const channelId = sc.isOwner ? sc.ownerLogChannelId : (sc.tenantLogChannelId || sc.ownerLogChannelId);
+        if (!channelId) continue;
+        const channel = await client.channels.fetch(channelId).catch(() => null) as TextChannel;
+        if (!channel) continue;
 
         const embed = new EmbedBuilder()
           .setTitle('✨ **The High Council - Weekly Enshrinement** ✨')
-          .setDescription(`Behold the legendary contributors of the **${CONFIG.NAME}** community for the week of <t:${Math.floor(oneWeekAgo.getTime() / 1000)}:d>.\n\n*These sentinels have ensured our tokens are applied and our gates remain secure.*`)
-          .setColor(0x00D9FF) // Cyan Core
-          .setImage('https://i.imgur.com/uR1R6F8.png') // Generic "Level up/Achievement" placeholder or use something cool
+          .setDescription(`Behold the legendary contributors of the **${sc.botName}** community for the week of <t:${Math.floor(oneWeekAgo.getTime() / 1000)}:d>.\n\n*These sentinels have ensured our tokens are applied and our gates remain secure.*`)
+          .setColor(0x00D9FF)
+          .setImage('https://i.imgur.com/uR1R6F8.png')
           .setThumbnail('https://cdn-icons-png.flaticon.com/512/3112/3112946.png')
           .setTimestamp()
-          .setFooter({ text: `${CONFIG.NAME} Epoch System • Automated Meritocratic Sync` });
+          .setFooter({ text: `${sc.botName} Epoch System • Automated Meritocratic Sync` });
 
         let statsList = '';
         for (let i = 0; i < stats.length; i++) {
@@ -129,18 +152,25 @@ export async function checkWeeklyStaffStats(client: Client) {
 
         embed.addFields({ name: '📊 Galactic Merit Summary', value: statsList || '*The void remains silent this week.*' });
         
-        await channel.send({ 
-          content: '🌌 **ATTENTION SENTINELS: The Weekly Merit Report has arrived!**', 
-          embeds: [embed] 
-        });
-
-        const now = new Date().toISOString();
-        await prisma.metadata.upsert({
-          where: { key: 'lastWeeklyStatsAt' },
-          update: { value: now },
-          create: { key: 'lastWeeklyStatsAt', value: now }
-        });
+        await channel.send({
+          content: '🌌 **ATTENTION SENTINELS: The Weekly Merit Report has arrived!**',
+          embeds: [embed]
+        }).catch(() => {});
+        postedAny = true;
+      } catch (e) {
+        console.error(`[Scheduler] weekly stats failed for guild ${gid}:`, e);
       }
+    }
+
+    // Only advance the weekly gate once we actually posted at least one
+    // report — otherwise a fully-idle week just re-checks (harmless).
+    if (postedAny) {
+      const now = new Date().toISOString();
+      await prisma.metadata.upsert({
+        where: { key: 'lastWeeklyStatsAt' },
+        update: { value: now },
+        create: { key: 'lastWeeklyStatsAt', value: now }
+      });
     }
   } catch (err) {
     console.error('[Scheduler] Error in weekly stats cycle:', err);

@@ -97,11 +97,54 @@ export interface RetryResult extends TokenGenResult {
   exhausted: boolean;
 }
 
+/**
+ * Detect steampass throttle/ban signals in a failed gen's logs. HTTP 429
+ * (too many requests) and 403 (IP ban) are per-IP / global — so once we
+ * see one, marching through the remaining pool accounts from the same
+ * server IP only deepens the block. Matches ACTUAL HTTP responses from
+ * steampass, NOT the pre-call "rate-limited!" warning line.
+ */
+function steampassIsThrottling(logs: string): boolean {
+  if (!logs) return false;
+  return /\/auth\/login returned HTTP (?:429|403)\b/i.test(logs)
+    || /Steampass (?:credentials|guard-code) API (?:429|403)\b/i.test(logs);
+}
+
 export async function generateTokenWithRetry(
   appId: number,
   gameName: string,
   guildId?: string,
 ): Promise<RetryResult> {
+  const ownedGuildKey = (!guildId || guildId === CONFIG.OWNER_GUILD_ID) ? '' : guildId;
+
+  // ── Priority 1: owner-provided (BYO) Steam accounts ──
+  // If a Steam account the owner OWNS is registered for this game and still
+  // has daily quota, use it directly (zero steampass). Only when they're
+  // all exhausted or failing do we fall through to the steampass pool.
+  try {
+    const { getAvailableOwnedAccounts, recordOwnedUsage, saveOwnedRefreshToken, recordOwnedFailure } = await import('./ownedAccounts');
+    const ownedAccts = await getAvailableOwnedAccounts(appId, ownedGuildKey);
+    if (ownedAccts.length > 0) {
+      const g = await prisma.game.findFirst({ where: { appId } });
+      const uuid = g?.steampassUuid || String(appId);
+      const mode = (g as any)?.generationMode || 'gbe';
+      for (const owned of ownedAccts) {
+        console.log(`[TokenGen:Owned] Trying owned Steam account #${owned.id} (${owned.steamLogin}) for AppID ${appId}`);
+        const result = await generateHeadlessOwned(appId, gameName, uuid, mode, owned);
+        if (result.zipPath) {
+          await recordOwnedUsage(owned.id);
+          if (result.refreshToken) await saveOwnedRefreshToken(owned.id, result.refreshToken, result.steamId);
+          console.log(`[TokenGen:Owned] Success with owned account #${owned.id} — no steampass used`);
+          return { ...result, poolAccountId: null, exhausted: false };
+        }
+        await recordOwnedFailure(owned.id);
+        console.warn(`[TokenGen:Owned] Owned account #${owned.id} failed — trying next / falling back to steampass`);
+      }
+    }
+  } catch (e) {
+    console.warn('[TokenGen:Owned] owned-account path errored, falling back to steampass:', (e as Error).message);
+  }
+
   const { getAllAvailableOwnerAccounts, recordOwnerUsage } = await import('./steampassPool');
 
   const isOwner = !guildId || guildId === CONFIG.OWNER_GUILD_ID;
@@ -155,6 +198,15 @@ export async function generateTokenWithRetry(
     }
 
     console.warn(`[TokenGen:Retry] Account ${label} failed, ${candidates.length - i - 1} remaining`);
+
+    // ── Block-avoidance: bail out early on a steampass throttle/ban ──
+    // If steampass answered 429/403, every remaining account would hit the
+    // SAME rate-limited IP — retrying just digs the hole deeper (and risks
+    // a longer ban). Stop now and let the caller route to manual delivery.
+    if (steampassIsThrottling(result.logs)) {
+      console.warn(`[TokenGen:Retry] Steampass is throttling/blocking (HTTP 429/403) — aborting the remaining ${candidates.length - i - 1} account attempt(s) so we don't deepen the block.`);
+      break;
+    }
   }
 
   console.error(`[TokenGen:Retry] All ${candidates.length} accounts failed for AppID ${appId}`);
@@ -227,40 +279,51 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
       }
     }
 
-    // Load the cached steampass bearer token from DB (Metadata table) so
-    // Python can skip POST /auth/login entirely. Set via /setsteampass.
-    // Falls back gracefully if the row doesn't exist — Python will then
-    // attempt a fresh login and surface a clear error if it 422s.
-    //
-    // The cached bearer belongs to the GLOBAL (home) account only — a
-    // tenant has a different steampass account, so reusing the home
-    // bearer would auth as the wrong account. Tenants therefore skip the
-    // cached bearer and do a fresh /auth/login with their own creds.
-    // The owner-pool override also skips it (it's a different account too).
+    // Load the cached steampass bearer so Python can skip POST /auth/login
+    // (the endpoint steampass rate-limits / IP-bans). The bearer is tied to
+    // a specific steampass ACCOUNT, so we resolve it by spLogin — NOT by
+    // "is there an override". That's the key fix: every owner gen (pool AND
+    // env) routes through the override path, so the old "skip if override"
+    // check meant the bearer was NEVER used and /auth/login ran every time.
+    //   - pool account  → SteampassAccount.token (keyed by unique login)
+    //   - global env    → Metadata "steampass_token"
+    //   - tenant        → not cached here (still gets the refresh_token cache)
+    // Python auto-refreshes a stale bearer, and we persist the fresh one
+    // back on success below — so this self-heals without manual /setsteampass.
     let cachedToken = '';
-    if (!isTenant && !(accountOverride && accountOverride.login)) {
+    if (spLogin) {
       try {
-        const row = await prisma.metadata.findUnique({ where: { key: 'steampass_token' } });
-        cachedToken = (row?.value || '').trim();
+        const acct = await (prisma as any).steampassAccount.findUnique({ where: { login: spLogin } });
+        if (acct) {
+          cachedToken = (acct.token || '').trim();
+        } else if (!isTenant) {
+          const row = await prisma.metadata.findUnique({ where: { key: 'steampass_token' } });
+          cachedToken = (row?.value || '').trim();
+        }
       } catch {
-        // Metadata table issue is non-fatal — proceed without cached token.
+        // DB issue is non-fatal — proceed without cached token (Python
+        // falls back to /auth/login).
       }
     }
 
-    // ── Look up cached Steam session for this (guild, UUID) ──
-    // Eliminates 1 or 2 steampass calls per gen if found. Skipped for
+    // ── Look up cached Steam session for this (guild, account, UUID) ──
+    // Eliminates 1 or 2 steampass calls per gen if found. Skipped only for
     // FAKE (test) UUIDs since those don't talk to real Steam.
-    // Also skipped when using a pool account override — the cached session
-    // belongs to whichever account last succeeded, which may be a DIFFERENT
-    // pool account with different Steam credentials.
+    //
+    // The cache key includes spLogin (the steampass account actually being
+    // used — env, tenant, or the owner-pool override). That's what makes
+    // this safe for the owner pool: each pool account gets its OWN cached
+    // session per game, so account A's refresh_token is never reused for
+    // account B. Before this key change the pool bypassed the cache
+    // entirely and hit steampass on every gen (rate-limit / block risk).
     let cachedSteamLogin = '';
     let cachedSteamPassword = '';
     let cachedRefreshToken = '';
     let cachedGuarded = true;
-    if (steampassUuid && steampassUuid !== 'FAKE' && !(accountOverride && accountOverride.login)) {
+    if (steampassUuid && steampassUuid !== 'FAKE' && spLogin) {
       try {
         const session = await (prisma as any).steamSession.findUnique({
-          where: { guildId_steampassUuid: { guildId: sessionGuildKey, steampassUuid } },
+          where: { guildId_steampassLogin_steampassUuid: { guildId: sessionGuildKey, steampassLogin: spLogin, steampassUuid } },
         });
         if (session) {
           cachedSteamLogin = (session.steamLogin || '').trim();
@@ -329,29 +392,22 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
 
         if (error) {
           console.error(`[TokenGen:Headless] Process error for AppID ${appId}:`, error.message);
-          // Bump failure count on the SteamSession row so we don't keep
-          // hammering a dead account silently.
-          // When using a pool account override, the cached session row
-          // belongs to whichever pool account last wrote it — NOT the one
-          // that just failed. Bumping the wrong account's failure count
-          // would be misleading. Instead, DELETE the stale cached session
-          // so the next attempt does a fresh steampass fetch.
-          if (steampassUuid && steampassUuid !== 'FAKE') {
-            if (accountOverride && accountOverride.login) {
-              try {
-                await (prisma as any).steamSession.delete({
-                  where: { guildId_steampassUuid: { guildId: sessionGuildKey, steampassUuid } },
-                });
-                console.log(`[TokenGen] Cleared stale SteamSession cache for UUID ${steampassUuid.slice(0, 8)}… after pool-account failure`);
-              } catch { /* row may not exist — fine */ }
-            } else {
-              try {
-                await (prisma as any).steamSession.update({
-                  where: { guildId_steampassUuid: { guildId: sessionGuildKey, steampassUuid } },
-                  data: { failureCount: { increment: 1 }, lastFailureAt: new Date() },
-                });
-              } catch { /* row may not exist yet — fine */ }
-            }
+          // Bump failure count on THIS account's SteamSession row so we
+          // don't keep hammering a dead account silently. The row is keyed
+          // by (guildId, steampassLogin, steampassUuid) — i.e. the exact
+          // account that just failed — so incrementing is always correct,
+          // including for pool accounts. We keep the row (and its cached
+          // refresh_token) rather than deleting it: the token attempt costs
+          // zero steampass calls, so a stale one is cheap to retry, and a
+          // whole-gen failure usually means steampass itself is down, not a
+          // bad token (Python already falls through all 3 tiers per run).
+          if (steampassUuid && steampassUuid !== 'FAKE' && spLogin) {
+            try {
+              await (prisma as any).steamSession.update({
+                where: { guildId_steampassLogin_steampassUuid: { guildId: sessionGuildKey, steampassLogin: spLogin, steampassUuid } },
+                data: { failureCount: { increment: 1 }, lastFailureAt: new Date() },
+              });
+            } catch { /* row may not exist yet — fine */ }
           }
           resolve({ zipPath: null, logs, installerKey });
           return;
@@ -387,19 +443,16 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
           }
 
           // Persist the (possibly refreshed) Steam session back to DB so
-          // the next gen on this UUID can skip steampass. Skipped for:
-          //  - FAKE UUIDs (test mode) since those don't represent a real account.
-          //  - Pool account overrides — the SteamSession row is keyed by
-          //    (guildId, steampassUuid) and shared across ALL pool accounts on
-          //    the owner server. Saving pool account A's Steam creds here
-          //    would poison the cache for pool account B (different Steam
-          //    login/password behind a different steampass account). Each pool
-          //    attempt should do a fresh steampass fetch instead.
-          if (meta && steampassUuid && steampassUuid !== 'FAKE' && meta.steam_login
-              && !(accountOverride && accountOverride.login)) {
+          // the next gen on this (account, UUID) can skip steampass. The
+          // row is keyed by (guildId, steampassLogin, steampassUuid), so
+          // pool accounts each get their OWN cached session — no poisoning
+          // across accounts — and this now runs for pool gens too (it used
+          // to be skipped, which is why the pool re-hit steampass forever).
+          // Still skipped only for FAKE (test) UUIDs.
+          if (meta && steampassUuid && steampassUuid !== 'FAKE' && meta.steam_login && spLogin) {
             try {
               await (prisma as any).steamSession.upsert({
-                where: { guildId_steampassUuid: { guildId: sessionGuildKey, steampassUuid } },
+                where: { guildId_steampassLogin_steampassUuid: { guildId: sessionGuildKey, steampassLogin: spLogin, steampassUuid } },
                 update: {
                   steamLogin: meta.steam_login,
                   steamPassword: meta.steam_password || cachedSteamPassword,
@@ -413,6 +466,7 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
                 },
                 create: {
                   guildId: sessionGuildKey,
+                  steampassLogin: spLogin,
                   steampassUuid,
                   steamLogin: meta.steam_login,
                   steamPassword: meta.steam_password || '',
@@ -424,19 +478,125 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
                 },
               });
               console.log(
-                `[TokenGen] SteamSession upserted for UUID ${steampassUuid.slice(0, 8)}… ` +
+                `[TokenGen] SteamSession upserted for account ${spLogin} UUID ${steampassUuid.slice(0, 8)}… ` +
                 `(source=${meta.session_source}, refresh_token=${meta.refresh_token ? 'yes' : 'no'})`
               );
             } catch (e) {
               console.warn('[TokenGen] SteamSession upsert failed (non-fatal):', e);
             }
-          } else if (meta && accountOverride && accountOverride.login && meta.steam_login) {
-            console.log(`[TokenGen] Skipping SteamSession upsert for pool-account override (would poison shared cache)`);
+          }
+
+          // Persist a freshly-captured steampass bearer so future gens on
+          // this account skip /auth/login. Python only emits
+          // meta.steampass_token when it did a REAL /auth/login this run
+          // (not when it reused a cached bearer), so this writes at most
+          // once per account per bearer lifetime — and re-writes after a
+          // 401 self-heal. Saved to the pool account row (by unique login)
+          // if spLogin is one, else to the global Metadata slot.
+          if (meta && meta.steampass_token && spLogin) {
+            try {
+              const upd = await (prisma as any).steampassAccount.updateMany({
+                where: { login: spLogin },
+                data: { token: meta.steampass_token },
+              });
+              if (upd.count === 0 && !isTenant) {
+                await prisma.metadata.upsert({
+                  where: { key: 'steampass_token' },
+                  update: { value: meta.steampass_token },
+                  create: { key: 'steampass_token', value: meta.steampass_token },
+                });
+              }
+              console.log(`[TokenGen] Cached fresh steampass bearer for account ${spLogin} (future gens skip /auth/login)`);
+            } catch (e) {
+              console.warn('[TokenGen] steampass bearer cache save failed (non-fatal):', e);
+            }
           }
 
           resolve({ zipPath: lastLine, logs, installerKey, ticketHash, expectedHmac, appIdBound });
         } else {
           console.error(`[TokenGen:Headless] No valid zip path found. Output:\n${stdout}`);
+          resolve({ zipPath: null, logs, installerKey });
+        }
+      }
+    );
+  });
+}
+
+export interface OwnedGenResult extends TokenGenResult {
+  /** refresh_token captured from the owned-account login, to cache for reuse. */
+  refreshToken?: string;
+  steamId?: string;
+}
+
+/**
+ * Generate a token using an owner-provided (BYO) Steam account — a direct
+ * Steam login, zero steampass. Passes the account's credentials to Python
+ * via OWNED_STEAM_* env vars; Python logs in (refresh_token first if cached,
+ * else creds + optional TOTP, or no Guard) and gens the ticket. Returns the
+ * same shape as generateHeadless plus the fresh refresh_token to cache.
+ */
+function generateHeadlessOwned(
+  appId: number,
+  gameName: string,
+  steampassUuid: string,
+  generationMode: string,
+  owned: { steamLogin: string; steamPassword: string; sharedSecret: string; refreshToken: string },
+): Promise<OwnedGenResult> {
+  const installerKey = crypto.randomBytes(24).toString('hex');
+  const publicUrlEnv = process.env.PUBLIC_URL || '';
+  const railwayDomainEnv = process.env.RAILWAY_PUBLIC_DOMAIN || '';
+
+  return new Promise((resolve) => {
+    const env = buildPythonEnv({
+      // Direct Steam creds — Python's owned-account branch skips steampass.
+      OWNED_STEAM_LOGIN: owned.steamLogin,
+      OWNED_STEAM_PASSWORD: owned.steamPassword,
+      OWNED_STEAM_SHARED_SECRET: owned.sharedSecret || '',
+      CACHED_STEAM_REFRESH_TOKEN: owned.refreshToken || '',
+      INSTALLER_KEY: installerKey,
+      HMAC_SECRET: process.env.HMAC_SECRET || '',
+      PUBLIC_URL: publicUrlEnv,
+      RAILWAY_PUBLIC_DOMAIN: railwayDomainEnv,
+    });
+
+    execFile(
+      PYTHON_EXE,
+      [HEADLESS_SCRIPT, String(appId), gameName, steampassUuid, generationMode],
+      { timeout: 120_000, maxBuffer: 20 * 1024 * 1024, env },
+      (error, stdout, stderr) => {
+        const logs = stdout + (stderr ? `\n${stderr}` : '');
+        if (error) {
+          console.error(`[TokenGen:Owned] Process error for AppID ${appId}:`, error.message);
+          resolve({ zipPath: null, logs, installerKey });
+          return;
+        }
+        const lines = stdout.trim().split('\n').filter(l => l.trim());
+        const lastLine = lines[lines.length - 1]?.trim();
+        if (lastLine && fs.existsSync(lastLine)) {
+          let ticketHash: string | undefined;
+          let expectedHmac: string | undefined;
+          let appIdBound: number | undefined;
+          let refreshToken: string | undefined;
+          let steamId: string | undefined;
+          const metaPath = lastLine + '.meta.json';
+          try {
+            if (fs.existsSync(metaPath)) {
+              const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+              ticketHash = typeof meta.ticket_hash === 'string' ? meta.ticket_hash : undefined;
+              expectedHmac = typeof meta.expected_hmac === 'string' && meta.expected_hmac ? meta.expected_hmac : undefined;
+              const ap = parseInt(String(meta.app_id), 10);
+              appIdBound = Number.isFinite(ap) ? ap : undefined;
+              refreshToken = typeof meta.refresh_token === 'string' && meta.refresh_token ? meta.refresh_token : undefined;
+              steamId = typeof meta.steam_id === 'string' && meta.steam_id ? meta.steam_id : undefined;
+              try { fs.unlinkSync(metaPath); } catch {}
+            }
+          } catch (e) {
+            console.warn('[TokenGen:Owned] Failed to read sidecar meta JSON:', e);
+          }
+          console.log(`[TokenGen:Owned] Success for AppID ${appId}: ${lastLine}`);
+          resolve({ zipPath: lastLine, logs, installerKey, ticketHash, expectedHmac, appIdBound, refreshToken, steamId });
+        } else {
+          console.error(`[TokenGen:Owned] No valid zip path found. Output:\n${stdout}`);
           resolve({ zipPath: null, logs, installerKey });
         }
       }

@@ -52,7 +52,7 @@ export async function createMainPanel(guildId?: string) {
   }, 0);
   const totalGames = allGames.length;
 
-  const waitTime = await getEstimatedWaitTime();
+  const waitTime = await getEstimatedWaitTime(guildId);
   const mainEmbed = new EmbedBuilder()
     .setTitle(`👑 ${CONFIG.NAME} • Gateway Selection 👑`)
     .setDescription(`Welcome to the **${CONFIG.NAME} Activation Lounge**.\nChoose your desired game below to initiate the secure token request process.\n\n💎 **Membership Perks:** [Get Better Perks Here](<${CONFIG.PATREON_URL}>)`)

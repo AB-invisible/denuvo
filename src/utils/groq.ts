@@ -13,6 +13,15 @@ const groq = new Groq({
  */
 export const VERIFY_BYPASS_REASON = '__GROQ_NOT_CONFIGURED__';
 
+/**
+ * Returned when the Groq API call itself throws (rate limit, model
+ * deprecated, network blip). Distinct from a genuine "NO" verdict: the
+ * auto-gen flow treats this like VERIFY_BYPASS_REASON and routes to manual
+ * staff delivery, so a transient AI outage never counts as a failed
+ * verification attempt (which would strike + cooldown a legitimate user).
+ */
+export const VERIFY_ERROR_REASON = '__GROQ_ERROR__';
+
 export async function verifyScreenshot(imageUrl: string, gameName: string): Promise<{ isValid: boolean, reasoning: string }> {
   if (!CONFIG.GROQ_API_KEY) {
     console.warn('[Groq] GROQ_API_KEY NOT CONFIGURED — screenshot bypassed for verification, manual staff delivery required.');
@@ -119,7 +128,12 @@ ANSWER: [YES or NO]`,
     return { isValid, reasoning };
   } catch (error) {
     console.error('Error verifying screenshot with Groq:', error);
-    return { isValid: false, reasoning: 'Vision system temporarily unavailable.' };
+    // Don't fail the USER for an AI outage. Returning isValid:false here
+    // would count as a failed verification attempt (3 → strike + 48h
+    // cooldown), punishing a legitimate screenshot during a Groq hiccup.
+    // Signal a transient error (isValid:true + sentinel) so the caller
+    // routes to manual staff delivery instead.
+    return { isValid: true, reasoning: VERIFY_ERROR_REASON };
   }
 }
 
