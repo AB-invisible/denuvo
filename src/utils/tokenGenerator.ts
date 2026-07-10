@@ -111,16 +111,6 @@ function steampassIsThrottling(logs: string): boolean {
     || /Steampass (?:credentials|guard-code) API (?:429|403)\b/i.test(logs);
 }
 
-/**
- * True when a gen failed because the steampass bearer is missing/expired and
- * the bot (correctly) refused to auto-/auth/login. Signals staff to refresh
- * the bearer with /setsteampass rather than "something broke, retry".
- */
-export function steampassNeedsBearerRefresh(logs: string): boolean {
-  if (!logs) return false;
-  return /bearer is missing or expired|Cached bearer rejected|No cached bearer/i.test(logs);
-}
-
 export async function generateTokenWithRetry(
   appId: number,
   gameName: string,
