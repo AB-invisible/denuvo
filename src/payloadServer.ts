@@ -108,6 +108,22 @@ function resolveFile(mode: string, filename: string): string | null {
   return fs.existsSync(resolved) && fs.statSync(resolved).isFile() ? resolved : null;
 }
 
+// Resolve a per-game override file under _Core/overrides/<appid>/<filename>.
+// Lets specific games ship a different emulator binary than the shared
+// _Core/ default (e.g. The Bus needs a specific steamclient64.dll build).
+// Same path-traversal guards as resolveFile: numeric appid, no slashes or
+// ".." in the filename, and the resolved path must stay inside overrides/.
+function resolveOverrideFile(appid: string, filename: string): string | null {
+  if (!/^[0-9]+$/.test(appid)) return null;
+  if (filename.includes('/') || filename.includes('\\') || filename.includes('..')) return null;
+  if (!/^[A-Za-z0-9._-]+$/.test(filename)) return null;
+
+  const overridesRoot = path.resolve(path.join(CORE_DIR, 'overrides'));
+  const resolved = path.resolve(path.join(overridesRoot, appid, filename));
+  if (!resolved.startsWith(overridesRoot + path.sep)) return null;
+  return fs.existsSync(resolved) && fs.statSync(resolved).isFile() ? resolved : null;
+}
+
 export function startPayloadServer(): void {
   const portRaw = process.env.PORT || '3000';
   const port = Number.parseInt(portRaw, 10);
@@ -551,6 +567,29 @@ export function startPayloadServer(): void {
             res.end('Internal error');
           }
         }
+        return;
+      }
+
+      // Per-game override: GET /payload/override/<appid>/<filename>
+      // Serves _Core/overrides/<appid>/<filename> so a specific game can
+      // ship a different emulator binary than the shared default.
+      const om = url.pathname.match(/^\/payload\/override\/([0-9]+)\/([A-Za-z0-9._-]+)$/);
+      if (om) {
+        const [, appid, filename] = om;
+        const overridePath = resolveOverrideFile(appid, filename);
+        if (!overridePath) {
+          res.writeHead(404, { 'Content-Type': 'text/plain' });
+          res.end('File not found');
+          return;
+        }
+        const ostat = fs.statSync(overridePath);
+        res.writeHead(200, {
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': ostat.size.toString(),
+          'Cache-Control': 'public, max-age=86400',
+          'X-Content-Type-Options': 'nosniff',
+        });
+        fs.createReadStream(overridePath).pipe(res);
         return;
       }
 

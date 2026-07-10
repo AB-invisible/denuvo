@@ -181,9 +181,23 @@ def build_thin_zip(out, app_id, game_name, generation_mode, token_b64, steam_id,
             "size": src_path.stat().st_size,
         }
 
+    # Per-game payload override: if _Core/overrides/<app_id>/<file> exists,
+    # ship THAT file instead of the shared _Core/ default. Some games need a
+    # specific emulator DLL build — e.g. The Bus (491540) needs the small
+    # 101 KB steamclient64.dll; the default 17 MB one throws "Unable to
+    # create interface ISteamUser". The installer fetches it from a dedicated
+    # /payload/override/<app_id>/<file> route on the payload server.
+    def _gbe_src(name):
+        override = CORE_DIR / "overrides" / str(app_id) / name
+        if override.exists():
+            log(f"[Override] Using per-game {name} for AppID {app_id}")
+            return override, f"/payload/override/{app_id}/{name}"
+        return CORE_DIR / name, f"/payload/gbe/{name}"
+
     gbe_entries = []
     for name in ("steam_api64.dll", "steamclient64.dll"):
-        e = _entry(CORE_DIR / name, f"/payload/gbe/{name}", name)
+        src, src_url = _gbe_src(name)
+        e = _entry(src, src_url, name)
         if e:
             gbe_entries.append(e)
 
