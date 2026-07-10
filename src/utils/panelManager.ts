@@ -1,10 +1,32 @@
 import { client } from '../client';
 import { CONFIG } from '../config';
-import { TextChannel, AttachmentBuilder, TextBasedChannel } from 'discord.js';
+import { TextChannel, AttachmentBuilder, TextBasedChannel, Message, MessageEditOptions } from 'discord.js';
 import { createMainPanel } from './embeds';
 import { logAction } from './logging';
 import prisma from '../lib/prisma';
 import path from 'path';
+
+function isStaleDiscordResource(err: unknown): boolean {
+  const e = err as { code?: number; status?: number };
+  return e?.code === 10003 || e?.code === 10008 || e?.status === 404;
+}
+
+async function editMessageWithRetry(message: Message, payload: MessageEditOptions, retries = 2): Promise<void> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      await message.edit(payload);
+      return;
+    } catch (err) {
+      if (isStaleDiscordResource(err)) throw err;
+      const status = (err as { status?: number }).status;
+      if (status === 500 && attempt < retries) {
+        await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
 
 /**
  * Refreshes all active game selection panels in the guild.
@@ -27,8 +49,7 @@ export async function refreshAllPanels() {
         if (!guildPanels.has(gid)) guildPanels.set(gid, []);
         guildPanels.get(gid)!.push(panel);
       } catch (err) {
-        const e = err as any;
-        if (e?.code === 10003 || e?.code === 10008 || e?.status === 404) {
+        if (isStaleDiscordResource(err)) {
           await prisma.panel.delete({ where: { id: panel.id } }).catch(() => {});
         }
       }
@@ -43,19 +64,27 @@ export async function refreshAllPanels() {
           if (!channel || !(channel instanceof TextChannel)) return;
 
           const message = await channel.messages.fetch(panelRecord.messageId).catch(() => null);
-          if (message) {
-            const hasImage = message.attachments.some(a => a.name === 'gamegen.png');
-            await message.edit({
+          if (!message) {
+            await prisma.panel.delete({ where: { id: panelRecord.id } }).catch(() => {});
+            return;
+          }
+
+          const hasImage = message.attachments.some(a => a.name === 'gamegen.png');
+          try {
+            await editMessageWithRetry(message, {
               embeds: panelContent.embeds,
               components: panelContent.components,
               ...(hasImage ? {} : { files: [new AttachmentBuilder(imagePath, { name: 'gamegen.png' })] })
-            }).catch((e) => console.error(`Failed to edit message ${panelRecord.messageId}:`, e));
-          } else {
-            await prisma.panel.delete({ where: { id: panelRecord.id } }).catch(() => {});
+            });
+          } catch (err) {
+            if (isStaleDiscordResource(err)) {
+              await prisma.panel.delete({ where: { id: panelRecord.id } }).catch(() => {});
+            } else {
+              console.error(`Failed to edit message ${panelRecord.messageId}:`, err);
+            }
           }
         } catch (err) {
-          const e = err as any;
-          if (e?.code === 10003 || e?.code === 10008 || e?.status === 404) {
+          if (isStaleDiscordResource(err)) {
             await prisma.panel.delete({ where: { id: panelRecord.id } }).catch(() => {});
           } else {
             console.error(`Error refreshing panel ${panelRecord.id}:`, err);
