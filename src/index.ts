@@ -92,9 +92,16 @@ const commands = [
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
     .setName('exclude-auto')
-    .setDescription('Toggle a game\'s exclusion from automatic stock regeneration')
-    .addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true))
-    .addStringOption(o => o.setName('state').setDescription('On = exclude from regen, Off = allow regen').setRequired(true).addChoices({ name: 'On (Exclude)', value: 'on' }, { name: 'Off (Allow Regen)', value: 'off' }))
+    .setDescription('Toggle exclusion from automatic stock regeneration')
+    .addSubcommand(sub => sub
+      .setName('all')
+      .setDescription('Allow or disallow auto-regen for every game')
+      .addStringOption(o => o.setName('state').setDescription('On = exclude from regen, Off = allow regen').setRequired(true).addChoices({ name: 'On (Exclude)', value: 'on' }, { name: 'Off (Allow Regen)', value: 'off' })))
+    .addSubcommand(sub => sub
+      .setName('game')
+      .setDescription('Allow or disallow auto-regen for a single game')
+      .addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true))
+      .addStringOption(o => o.setName('state').setDescription('On = exclude from regen, Off = allow regen').setRequired(true).addChoices({ name: 'On (Exclude)', value: 'on' }, { name: 'Off (Allow Regen)', value: 'off' })))
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
     .setName('deplet')

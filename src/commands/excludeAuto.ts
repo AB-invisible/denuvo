@@ -1,13 +1,12 @@
 import prisma from '../lib/prisma';
-import { refreshAllPanels } from '../utils/panelManager';
 import { logAction } from '../utils/logging';
 
 export async function execute(interaction: any): Promise<void> {
-  const gameName = interaction.options.getString('game')!;
-  const state = interaction.options.getString('state')!;
+  const sub = interaction.options.getSubcommand() as 'all' | 'game';
+  const state = interaction.options.getString('state', true);
   const exclude = state === 'on';
 
-  if (gameName.toUpperCase() === 'ALL') {
+  if (sub === 'all') {
     if (exclude) {
       const [updated, deleted] = await prisma.$transaction([
         prisma.game.updateMany({ data: { excludeRegen: true } }),
@@ -39,6 +38,7 @@ export async function execute(interaction: any): Promise<void> {
     return;
   }
 
+  const gameName = interaction.options.getString('game', true);
   const game = await prisma.game.findUnique({ where: { name: gameName } });
   if (!game) return interaction.editReply({ content: `❌ **Not Found:** Game **${gameName}** does not exist.` });
 
