@@ -1,14 +1,27 @@
 import { client } from '../client';
 import { CONFIG } from '../config';
-import { TextChannel, AttachmentBuilder, TextBasedChannel, Message, MessageEditOptions } from 'discord.js';
+import {
+  TextChannel,
+  AttachmentBuilder,
+  TextBasedChannel,
+  Message,
+  MessageEditOptions,
+  EmbedBuilder,
+} from 'discord.js';
 import { createMainPanel } from './embeds';
 import { logAction } from './logging';
 import { getPanelAssetUrl, panelImageAttachmentPath } from './downloadHost';
 import prisma from '../lib/prisma';
 
+const PANEL_EDIT_DELAY_MS = 500;
+
 function isStaleDiscordResource(err: unknown): boolean {
   const e = err as { code?: number; status?: number };
   return e?.code === 10003 || e?.code === 10008 || e?.status === 404;
+}
+
+function isDiscord500(err: unknown): boolean {
+  return (err as { status?: number }).status === 500;
 }
 
 function logDiscordApiError(context: string, err: unknown): void {
@@ -16,16 +29,68 @@ function logDiscordApiError(context: string, err: unknown): void {
   if (raw) console.error(`[Panel] ${context} Discord API error:`, JSON.stringify(raw));
 }
 
-async function editMessageWithRetry(message: Message, payload: MessageEditOptions, retries = 2): Promise<void> {
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Keep the image URL already on the message so refresh edits don't re-upload or swap CDN hosts. */
+function embedsForPanelRefresh(message: Message, embeds: EmbedBuilder[]): EmbedBuilder[] {
+  if (embeds.length === 0) return embeds;
+
+  const existingImageUrl = message.embeds[0]?.image?.url;
+  const embed = EmbedBuilder.from(embeds[0]);
+
+  if (existingImageUrl) {
+    embed.setImage(existingImageUrl);
+    return [embed];
+  }
+
+  const hostedUrl = getPanelAssetUrl('gamegen.png');
+  if (hostedUrl) {
+    embed.setImage(hostedUrl);
+  }
+
+  return [embed];
+}
+
+function buildPanelEditPayload(
+  message: Message,
+  panelContent: Awaited<ReturnType<typeof createMainPanel>>,
+  opts?: { stripImage?: boolean },
+): MessageEditOptions {
+  const usesHostedImage = !!getPanelAssetUrl('gamegen.png');
+  const hasLegacyAttachment = message.attachments.some((a) => a.name === 'gamegen.png');
+
+  let embeds = embedsForPanelRefresh(message, panelContent.embeds);
+  if (opts?.stripImage && embeds.length > 0) {
+    embeds = [EmbedBuilder.from(embeds[0]).setImage(null)];
+  }
+
+  const payload: MessageEditOptions = {
+    embeds,
+    components: panelContent.components,
+  };
+
+  // Legacy panels uploaded gamegen.png as a file. Strip it once we serve the
+  // banner from a URL — leaving both attached causes Discord edit 500s.
+  if (usesHostedImage && hasLegacyAttachment) {
+    payload.attachments = [];
+  } else if (!usesHostedImage && !hasLegacyAttachment) {
+    payload.files = [new AttachmentBuilder(panelImageAttachmentPath('gamegen.png'), { name: 'gamegen.png' })];
+  }
+
+  return payload;
+}
+
+async function editMessageWithRetry(message: Message, payload: MessageEditOptions, retries = 3): Promise<void> {
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       await message.edit(payload);
       return;
     } catch (err) {
       if (isStaleDiscordResource(err)) throw err;
-      const status = (err as { status?: number }).status;
-      if (status === 500 && attempt < retries) {
-        await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
+      if (isDiscord500(err) && attempt < retries) {
+        await sleep(1000 * (attempt + 1));
         continue;
       }
       logDiscordApiError('edit', err);
@@ -34,19 +99,44 @@ async function editMessageWithRetry(message: Message, payload: MessageEditOption
   }
 }
 
+async function editPanelMessage(
+  message: Message,
+  panelContent: Awaited<ReturnType<typeof createMainPanel>>,
+): Promise<void> {
+  try {
+    await editMessageWithRetry(message, buildPanelEditPayload(message, panelContent));
+    return;
+  } catch (err) {
+    if (!isDiscord500(err)) throw err;
+    console.warn(`[Panel] Full edit failed for ${message.id}, retrying without embed image…`);
+  }
+
+  try {
+    await editMessageWithRetry(message, buildPanelEditPayload(message, panelContent, { stripImage: true }));
+    return;
+  } catch (err) {
+    if (!isDiscord500(err)) throw err;
+    console.warn(`[Panel] Imageless edit failed for ${message.id}, retrying components-only…`);
+  }
+
+  await editMessageWithRetry(message, {
+    components: panelContent.components,
+    attachments: [],
+  });
+}
+
 export async function sendMessageWithRetry(
   channel: TextChannel,
   payload: Parameters<TextChannel['send']>[0],
-  retries = 2,
+  retries = 3,
 ): Promise<Message> {
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       return await channel.send(payload);
     } catch (err) {
       if (isStaleDiscordResource(err)) throw err;
-      const status = (err as { status?: number }).status;
-      if (status === 500 && attempt < retries) {
-        await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
+      if (isDiscord500(err) && attempt < retries) {
+        await sleep(1000 * (attempt + 1));
         continue;
       }
       logDiscordApiError('send', err);
@@ -62,8 +152,6 @@ export async function sendMessageWithRetry(
 export async function refreshAllPanels() {
   try {
     const panels = await prisma.panel.findMany();
-    const usesAttachmentImage = !getPanelAssetUrl('gamegen.png');
-    const imagePath = panelImageAttachmentPath('gamegen.png');
 
     // Group panels by guild to avoid regenerating the same content per-guild
     const guildPanels = new Map<string, typeof panels>();
@@ -84,29 +172,24 @@ export async function refreshAllPanels() {
       }
     }
 
-    // Generate per-guild panel content and update
+    // Generate per-guild panel content and update sequentially — parallel
+    // PATCHes across channels often trigger transient Discord 500s.
     for (const [guildId, guildPanelList] of guildPanels) {
       const panelContent = await createMainPanel(guildId);
-      await Promise.allSettled(guildPanelList.map(async (panelRecord) => {
+
+      for (const panelRecord of guildPanelList) {
         try {
           const channel = await client.channels.fetch(panelRecord.channelId).catch(() => null);
-          if (!channel || !(channel instanceof TextChannel)) return;
+          if (!channel || !(channel instanceof TextChannel)) continue;
 
           const message = await channel.messages.fetch(panelRecord.messageId).catch(() => null);
           if (!message) {
             await prisma.panel.delete({ where: { id: panelRecord.id } }).catch(() => {});
-            return;
+            continue;
           }
 
-          const hasImage = message.attachments.some(a => a.name === 'gamegen.png');
           try {
-            await editMessageWithRetry(message, {
-              embeds: panelContent.embeds,
-              components: panelContent.components,
-              ...(usesAttachmentImage && !hasImage
-                ? { files: [new AttachmentBuilder(imagePath, { name: 'gamegen.png' })] }
-                : {}),
-            });
+            await editPanelMessage(message, panelContent);
           } catch (err) {
             if (isStaleDiscordResource(err)) {
               await prisma.panel.delete({ where: { id: panelRecord.id } }).catch(() => {});
@@ -121,7 +204,9 @@ export async function refreshAllPanels() {
             console.error(`Error refreshing panel ${panelRecord.id}:`, err);
           }
         }
-      }));
+
+        await sleep(PANEL_EDIT_DELAY_MS);
+      }
     }
   } catch (err) {
     console.error('Error refreshing panels:', err);

@@ -13,6 +13,26 @@ export type GameWithCount = Game & {
   };
 };
 
+function truncateDiscordText(text: string, max: number): string {
+  const chars = [...text];
+  if (chars.length <= max) return text;
+  return chars.slice(0, max).join('');
+}
+
+function buildGameSelectOption(game: GameWithCount, description: string, emoji: string) {
+  const option = new StringSelectMenuOptionBuilder()
+    .setLabel(truncateDiscordText(game.name, 100))
+    .setDescription(truncateDiscordText(description, 100))
+    .setValue(truncateDiscordText(game.name, 100));
+
+  // Discord intermittently 500s on some unicode emoji in select options.
+  if (emoji && [...emoji].length <= 2) {
+    option.setEmoji(emoji);
+  }
+
+  return option;
+}
+
 export async function createMainPanel(guildId?: string) {
   // Process any pending auto-restocks for this server before building panel
   if (guildId) await processGuildRestocks(guildId);
@@ -126,18 +146,14 @@ export async function createMainPanel(guildId?: string) {
             description = `🔥 High Demand (48h cd) • ${description}`;
           }
 
-          return new StringSelectMenuOptionBuilder()
-            .setLabel(game.name)
-            .setDescription(description.substring(0, 100))
-            .setValue(game.name)
-            .setEmoji(emoji);
+          return buildGameSelectOption(game, description, emoji);
         })
       );
 
     rows.push(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu));
   }
 
-  return { embeds: [mainEmbed], components: rows };
+  return { embeds: [mainEmbed], components: rows.slice(0, 5) };
 }
 
 export async function createMaintenancePanel(durationMinutes?: number | null) {
