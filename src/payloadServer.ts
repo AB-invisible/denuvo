@@ -29,6 +29,8 @@ import fs from 'fs';
 import path from 'path';
 
 const CORE_DIR = path.join(__dirname, '..', '_Core');
+const PANEL_ASSET_DIR = path.join(__dirname, 'public');
+const PANEL_ASSETS = new Set(['gamegen.png', 'maintenance.png']);
 
 // Lazy Prisma loader — same pattern as downloadHost.ts. Keeps a module-
 // load-time failure in @prisma/client from blowing up the HTTP server's
@@ -144,6 +146,28 @@ export function startPayloadServer(): void {
       if (url.pathname === '/payload/health' || url.pathname === '/health' || url.pathname === '/') {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
         res.end('ok');
+        return;
+      }
+
+      const assetMatch = url.pathname.match(/^\/assets\/([a-z0-9._-]+)$/i);
+      if (req.method === 'GET' && assetMatch) {
+        const filename = assetMatch[1];
+        if (!PANEL_ASSETS.has(filename)) {
+          res.writeHead(404, { 'Content-Type': 'text/plain' });
+          res.end('not found');
+          return;
+        }
+        const filePath = path.join(PANEL_ASSET_DIR, filename);
+        if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+          res.writeHead(404, { 'Content-Type': 'text/plain' });
+          res.end('not found');
+          return;
+        }
+        res.writeHead(200, {
+          'Content-Type': 'image/png',
+          'Cache-Control': 'public, max-age=86400',
+        });
+        fs.createReadStream(filePath).pipe(res);
         return;
       }
 

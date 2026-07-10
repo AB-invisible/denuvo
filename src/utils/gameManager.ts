@@ -18,6 +18,13 @@ export async function getOrCreateServerStock(gameId: number, guildId: string): P
   });
 }
 
+export async function getServerStockMapForGuild(
+  guildId: string,
+): Promise<Map<number, { stock: number; lastDepletedAt: Date | null }>> {
+  const stocks = await prisma.serverStock.findMany({ where: { guildId } });
+  return new Map(stocks.map((s) => [s.gameId, { stock: s.stock, lastDepletedAt: s.lastDepletedAt }]));
+}
+
 export async function processGuildRestocks(guildId: string): Promise<void> {
   const now = new Date();
   const pendingRestocks = await prisma.restock.findMany({

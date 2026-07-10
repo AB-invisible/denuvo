@@ -1,9 +1,10 @@
 import { EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, TextChannel, User, TextBasedChannel, GuildMember } from 'discord.js';
 import { Game, Ticket, Cooldown, Subscription } from '@prisma/client';
 import { CONFIG } from '../config';
-import { getActiveGames, REGEN_TIME, processGuildRestocks, getOrCreateServerStock } from './gameManager';
+import { getActiveGames, REGEN_TIME, processGuildRestocks, getServerStockMapForGuild } from './gameManager';
 import { getEstimatedWaitTime, getStaffStats } from './stats';
 import { getActiveStaffCount } from './dutyManager';
+import { getPanelAssetUrl } from './downloadHost';
 import prisma from '../lib/prisma';
 
 export type GameWithCount = Game & {
@@ -39,8 +40,7 @@ export async function createMainPanel(guildId?: string) {
   // Per-server stock: fetch all ServerStock entries for this guild
   let serverStockMap = new Map<number, { stock: number; lastDepletedAt: Date | null }>();
   if (guildId) {
-    const stocks = await prisma.serverStock.findMany({ where: { guildId } });
-    serverStockMap = new Map(stocks.map(s => [s.gameId, { stock: s.stock, lastDepletedAt: s.lastDepletedAt }]));
+    serverStockMap = await getServerStockMapForGuild(guildId);
   }
 
   const totalStock = allGames.reduce((acc: number, game: GameWithCount) => {
@@ -65,7 +65,7 @@ export async function createMainPanel(guildId?: string) {
       { name: '💎 Status Indicators', value: '🟢 **Optimal** (10+ Tokens)\n🟡 **Low Stock** (<10 Tokens)\n🔴 **Empty** (Waiting for Regen)', inline: false }
     )
     .setColor(0x5865F2)
-    .setImage('attachment://gamegen.png')
+    .setImage(getPanelAssetUrl('gamegen.png') ?? 'attachment://gamegen.png')
     .setTimestamp()
     .setFooter({ text: `${CONFIG.NAME} Management • Premium Experience • ${new Date().toLocaleDateString()}` });
 
@@ -157,7 +157,7 @@ export async function createMaintenancePanel(durationMinutes?: number | null) {
       { name: '━━━━━━━━━━━━━━━━━━━━━━', value: ' ', inline: false },
     )
     .setColor(0xED4245) // Danger Red
-    .setImage('attachment://maintenance.png')
+    .setImage(getPanelAssetUrl('maintenance.png') ?? 'attachment://maintenance.png')
     .setTimestamp()
     .setFooter({ text: `${CONFIG.NAME} Management • Maintenance Mode • ${new Date().toLocaleDateString()}` });
 

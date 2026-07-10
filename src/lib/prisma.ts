@@ -3,7 +3,7 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
 import { CONFIG } from '../config';
 
-const prismaClientSingleton = () => {
+const prismaClientSingleton = (): PrismaClient => {
   const connectionString = CONFIG.DATABASE_URL;
   
   if (!connectionString) {
@@ -17,10 +17,10 @@ const prismaClientSingleton = () => {
 };
 
 declare global {
-  var prisma: undefined | ReturnType<typeof prismaClientSingleton>;
+  var prisma: PrismaClient | undefined;
 }
 
-const prisma = globalThis.prisma ?? prismaClientSingleton();
+const prisma: PrismaClient = globalThis.prisma ?? prismaClientSingleton();
 
 export default prisma;
 

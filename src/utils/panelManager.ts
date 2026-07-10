@@ -3,12 +3,17 @@ import { CONFIG } from '../config';
 import { TextChannel, AttachmentBuilder, TextBasedChannel, Message, MessageEditOptions } from 'discord.js';
 import { createMainPanel } from './embeds';
 import { logAction } from './logging';
+import { getPanelAssetUrl, panelImageAttachmentPath } from './downloadHost';
 import prisma from '../lib/prisma';
-import path from 'path';
 
 function isStaleDiscordResource(err: unknown): boolean {
   const e = err as { code?: number; status?: number };
   return e?.code === 10003 || e?.code === 10008 || e?.status === 404;
+}
+
+function logDiscordApiError(context: string, err: unknown): void {
+  const raw = (err as { rawError?: unknown }).rawError;
+  if (raw) console.error(`[Panel] ${context} Discord API error:`, JSON.stringify(raw));
 }
 
 async function editMessageWithRetry(message: Message, payload: MessageEditOptions, retries = 2): Promise<void> {
@@ -23,9 +28,32 @@ async function editMessageWithRetry(message: Message, payload: MessageEditOption
         await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
         continue;
       }
+      logDiscordApiError('edit', err);
       throw err;
     }
   }
+}
+
+export async function sendMessageWithRetry(
+  channel: TextChannel,
+  payload: Parameters<TextChannel['send']>[0],
+  retries = 2,
+): Promise<Message> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await channel.send(payload);
+    } catch (err) {
+      if (isStaleDiscordResource(err)) throw err;
+      const status = (err as { status?: number }).status;
+      if (status === 500 && attempt < retries) {
+        await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
+        continue;
+      }
+      logDiscordApiError('send', err);
+      throw err;
+    }
+  }
+  throw new Error('sendMessageWithRetry exhausted retries');
 }
 
 /**
@@ -34,7 +62,8 @@ async function editMessageWithRetry(message: Message, payload: MessageEditOption
 export async function refreshAllPanels() {
   try {
     const panels = await prisma.panel.findMany();
-    const imagePath = path.join(__dirname, '../public/gamegen.png');
+    const usesAttachmentImage = !getPanelAssetUrl('gamegen.png');
+    const imagePath = panelImageAttachmentPath('gamegen.png');
 
     // Group panels by guild to avoid regenerating the same content per-guild
     const guildPanels = new Map<string, typeof panels>();
@@ -74,7 +103,9 @@ export async function refreshAllPanels() {
             await editMessageWithRetry(message, {
               embeds: panelContent.embeds,
               components: panelContent.components,
-              ...(hasImage ? {} : { files: [new AttachmentBuilder(imagePath, { name: 'gamegen.png' })] })
+              ...(usesAttachmentImage && !hasImage
+                ? { files: [new AttachmentBuilder(imagePath, { name: 'gamegen.png' })] }
+                : {}),
             });
           } catch (err) {
             if (isStaleDiscordResource(err)) {
@@ -101,13 +132,13 @@ export async function postMainPanel(channel: TextBasedChannel) {
   if (channel.isTextBased() && 'send' in channel) {
     const guildId = (channel as TextChannel).guildId || '';
     const panel = await createMainPanel(guildId);
-    const coverPath = path.join(__dirname, '../public/gamegen.png');
-    const cover = new AttachmentBuilder(coverPath, { name: 'gamegen.png' });
+    const payload: Parameters<TextChannel['send']>[0] = { ...panel };
 
-    const sentMessage = await (channel as TextChannel).send({
-      ...panel,
-      files: [cover]
-    });
+    if (!getPanelAssetUrl('gamegen.png')) {
+      payload.files = [new AttachmentBuilder(panelImageAttachmentPath('gamegen.png'), { name: 'gamegen.png' })];
+    }
+
+    const sentMessage = await sendMessageWithRetry(channel as TextChannel, payload);
 
     await prisma.panel.create({
       data: { channelId: channel.id, messageId: sentMessage.id }

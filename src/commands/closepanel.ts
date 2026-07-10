@@ -1,8 +1,8 @@
 import { TextChannel, AttachmentBuilder, Message } from 'discord.js';
-import path from 'path';
 import prisma from '../lib/prisma';
 import { createMaintenancePanel } from '../utils/embeds';
-import { resumeFromMaintenance } from '../utils/panelManager';
+import { resumeFromMaintenance, sendMessageWithRetry } from '../utils/panelManager';
+import { getPanelAssetUrl, panelImageAttachmentPath } from '../utils/downloadHost';
 
 export async function execute(interaction: any): Promise<void> {
   const duration = interaction.options.getInteger('duration');
@@ -21,12 +21,14 @@ export async function execute(interaction: any): Promise<void> {
     await prisma.panel.deleteMany({ where: { channelId: interaction.channelId } }).catch(() => {});
 
     const maintenancePanel = await createMaintenancePanel(duration);
-    const mntPath = path.join(__dirname, '../public/maintenance.png');
-    const attachment = new AttachmentBuilder(mntPath, { name: 'maintenance.png' });
+    const payload: Parameters<TextChannel['send']>[0] = { ...maintenancePanel };
+    if (!getPanelAssetUrl('maintenance.png')) {
+      payload.files = [new AttachmentBuilder(panelImageAttachmentPath('maintenance.png'), { name: 'maintenance.png' })];
+    }
 
     let maintenanceMessage: Message | null = null;
     if (channel && 'send' in channel) {
-      maintenanceMessage = await (channel as TextChannel).send({ ...maintenancePanel, files: [attachment] });
+      maintenanceMessage = await sendMessageWithRetry(channel as TextChannel, payload);
     }
 
     if (duration && duration > 0) {

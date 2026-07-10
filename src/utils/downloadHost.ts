@@ -42,7 +42,7 @@ export interface SelfHostedLink {
   expiresInMinutes: number;
 }
 
-function resolveBaseUrl(): string | null {
+export function resolvePublicBaseUrl(): string | null {
   const explicit = (process.env.PUBLIC_URL || '').trim().replace(/\/+$/, '');
   if (explicit) {
     if (!/^https?:\/\//i.test(explicit)) return 'https://' + explicit;
@@ -51,6 +51,18 @@ function resolveBaseUrl(): string | null {
   const railway = (process.env.RAILWAY_PUBLIC_DOMAIN || '').trim();
   if (railway) return 'https://' + railway;
   return null;
+}
+
+export type PanelAssetName = 'gamegen.png' | 'maintenance.png';
+
+/** Public URL for Discord embed images when Railway/PUBLIC_URL is configured. */
+export function getPanelAssetUrl(filename: PanelAssetName): string | null {
+  const base = resolvePublicBaseUrl();
+  return base ? `${base}/assets/${filename}` : null;
+}
+
+export function panelImageAttachmentPath(filename: PanelAssetName): string {
+  return path.join(__dirname, '..', 'public', filename);
 }
 
 /**
@@ -90,7 +102,7 @@ export async function createDownloadLink(
   bindings?: { ticketHash?: string; expectedHmac?: string; appIdBound?: number },
   persistent: boolean = false,
 ): Promise<SelfHostedLink | null> {
-  const baseUrl = resolveBaseUrl();
+  const baseUrl = resolvePublicBaseUrl();
   if (!baseUrl) {
     console.warn('[downloadHost] No PUBLIC_URL/RAILWAY_PUBLIC_DOMAIN — cannot create self-hosted link.');
     return null;
