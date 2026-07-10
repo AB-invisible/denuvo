@@ -1808,7 +1808,7 @@ def main(app_id, game_name, steampass_uuid, generation_mode="gbe"):
         guarded = True
         guard_code = None
         sp = None  # lazy — only constructed if we actually hit steampass
-        session_source = None  # "owned_account" | "refresh_token" | "cached_creds" | "steampass"
+        session_source = None  # "owned_account" | "steamauth" | "refresh_token" | "cached_creds" | "steampass"
         new_refresh_token = None
 
         # ── OWNED STEAM ACCOUNT MODE (zero steampass) ──
@@ -1844,6 +1844,32 @@ def main(app_id, game_name, steampass_uuid, generation_mode="gbe"):
             guarded = bool(owned_secret)
             session_source = "owned_account"
             log(f"Token generated (SteamID: {steam_id}, source: owned_account)")
+
+        # ── STEAMAUTH MODE (GameGen Auth Service guard codes) ──
+        # Node fetches a TOTP code from steamauth.gamegen.lol via
+        # POST /api/v1/guard-code and passes it here. shared_secret never
+        # touches this process — safer than local TOTP generation.
+        steamauth_login = (os.environ.get("STEAMAUTH_STEAM_LOGIN") or "").strip()
+        if session_source is None and steamauth_login:
+            steamauth_password = os.environ.get("STEAMAUTH_STEAM_PASSWORD") or ""
+            steamauth_guard = (os.environ.get("STEAMAUTH_GUARD_CODE") or "").strip() or None
+            steamauth_refresh = (os.environ.get("CACHED_STEAM_REFRESH_TOKEN") or "").strip()
+            log(f"SteamAuth mode for {game_name} ({app_id}) — login={steamauth_login}, "
+                f"guard_code={'yes' if steamauth_guard else 'no'}, "
+                f"refresh_token={'yes' if steamauth_refresh else 'no'}")
+            try:
+                ticket_bytes, steam_id, new_refresh_token = get_encrypted_ticket_headless(
+                    app_id, steamauth_login, steamauth_password, steamauth_guard,
+                    refresh_token=(steamauth_refresh or None),
+                )
+            except Exception as e:
+                log(f"ERROR: SteamAuth login/gen failed: {e}")
+                sys.exit(1)
+            steam_login = steamauth_login
+            steam_password = steamauth_password
+            guarded = True
+            session_source = "steamauth"
+            log(f"Token generated (SteamID: {steam_id}, source: steamauth)")
 
         # ── Steampass credentials (only when no owned account was used) ──
         sp_login = os.environ.get("STEAMPASS_LOGIN") or ""

@@ -28,6 +28,7 @@ import { execute as waitlist } from './waitlist';
 import { execute as restockall } from './restockall';
 import { execute as steamhealth } from './steamhealth';
 import { execute as steamaccount } from './steamaccount';
+import { execute as steamauth } from './steamauth';
 
 export const commandHandlers: Record<string, (interaction: any) => Promise<void>> = {
   postpanel,
@@ -60,4 +61,5 @@ export const commandHandlers: Record<string, (interaction: any) => Promise<void>
   restockall,
   steamhealth,
   steamaccount,
+  steamauth,
 };

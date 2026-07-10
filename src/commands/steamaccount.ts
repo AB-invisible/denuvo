@@ -45,7 +45,7 @@ export async function execute(interaction: any): Promise<void> {
           `✅ **Steam account saved** (#${acct.id}) for **${gameName}** (AppID \`${appId}\`).\n` +
           `• Login: \`${login}\`\n` +
           `• Steam Guard: ${sharedSecret ? '🔐 TOTP (shared_secret set)' : '🔓 none (login + password only)'}\n\n` +
-          `The bot will use this account **first** for **${gameName}** — up to \`${cap}\` tokens/day — then fall back to steampass. ` +
+          `The bot uses this account **after SteamAuth** for **${gameName}** — up to \`${cap}\` tokens/day — then falls back to steampass. ` +
           `First gen does a full login to cache a refresh_token; after that it's login-free until the token expires (~200 days).`,
       });
       if (interaction.guild) {
@@ -108,7 +108,7 @@ export async function execute(interaction: any): Promise<void> {
     .setTitle('🎮 Owned Steam Accounts')
     .setDescription(lines)
     .setColor(0x5865F2)
-    .setFooter({ text: 'Used first for their game (5/day), then steampass · ✅ token = repeat gens skip login' })
+    .setFooter({ text: 'Used after SteamAuth (5/day), then steampass · ✅ token = repeat gens skip login' })
     .setTimestamp();
   await interaction.editReply({ embeds: [embed] });
 }

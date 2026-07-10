@@ -29,5 +29,7 @@ export const CONFIG = {
     NONE: process.env.COOLDOWN_NONE !== undefined ? Number(process.env.COOLDOWN_NONE) : 24,
     DEFAULT: process.env.COOLDOWN_DEFAULT !== undefined ? Number(process.env.COOLDOWN_DEFAULT) : 8760 * 10
   },
-  DUTY_RESET_HOURS: process.env.DUTY_RESET_HOURS !== undefined ? Number(process.env.DUTY_RESET_HOURS) : 8
+  DUTY_RESET_HOURS: process.env.DUTY_RESET_HOURS !== undefined ? Number(process.env.DUTY_RESET_HOURS) : 8,
+  STEAMAUTH_API_URL: process.env.STEAMAUTH_API_URL || 'https://steamauth.gamegen.lol',
+  STEAMAUTH_API_KEY: process.env.STEAMAUTH_API_KEY || '',
 };

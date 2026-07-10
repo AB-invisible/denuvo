@@ -130,10 +130,10 @@ const commands = [
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
     .setName('steamaccount')
-    .setDescription('Manage owner-provided Steam accounts (used before steampass) — owner only')
+    .setDescription('Manage owner-provided Steam accounts (fallback after SteamAuth) — owner only')
     .addSubcommand(sub => sub
       .setName('add')
-      .setDescription('Register a Steam account you own for a game (used first, 5/day, then steampass)')
+      .setDescription('Register a Steam account you own for a game (after SteamAuth, 5/day, then steampass)')
       .addIntegerOption(o => o.setName('appid').setDescription('Steam AppID the account owns').setRequired(true))
       .addStringOption(o => o.setName('login').setDescription('Steam account username').setRequired(true))
       .addStringOption(o => o.setName('password').setDescription('Steam account password').setRequired(true))
@@ -146,6 +146,31 @@ const commands = [
       .setName('remove')
       .setDescription('Remove a registered Steam account by its ID')
       .addIntegerOption(o => o.setName('id').setDescription('Account ID (from /steamaccount list)').setRequired(true)))
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+  new SlashCommandBuilder()
+    .setName('steamauth')
+    .setDescription('Manage GameGen Auth Service accounts (guard codes via steamauth.gamegen.lol) — owner only')
+    .addSubcommand(sub => sub
+      .setName('link')
+      .setDescription('Link a SteamAuth account to a game (top autogen priority)')
+      .addStringOption(o => o.setName('account_id').setDescription('Account UUID from steamauth dashboard').setRequired(true))
+      .addIntegerOption(o => o.setName('appid').setDescription('Steam AppID the account owns').setRequired(true))
+      .addStringOption(o => o.setName('password').setDescription('Steam account password (verified by guard-code API)').setRequired(true))
+      .addStringOption(o => o.setName('login').setDescription('Steam username override (auto-fetched if omitted)').setRequired(false))
+      .addStringOption(o => o.setName('label').setDescription('Optional label/note').setRequired(false)))
+    .addSubcommand(sub => sub
+      .setName('discover')
+      .setDescription('Show SteamAuth API accounts that match games in your catalog'))
+    .addSubcommand(sub => sub
+      .setName('list')
+      .setDescription('List linked SteamAuth accounts + today\'s usage'))
+    .addSubcommand(sub => sub
+      .setName('status')
+      .setDescription('Check SteamAuth API connectivity'))
+    .addSubcommand(sub => sub
+      .setName('remove')
+      .setDescription('Remove a SteamAuth link by its ID')
+      .addIntegerOption(o => o.setName('id').setDescription('Link ID (from /steamauth list)').setRequired(true)))
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
     .setName('tokengen')
@@ -284,7 +309,7 @@ async function registerCommands(targetGuildId?: string) {
     const addsupport = ADDSUPPORT_COMMAND.toJSON();
 
     const tenantCommands = [
-      ...commands.filter((c: any) => c.name !== 'test' && c.name !== 'simulate' && c.name !== 'deplet' && c.name !== 'lowstock' && c.name !== 'setsteampass' && c.name !== 'game' && c.name !== 'removegame' && c.name !== 'autogen' && c.name !== 'stock' && c.name !== 'settokens' && c.name !== 'exclude-auto' && c.name !== 'setmode' && c.name !== 'getmode' && c.name !== 'promo' && c.name !== 'requests' && c.name !== 'staffstats' && c.name !== 'restockall' && c.name !== 'steamhealth' && c.name !== 'steamaccount'),
+      ...commands.filter((c: any) => c.name !== 'test' && c.name !== 'simulate' && c.name !== 'deplet' && c.name !== 'lowstock' && c.name !== 'setsteampass' && c.name !== 'game' && c.name !== 'removegame' && c.name !== 'autogen' && c.name !== 'stock' && c.name !== 'settokens' && c.name !== 'exclude-auto' && c.name !== 'setmode' && c.name !== 'getmode' && c.name !== 'promo' && c.name !== 'requests' && c.name !== 'staffstats' && c.name !== 'restockall' && c.name !== 'steamhealth' && c.name !== 'steamaccount' && c.name !== 'steamauth'),
       setlogs,
       setvouch,
       addsupport,

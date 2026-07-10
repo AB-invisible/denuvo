@@ -336,6 +336,46 @@ model OwnedSteamUsage {
   @@unique([accountId, usageDate])
 }
 
+// ─── GameGen Auth Service (steamauth.gamegen.lol) accounts ─────────
+// Steam accounts managed on the external auth service. Guard codes are
+// fetched via POST /api/v1/guard-code (shared_secret stays on the service).
+// The bot stores the Steam password locally so it can verify with the API.
+// Used first for autogen, then BYO owned accounts, then steampass pool.
+model SteamAuthAccount {
+  id            Int      @id @default(autoincrement())
+  guildId       String   @default("")
+  appId         Int
+  // UUID from steamauth (public_id / account_id).
+  accountId     String
+  label         String?
+  steamLogin    String
+  steamPassword String
+  refreshToken  String?
+  steamId       String?
+  active        Boolean  @default(true)
+  priority      Int      @default(100)
+  failureCount  Int      @default(0)
+  lastFailureAt DateTime?
+  lastUsedAt    DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @default(now()) @updatedAt
+  usages        SteamAuthUsage[]
+
+  @@unique([guildId, appId, accountId])
+  @@index([appId, active])
+}
+
+model SteamAuthUsage {
+  id        Int      @id @default(autoincrement())
+  accountId Int
+  account   SteamAuthAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  usageDate String
+  count     Int      @default(0)
+  updatedAt DateTime @default(now()) @updatedAt
+
+  @@unique([accountId, usageDate])
+}
+
 model TokenDownload {
   token         String   @id            // random opaque ID used in the download URL
   installerKey  String?  @unique        // separate per-zip secret embedded in payload-manifest.json

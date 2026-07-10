@@ -2,11 +2,12 @@
  * tokenGenerator.ts — Automated Denuvo token generation
  *
  * Uses headless_token.py which:
- * 1. Fetches Steam credentials from steampass.gg API
- * 2. Gets Steam Guard code from steampass.gg
- * 3. Connects to Steam CM servers headlessly (no Steam client needed)
- * 4. Generates encrypted app ticket
- * 5. Packages everything into a zip
+ * 1. (Optional) Uses BYO owned Steam accounts or GameGen Auth Service guard codes
+ * 2. Fetches Steam credentials from steampass.gg API (fallback)
+ * 3. Gets Steam Guard code from steampass.gg or steamauth.gamegen.lol
+ * 4. Connects to Steam CM servers headlessly (no Steam client needed)
+ * 5. Generates encrypted app ticket
+ * 6. Packages everything into a zip
  *
  * Falls back to the legacy generate_token.py if no steampass UUID is configured.
  */
@@ -117,7 +118,61 @@ export async function generateTokenWithRetry(
 ): Promise<RetryResult> {
   const ownedGuildKey = (!guildId || guildId === CONFIG.OWNER_GUILD_ID) ? '' : guildId;
 
-  // ── Priority 1: owner-provided (BYO) Steam accounts ──
+  // ── Priority 1: GameGen Auth Service (steamauth.gamegen.lol) ──
+  // Guard codes are fetched from the auth service API; shared_secret stays
+  // on the service. Falls through to owned accounts / steampass when exhausted.
+  try {
+    const {
+      getAvailableSteamAuthAccounts,
+      recordSteamAuthUsage,
+      saveSteamAuthRefreshToken,
+      recordSteamAuthFailure,
+      resolveSteamAuthGuard,
+      steamAuthEnabled,
+    } = await import('./steamAuthAccounts');
+
+    if (steamAuthEnabled()) {
+      const authAccts = await getAvailableSteamAuthAccounts(appId, ownedGuildKey);
+      if (authAccts.length > 0) {
+        const g = await prisma.game.findFirst({ where: { appId } });
+        const uuid = g?.steampassUuid || String(appId);
+        const mode = (g as any)?.generationMode || 'gbe';
+        for (const authAcct of authAccts) {
+          console.log(`[TokenGen:SteamAuth] Trying auth-service account #${authAcct.id} (${authAcct.steamLogin}) for AppID ${appId}`);
+          let guardCode = '';
+          let steamLogin = authAcct.steamLogin;
+          try {
+            const guard = await resolveSteamAuthGuard(authAcct);
+            guardCode = guard.code;
+            steamLogin = guard.steamLogin || authAcct.steamLogin;
+          } catch (e) {
+            console.warn(`[TokenGen:SteamAuth] Guard-code fetch failed for #${authAcct.id}:`, (e as Error).message);
+            await recordSteamAuthFailure(authAcct.id);
+            continue;
+          }
+
+          const result = await generateHeadlessSteamAuth(appId, gameName, uuid, mode, {
+            steamLogin,
+            steamPassword: authAcct.steamPassword,
+            guardCode,
+            refreshToken: authAcct.refreshToken,
+          });
+          if (result.zipPath) {
+            await recordSteamAuthUsage(authAcct.id);
+            if (result.refreshToken) await saveSteamAuthRefreshToken(authAcct.id, result.refreshToken, result.steamId);
+            console.log(`[TokenGen:SteamAuth] Success with auth-service account #${authAcct.id} — no steampass used`);
+            return { ...result, poolAccountId: null, exhausted: false };
+          }
+          await recordSteamAuthFailure(authAcct.id);
+          console.warn(`[TokenGen:SteamAuth] Account #${authAcct.id} failed — trying next / falling back`);
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[TokenGen:SteamAuth] auth-service path errored, falling back:', (e as Error).message);
+  }
+
+  // ── Priority 2: owner-provided (BYO) Steam accounts ──
   // If a Steam account the owner OWNS is registered for this game and still
   // has daily quota, use it directly (zero steampass). Only when they're
   // all exhausted or failing do we fall through to the steampass pool.
@@ -526,6 +581,83 @@ export interface OwnedGenResult extends TokenGenResult {
   /** refresh_token captured from the owned-account login, to cache for reuse. */
   refreshToken?: string;
   steamId?: string;
+}
+
+export interface SteamAuthGenResult extends TokenGenResult {
+  refreshToken?: string;
+  steamId?: string;
+}
+
+/**
+ * Generate a token using GameGen Auth Service — guard code is pre-fetched
+ * by Node from POST /api/v1/guard-code; Python logs into Steam headlessly.
+ */
+function generateHeadlessSteamAuth(
+  appId: number,
+  gameName: string,
+  steampassUuid: string,
+  generationMode: string,
+  auth: { steamLogin: string; steamPassword: string; guardCode: string; refreshToken: string },
+): Promise<SteamAuthGenResult> {
+  const installerKey = crypto.randomBytes(24).toString('hex');
+  const publicUrlEnv = process.env.PUBLIC_URL || '';
+  const railwayDomainEnv = process.env.RAILWAY_PUBLIC_DOMAIN || '';
+
+  return new Promise((resolve) => {
+    const env = buildPythonEnv({
+      STEAMAUTH_STEAM_LOGIN: auth.steamLogin,
+      STEAMAUTH_STEAM_PASSWORD: auth.steamPassword,
+      STEAMAUTH_GUARD_CODE: auth.guardCode,
+      CACHED_STEAM_REFRESH_TOKEN: auth.refreshToken || '',
+      INSTALLER_KEY: installerKey,
+      HMAC_SECRET: process.env.HMAC_SECRET || '',
+      PUBLIC_URL: publicUrlEnv,
+      RAILWAY_PUBLIC_DOMAIN: railwayDomainEnv,
+    });
+
+    execFile(
+      PYTHON_EXE,
+      [HEADLESS_SCRIPT, String(appId), gameName, steampassUuid, generationMode],
+      { timeout: 120_000, maxBuffer: 20 * 1024 * 1024, env },
+      (error, stdout, stderr) => {
+        const logs = stdout + (stderr ? `\n${stderr}` : '');
+        if (error) {
+          console.error(`[TokenGen:SteamAuth] Process error for AppID ${appId}:`, error.message);
+          resolve({ zipPath: null, logs, installerKey });
+          return;
+        }
+        const lines = stdout.trim().split('\n').filter(l => l.trim());
+        const lastLine = lines[lines.length - 1]?.trim();
+        if (lastLine && fs.existsSync(lastLine)) {
+          let ticketHash: string | undefined;
+          let expectedHmac: string | undefined;
+          let appIdBound: number | undefined;
+          let refreshToken: string | undefined;
+          let steamId: string | undefined;
+          const metaPath = lastLine + '.meta.json';
+          try {
+            if (fs.existsSync(metaPath)) {
+              const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+              ticketHash = typeof meta.ticket_hash === 'string' ? meta.ticket_hash : undefined;
+              expectedHmac = typeof meta.expected_hmac === 'string' && meta.expected_hmac ? meta.expected_hmac : undefined;
+              const ap = parseInt(String(meta.app_id), 10);
+              appIdBound = Number.isFinite(ap) ? ap : undefined;
+              refreshToken = typeof meta.refresh_token === 'string' && meta.refresh_token ? meta.refresh_token : undefined;
+              steamId = typeof meta.steam_id === 'string' && meta.steam_id ? meta.steam_id : undefined;
+              try { fs.unlinkSync(metaPath); } catch {}
+            }
+          } catch (e) {
+            console.warn('[TokenGen:SteamAuth] Failed to read sidecar meta JSON:', e);
+          }
+          console.log(`[TokenGen:SteamAuth] Success for AppID ${appId}: ${lastLine}`);
+          resolve({ zipPath: lastLine, logs, installerKey, ticketHash, expectedHmac, appIdBound, refreshToken, steamId });
+        } else {
+          console.error(`[TokenGen:SteamAuth] No valid zip path found. Output:\n${stdout}`);
+          resolve({ zipPath: null, logs, installerKey });
+        }
+      }
+    );
+  });
 }
 
 /**

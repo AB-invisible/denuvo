@@ -5,7 +5,8 @@
  * bot logs into it DIRECTLY (no steampass) and generates up to
  * OWNER_TOKENS_PER_ACCOUNT_PER_DAY tokens per UTC day for its game. Once the
  * day's quota is spent (Denuvo activation cap), gen falls back to the
- * steampass pool. Managed via /addsteamaccount and /steamaccounts.
+ * steampass pool. Managed via /steamaccount add|list|remove. Tried after
+ * SteamAuth and before steampass.
  */
 
 import prisma from '../lib/prisma';
