@@ -865,9 +865,41 @@ def _login_with_refresh_token(client, username, refresh_token):
     """
     from steam.enums import EResult
 
-    # Shape A: direct kwarg on client.login() — newer steam lib versions
-    # accept access_token / login_key as alternatives to password.
-    for kwarg in ("access_token", "login_key", "auth_token"):
+    # Shape B FIRST — raw CMsgClientLogon carrying the refresh_token. This is
+    # the authoritative path on steam[client] 1.4.4: it's the SAME message the
+    # fresh CAuthentication handshake uses to finalize a login, so if a cached
+    # refresh_token is valid this succeeds and we skip steampass ENTIRELY. We
+    # return its result directly (OK or not); a non-OK just means the token is
+    # stale and the caller falls back to cached creds / steampass.
+    #
+    # WHY THIS RUNS FIRST (this was a real bug): client.login() on 1.4.4 has no
+    # token parameter, but it DOES accept `login_key` — a different, LEGACY
+    # credential. The old Shape-A loop below tried login_key=refresh_token,
+    # which doesn't TypeError (it's a valid param), so Steam got a JWT in the
+    # login_key field, rejected it, and the function RETURNED that failure
+    # before ever trying this working path. Net effect: refresh-token reuse
+    # failed on EVERY gen and each one fell through to a steampass call.
+    try:
+        log("Steam: trying refresh_token via raw ClientLogon...")
+        result = _cm_logon_with_token(client, username, refresh_token)
+        log(f"Steam: raw ClientLogon(refresh_token) → {result}")
+        if result == EResult.OK:
+            # Expose the token we just reused so _extract_refresh_token()
+            # finds it and it's re-persisted for next time (keeps the cached
+            # session alive across gens instead of decaying to creds-only).
+            try:
+                client.refresh_token = refresh_token
+            except Exception:
+                pass
+        return result
+    except Exception as e:
+        log(f"Steam: raw ClientLogon(refresh_token) threw {type(e).__name__}: {e}")
+
+    # Shape A: direct token kwargs on client.login(). Only relevant on NEWER
+    # steam lib versions that add a real token parameter; on 1.4.4 both
+    # TypeError out (harmless). `login_key` is deliberately NOT tried here —
+    # it's a real 1.4.4 param but for a different credential type (see above).
+    for kwarg in ("access_token", "auth_token"):
         try:
             result = client.login(username=username, **{kwarg: refresh_token})
             log(f"Steam: tried login({kwarg}=...) → {result}")
@@ -878,19 +910,6 @@ def _login_with_refresh_token(client, username, refresh_token):
         except Exception as e:
             log(f"Steam: login({kwarg}=...) threw {type(e).__name__}: {e}")
             continue
-
-    # Shape B: raw CMsgClientLogon carrying the refresh_token. This is the
-    # path that works on steam[client] 1.4.4 (whose client.login() has no
-    # token kwarg, so Shape A above always TypeErrors out). Same message
-    # the fresh CAuthentication handshake uses to finalize — so a cached
-    # refresh_token genuinely skips steampass on repeat gens.
-    try:
-        log("Steam: trying refresh_token via raw ClientLogon...")
-        result = _cm_logon_with_token(client, username, refresh_token)
-        log(f"Steam: raw ClientLogon(refresh_token) → {result}")
-        return result
-    except Exception as e:
-        log(f"Steam: raw ClientLogon(refresh_token) threw {type(e).__name__}: {e}")
 
     # Shape C: WebAuth → access_token → client.login. Legacy fallback for
     # library versions whose WebAuth exposes a renewal helper.
