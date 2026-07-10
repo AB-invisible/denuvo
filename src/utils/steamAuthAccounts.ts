@@ -2,14 +2,15 @@
  * steamAuthAccounts.ts — GameGen Auth Service account pool for autogen.
  *
  * Linked accounts are tried first for autogen, then BYO owned accounts,
- * then steampass. Guard codes come from steamauth.gamegen.lol; shared_secret
- * never leaves the auth service.
+ * then steampass. Credentials and guard codes are fetched at gen time via
+ * GET /api/v1/accounts/:id/credentials (API key only — no password stored).
  */
 
 import prisma from '../lib/prisma';
 import { CONFIG } from '../config';
 import { utcDateKey } from './steampassPool';
 import {
+  fetchSteamAuthCredentials,
   fetchSteamAuthGuardCode,
   getSteamAuthAccount,
   isSteamAuthConfigured,
@@ -21,8 +22,13 @@ export interface SteamAuthLinkedAccount {
   appId: number;
   accountId: string;
   steamLogin: string;
-  steamPassword: string;
   refreshToken: string;
+}
+
+export interface SteamAuthLoginMaterial {
+  steamLogin: string;
+  steamPassword: string;
+  guardCode: string;
 }
 
 export function steamAuthEnabled(): boolean {
@@ -66,7 +72,6 @@ export async function getAvailableSteamAuthAccounts(
         appId: acct.appId,
         accountId: acct.accountId,
         steamLogin: acct.steamLogin,
-        steamPassword: acct.steamPassword,
         refreshToken: (acct.refreshToken || '').trim(),
       });
     }
@@ -118,21 +123,34 @@ export async function recordSteamAuthFailure(accountId: number): Promise<void> {
   }
 }
 
-export interface SteamAuthGuardResult {
-  code: string;
-  steamLogin: string;
+/**
+ * Fetch full login material from GET /credentials (recommended cold-start path).
+ * Password never touches our DB — only used in-memory for the Steam CM login.
+ */
+export async function resolveSteamAuthLoginMaterial(
+  linked: SteamAuthLinkedAccount,
+): Promise<SteamAuthLoginMaterial> {
+  const creds = await fetchSteamAuthCredentials(linked.accountId);
+  return {
+    steamLogin: (creds.steam_username || linked.steamLogin || '').trim(),
+    steamPassword: creds.password,
+    guardCode: creds.code,
+  };
 }
 
-/** Fetch a fresh TOTP code from the auth service for a linked account. */
-export async function resolveSteamAuthGuard(
+/**
+ * Guard code only — used when a cached refresh_token handles the Steam login
+ * but we still need the username refreshed from the service.
+ */
+export async function resolveSteamAuthGuardOnly(
   linked: SteamAuthLinkedAccount,
-): Promise<SteamAuthGuardResult> {
-  const guard = await fetchSteamAuthGuardCode(linked.accountId, linked.steamPassword);
+): Promise<{ steamLogin: string; guardCode: string }> {
+  const guard = await fetchSteamAuthGuardCode(linked.accountId);
   const login = (guard.steam_username || linked.steamLogin || '').trim();
   if (!guard.code) {
     throw new Error('SteamAuth guard-code response missing code');
   }
-  return { code: guard.code, steamLogin: login };
+  return { steamLogin: login, guardCode: guard.code };
 }
 
 export interface DiscoverMatch {
@@ -181,7 +199,6 @@ export async function upsertSteamAuthLink(input: {
   appId: number;
   accountId: string;
   steamLogin: string;
-  steamPassword: string;
   label?: string | null;
 }): Promise<any> {
   return (prisma as any).steamAuthAccount.upsert({
@@ -194,7 +211,6 @@ export async function upsertSteamAuthLink(input: {
     },
     update: {
       steamLogin: input.steamLogin,
-      steamPassword: input.steamPassword,
       label: input.label ?? null,
       active: true,
     },
@@ -203,10 +219,43 @@ export async function upsertSteamAuthLink(input: {
       appId: input.appId,
       accountId: input.accountId,
       steamLogin: input.steamLogin,
-      steamPassword: input.steamPassword,
+      steamPassword: '',
       label: input.label ?? null,
     },
   });
+}
+
+/** Auto-link every discovered API account ↔ catalog game match. */
+export async function syncSteamAuthLinks(guildId: string = ''): Promise<{ linked: number; skipped: number }> {
+  const matches = await discoverSteamAuthMatches();
+  let linked = 0;
+  let skipped = 0;
+  for (const m of matches) {
+    for (let i = 0; i < m.appIds.length; i++) {
+      const appId = m.appIds[i];
+      const existing = await (prisma as any).steamAuthAccount.findUnique({
+        where: {
+          guildId_appId_accountId: {
+            guildId,
+            appId,
+            accountId: m.apiAccount.account_id,
+          },
+        },
+      }).catch(() => null);
+      if (existing) {
+        skipped++;
+        continue;
+      }
+      await upsertSteamAuthLink({
+        guildId,
+        appId,
+        accountId: m.apiAccount.account_id,
+        steamLogin: m.apiAccount.steam_username,
+      });
+      linked++;
+    }
+  }
+  return { linked, skipped };
 }
 
 export async function resolveApiAccountLogin(accountId: string): Promise<string> {

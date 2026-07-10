@@ -119,15 +119,15 @@ export async function generateTokenWithRetry(
   const ownedGuildKey = (!guildId || guildId === CONFIG.OWNER_GUILD_ID) ? '' : guildId;
 
   // ── Priority 1: GameGen Auth Service (steamauth.gamegen.lol) ──
-  // Guard codes are fetched from the auth service API; shared_secret stays
-  // on the service. Falls through to owned accounts / steampass when exhausted.
+  // Credentials/guard codes fetched via API key only (GET /accounts/:id/credentials
+  // or GET /accounts/:id/guard-code). No Steam password stored on the bot.
   try {
     const {
       getAvailableSteamAuthAccounts,
       recordSteamAuthUsage,
       saveSteamAuthRefreshToken,
       recordSteamAuthFailure,
-      resolveSteamAuthGuard,
+      resolveSteamAuthLoginMaterial,
       steamAuthEnabled,
     } = await import('./steamAuthAccounts');
 
@@ -139,24 +139,49 @@ export async function generateTokenWithRetry(
         const mode = (g as any)?.generationMode || 'gbe';
         for (const authAcct of authAccts) {
           console.log(`[TokenGen:SteamAuth] Trying auth-service account #${authAcct.id} (${authAcct.steamLogin}) for AppID ${appId}`);
-          let guardCode = '';
+
+          const runSteamAuthGen = async (
+            steamLogin: string,
+            steamPassword: string,
+            guardCode: string,
+            refreshToken: string,
+          ) => generateHeadlessSteamAuth(appId, gameName, uuid, mode, {
+            steamLogin,
+            steamPassword,
+            guardCode,
+            refreshToken,
+          });
+
           let steamLogin = authAcct.steamLogin;
+          let steamPassword = '';
+          let guardCode = '';
+          let refreshToken = authAcct.refreshToken;
+
+          // Cached refresh_token → zero credential API calls (Steam CM only).
+          if (refreshToken) {
+            const result = await runSteamAuthGen(steamLogin, '', '', refreshToken);
+            if (result.zipPath) {
+              await recordSteamAuthUsage(authAcct.id);
+              if (result.refreshToken) await saveSteamAuthRefreshToken(authAcct.id, result.refreshToken, result.steamId);
+              console.log(`[TokenGen:SteamAuth] Success via refresh_token for #${authAcct.id}`);
+              return { ...result, poolAccountId: null, exhausted: false };
+            }
+            console.warn(`[TokenGen:SteamAuth] refresh_token failed for #${authAcct.id} — falling back to GET /credentials`);
+            refreshToken = '';
+          }
+
           try {
-            const guard = await resolveSteamAuthGuard(authAcct);
-            guardCode = guard.code;
-            steamLogin = guard.steamLogin || authAcct.steamLogin;
+            const material = await resolveSteamAuthLoginMaterial(authAcct);
+            steamLogin = material.steamLogin;
+            steamPassword = material.steamPassword;
+            guardCode = material.guardCode;
           } catch (e) {
-            console.warn(`[TokenGen:SteamAuth] Guard-code fetch failed for #${authAcct.id}:`, (e as Error).message);
+            console.warn(`[TokenGen:SteamAuth] Credentials fetch failed for #${authAcct.id}:`, (e as Error).message);
             await recordSteamAuthFailure(authAcct.id);
             continue;
           }
 
-          const result = await generateHeadlessSteamAuth(appId, gameName, uuid, mode, {
-            steamLogin,
-            steamPassword: authAcct.steamPassword,
-            guardCode,
-            refreshToken: authAcct.refreshToken,
-          });
+          const result = await runSteamAuthGen(steamLogin, steamPassword, guardCode, refreshToken);
           if (result.zipPath) {
             await recordSteamAuthUsage(authAcct.id);
             if (result.refreshToken) await saveSteamAuthRefreshToken(authAcct.id, result.refreshToken, result.steamId);
@@ -590,7 +615,8 @@ export interface SteamAuthGenResult extends TokenGenResult {
 
 /**
  * Generate a token using GameGen Auth Service — guard code is pre-fetched
- * by Node from POST /api/v1/guard-code; Python logs into Steam headlessly.
+ * by Node from GET /api/v1/accounts/:id/credentials (or refresh_token reuse);
+ * Python logs into Steam headlessly.
  */
 function generateHeadlessSteamAuth(
   appId: number,

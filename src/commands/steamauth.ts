@@ -11,19 +11,19 @@ import {
 import {
   discoverSteamAuthMatches,
   resolveApiAccountLogin,
+  syncSteamAuthLinks,
   upsertSteamAuthLink,
 } from '../utils/steamAuthAccounts';
 
 /**
  * /steamauth — owner-only management of GameGen Auth Service accounts.
- * Guard codes are fetched from steamauth.gamegen.lol at gen time; the bot
- * stores the Steam password locally only to verify with the API.
+ * Credentials are fetched at gen time via GET /api/v1/accounts/:id/credentials
+ * (API key only — no Steam password stored on the bot).
  *
- *   /steamauth link account_id:<uuid> appid:<id> password:<pw> [label]
- *   /steamauth discover — show API accounts matched to catalog games
- *   /steamauth list
- *   /steamauth status — API connectivity check
- *   /steamauth remove id:<row id>
+ *   /steamauth link account_id:<uuid> appid:<id> [label]
+ *   /steamauth sync — auto-link all API accounts that match catalog games
+ *   /steamauth discover — preview matches before syncing
+ *   /steamauth list | status | remove
  */
 export async function execute(interaction: any): Promise<void> {
   if (interaction.guildId !== CONFIG.OWNER_GUILD_ID) {
@@ -47,8 +47,31 @@ export async function execute(interaction: any): Promise<void> {
       content:
         `✅ **SteamAuth API OK** — ${health.accountCount} account(s) visible via API.\n` +
         `URL: \`${CONFIG.STEAMAUTH_API_URL}\`\n` +
-        `Link accounts with \`/steamauth link\` — they are tried first for autogen.`,
+        `API: \`GET /api/v1/accounts/:id/credentials\` (API key only, no password stored)\n` +
+        `Link with \`/steamauth sync\` or \`/steamauth link\` — top autogen priority.`,
     });
+  }
+
+  if (sub === 'sync') {
+    if (!isSteamAuthConfigured()) {
+      return interaction.editReply({ content: '❌ Set `STEAMAUTH_API_KEY` first, then retry.' });
+    }
+    try {
+      const { linked, skipped } = await syncSteamAuthLinks('');
+      await interaction.editReply({
+        content:
+          `✅ **SteamAuth sync complete** — ${linked} new link(s) created, ${skipped} already linked.\n` +
+          (linked === 0 && skipped === 0
+            ? 'No API accounts match your catalog. Run `/steamauth discover` or sync games on the dashboard.'
+            : 'Linked accounts are tried **first** for autogen.'),
+      });
+      if (interaction.guild && linked > 0) {
+        await logAction(interaction.guild, '🔐 SteamAuth Sync', `Owner synced SteamAuth links: ${linked} new, ${skipped} existing.`, 0x57F287);
+      }
+    } catch (e) {
+      return interaction.editReply({ content: `❌ Sync failed: ${(e as Error).message}` });
+    }
+    return;
   }
 
   if (sub === 'discover') {
@@ -74,7 +97,7 @@ export async function execute(interaction: any): Promise<void> {
         .setTitle('🔍 SteamAuth discover')
         .setDescription(body)
         .setColor(0x5865F2)
-        .setFooter({ text: 'Link with /steamauth link account_id:<uuid> appid:<id> password:<steam pw>' })
+        .setFooter({ text: 'Run /steamauth sync to auto-link, or /steamauth link account_id:<uuid> appid:<id>' })
         .setTimestamp();
       return interaction.editReply({ embeds: [embed] });
     } catch (e) {
@@ -89,12 +112,11 @@ export async function execute(interaction: any): Promise<void> {
 
     const accountId = interaction.options.getString('account_id', true).trim();
     const appId = interaction.options.getInteger('appid', true);
-    const password = interaction.options.getString('password', true);
     const label = (interaction.options.getString('label') || '').trim() || null;
     const loginOverride = (interaction.options.getString('login') || '').trim();
 
     if (appId <= 0) return interaction.editReply({ content: '❌ AppID must be a positive number.' });
-    if (!accountId || !password) return interaction.editReply({ content: '❌ account_id and password are required.' });
+    if (!accountId) return interaction.editReply({ content: '❌ account_id is required.' });
 
     try {
       let steamLogin = loginOverride;
@@ -115,7 +137,6 @@ export async function execute(interaction: any): Promise<void> {
         appId,
         accountId,
         steamLogin,
-        steamPassword: password,
         label,
       });
 
@@ -127,8 +148,8 @@ export async function execute(interaction: any): Promise<void> {
           `✅ **SteamAuth account linked** (#${acct.id}) for **${gameName}** (AppID \`${appId}\`).\n` +
           `• Service ID: \`${accountId}\`\n` +
           `• Steam login: \`${steamLogin}\`\n` +
-          `• Guard: 🔐 via GameGen Auth Service (no local shared_secret)\n\n` +
-          `Autogen tries this account **first** for **${gameName}** — up to \`${cap}\`/day, then BYO accounts, then steampass.`,
+          `• Auth: 🔐 API key → \`GET /credentials\` (no password stored on bot)\n\n` +
+          `Autogen tries this account **first** for **${gameName}** — up to \`${cap}\`/day.`,
       });
       if (interaction.guild) {
         await logAction(
@@ -183,8 +204,8 @@ export async function execute(interaction: any): Promise<void> {
       content:
         '📭 No SteamAuth links yet.\n' +
         (configured
-          ? 'Run `/steamauth discover` then `/steamauth link` to connect accounts.'
-          : 'Set `STEAMAUTH_API_KEY` in env, then use `/steamauth link`.'),
+          ? 'Run `/steamauth sync` to auto-link, or `/steamauth discover` then `/steamauth link`.'
+          : 'Set `STEAMAUTH_API_KEY` in env, then use `/steamauth sync`.'),
     });
   }
 
@@ -206,10 +227,10 @@ export async function execute(interaction: any): Promise<void> {
       used = 0;
     }
     const gname = nameByAppId.get(a.appId) || `AppID ${a.appId}`;
-    const tokenState = (a.refreshToken || '').trim() ? '✅ token cached' : '⏳ no token yet';
+    const tokenState = (a.refreshToken || '').trim() ? '✅ token cached' : '⏳ cold start';
     const fails = a.failureCount ? ` • ⚠️${a.failureCount} fail(s)` : '';
     const shortSvc = String(a.accountId).slice(0, 8) + '…';
-    lines += `**#${a.id}** \`${a.steamLogin}\` → **${gname}**\n╰─ svc \`${shortSvc}\` · ${used}/${cap} today · ${tokenState} · 🔐 API guard${fails}\n`;
+    lines += `**#${a.id}** \`${a.steamLogin}\` → **${gname}**\n╰─ svc \`${shortSvc}\` · ${used}/${cap} today · ${tokenState} · 🔐 API credentials${fails}\n`;
   }
 
   const apiState = isSteamAuthConfigured() ? '✅ API key set' : '⚠️ STEAMAUTH_API_KEY missing';
@@ -217,7 +238,7 @@ export async function execute(interaction: any): Promise<void> {
     .setTitle('🔐 SteamAuth Links (GameGen Auth Service)')
     .setDescription(lines)
     .setColor(0x5865F2)
-    .setFooter({ text: `${apiState} · Top autogen priority, then BYO accounts, then steampass` })
+    .setFooter({ text: `${apiState} · Top autogen priority · GET /credentials at gen time` })
     .setTimestamp();
   await interaction.editReply({ embeds: [embed] });
 }

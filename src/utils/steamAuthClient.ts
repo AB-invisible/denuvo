@@ -1,7 +1,13 @@
 /**
  * steamAuthClient.ts — HTTP client for GameGen Auth Service
- * (https://steamauth.gamegen.lol). Guard codes are generated server-side;
- * the bot only needs the Steam password to verify via POST /api/v1/guard-code.
+ * (https://steamauth.gamegen.lol).
+ *
+ * Preferred bot flow (API key only — no Steam password on the bot):
+ *   1. GET /api/v1/accounts
+ *   2. GET /api/v1/accounts/:account_id/credentials  (login + guard in one call)
+ *      — or GET /api/v1/accounts/:account_id/guard-code when refresh_token is cached
+ *
+ * Legacy POST /api/v1/guard-code (requires Steam password) is kept as fallback only.
  */
 
 import { CONFIG } from '../config';
@@ -30,6 +36,15 @@ export interface SteamAuthGuardCode {
   code: string;
   expires_in: number;
   steam_username: string;
+}
+
+export interface SteamAuthCredentials {
+  account_id: string;
+  steam_username: string;
+  password: string;
+  code: string;
+  expires_in: number;
+  guard_revoked?: boolean;
 }
 
 function baseUrl(): string {
@@ -86,7 +101,29 @@ export async function getSteamAuthAccount(accountId: string): Promise<SteamAuthA
   return apiRequest<SteamAuthApiAccount>(`/api/v1/accounts/${encodeURIComponent(accountId)}`);
 }
 
-export async function fetchSteamAuthGuardCode(
+/** Recommended: API key only, no Steam password required. */
+export async function fetchSteamAuthGuardCode(accountId: string): Promise<SteamAuthGuardCode> {
+  return apiRequest<SteamAuthGuardCode>(
+    `/api/v1/accounts/${encodeURIComponent(accountId)}/guard-code`,
+  );
+}
+
+/** Full login material in one call — username, password, and current guard code. */
+export async function fetchSteamAuthCredentials(accountId: string): Promise<SteamAuthCredentials> {
+  const data = await apiRequest<SteamAuthCredentials>(
+    `/api/v1/accounts/${encodeURIComponent(accountId)}/credentials`,
+  );
+  if (data.guard_revoked) {
+    throw new Error('SteamAuth account has Guard revoked on the service');
+  }
+  if (!data.code || !data.password || !data.steam_username) {
+    throw new Error('SteamAuth credentials response missing required fields');
+  }
+  return data;
+}
+
+/** @deprecated Legacy endpoint — requires Steam password. Use fetchSteamAuthGuardCode or fetchSteamAuthCredentials. */
+export async function fetchSteamAuthGuardCodeLegacy(
   accountId: string,
   steamPassword: string,
 ): Promise<SteamAuthGuardCode> {

@@ -337,9 +337,8 @@ model OwnedSteamUsage {
 }
 
 // ─── GameGen Auth Service (steamauth.gamegen.lol) accounts ─────────
-// Steam accounts managed on the external auth service. Guard codes are
-// fetched via POST /api/v1/guard-code (shared_secret stays on the service).
-// The bot stores the Steam password locally so it can verify with the API.
+// Links a service account UUID to an AppID. At gen time the bot calls
+// GET /api/v1/accounts/:id/credentials (API key only) — no password stored.
 // Used first for autogen, then BYO owned accounts, then steampass pool.
 model SteamAuthAccount {
   id            Int      @id @default(autoincrement())
@@ -349,7 +348,8 @@ model SteamAuthAccount {
   accountId     String
   label         String?
   steamLogin    String
-  steamPassword String
+  // Legacy field — no longer populated for new links (credentials come from API).
+  steamPassword String   @default("")
   refreshToken  String?
   steamId       String?
   active        Boolean  @default(true)

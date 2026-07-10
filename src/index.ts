@@ -152,12 +152,14 @@ const commands = [
     .setDescription('Manage GameGen Auth Service accounts (guard codes via steamauth.gamegen.lol) — owner only')
     .addSubcommand(sub => sub
       .setName('link')
-      .setDescription('Link a SteamAuth account to a game (top autogen priority)')
+      .setDescription('Link a SteamAuth account UUID to a game (top autogen priority)')
       .addStringOption(o => o.setName('account_id').setDescription('Account UUID from steamauth dashboard').setRequired(true))
       .addIntegerOption(o => o.setName('appid').setDescription('Steam AppID the account owns').setRequired(true))
-      .addStringOption(o => o.setName('password').setDescription('Steam account password (verified by guard-code API)').setRequired(true))
       .addStringOption(o => o.setName('login').setDescription('Steam username override (auto-fetched if omitted)').setRequired(false))
       .addStringOption(o => o.setName('label').setDescription('Optional label/note').setRequired(false)))
+    .addSubcommand(sub => sub
+      .setName('sync')
+      .setDescription('Auto-link all SteamAuth API accounts that match your game catalog'))
     .addSubcommand(sub => sub
       .setName('discover')
       .setDescription('Show SteamAuth API accounts that match games in your catalog'))

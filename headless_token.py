@@ -1846,9 +1846,9 @@ def main(app_id, game_name, steampass_uuid, generation_mode="gbe"):
             log(f"Token generated (SteamID: {steam_id}, source: owned_account)")
 
         # ── STEAMAUTH MODE (GameGen Auth Service guard codes) ──
-        # Node fetches a TOTP code from steamauth.gamegen.lol via
-        # POST /api/v1/guard-code and passes it here. shared_secret never
-        # touches this process — safer than local TOTP generation.
+        # Node fetches login material from steamauth.gamegen.lol via
+        # GET /api/v1/accounts/:id/credentials (API key only). shared_secret
+        # and password never touch this process except in-memory for CM login.
         steamauth_login = (os.environ.get("STEAMAUTH_STEAM_LOGIN") or "").strip()
         if session_source is None and steamauth_login:
             steamauth_password = os.environ.get("STEAMAUTH_STEAM_PASSWORD") or ""
