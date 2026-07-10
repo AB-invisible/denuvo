@@ -13,7 +13,7 @@ import { logAction } from './utils/logging';
 import { refreshAllPanels, resumeFromMaintenance } from './utils/panelManager';
 import { verifyScreenshot, VERIFY_BYPASS_REASON, VERIFY_ERROR_REASON } from './utils/groq';
 import { initFileWatcher, syncGamesFromFile } from './utils/syncManager';
-import { generateToken, generateTokenWithRetry } from './utils/tokenGenerator';
+import { generateToken, generateTokenWithRetry, steampassNeedsBearerRefresh } from './utils/tokenGenerator';
 import { uploadFile } from './utils/fileHost';
 import { updateTicketWaitTimes, checkWeeklyStaffStats, checkDutyStatusReset, checkStaleTickets, cleanupExpiredCooldowns } from './utils/scheduler';
 import { addSubscription } from './utils/subscriptionManager';
@@ -992,9 +992,13 @@ async function autoGenerateAndDeliver(channel: TextChannel, ticket: any, guild: 
         .setColor(0xED4245)
         .setTimestamp();
       await genMsg.edit({ embeds: [failEmbed] });
-      await channel.send({ content: `${staffPing} Auto-generation failed. Manual token delivery needed.` });
+      const bearerExpired = steampassNeedsBearerRefresh(logs);
+      const staffMsg = bearerExpired
+        ? `${staffPing} ⚠️ **Steampass bearer expired.** The bot did NOT auto-login (that's what gets the account blocked). Refresh it: log in on steampass.gg → DevTools → Network → copy the \`Authorization\` bearer → run \`/setsteampass <token>\`. Gens work again immediately after.`
+        : `${staffPing} Auto-generation failed. Manual token delivery needed.`;
+      await channel.send({ content: staffMsg });
       if (homeGuild) {
-        await logAction(homeGuild, '⚠️ Auto-Gen Failed', `Auto-generation failed for **${ticket.game.name}** (AppID \`${(ticket.game as any).appId}\`).\n\n\`\`\`\n${logs.slice(-500)}\n\`\`\``, 0xED4245);
+        await logAction(homeGuild, bearerExpired ? '🔑 Steampass Bearer Expired' : '⚠️ Auto-Gen Failed', `${bearerExpired ? 'Bearer needs refreshing via /setsteampass. ' : ''}Auto-generation failed for **${ticket.game.name}** (AppID \`${(ticket.game as any).appId}\`).\n\n\`\`\`\n${logs.slice(-500)}\n\`\`\``, 0xED4245);
       }
     }
   } catch (genError) {

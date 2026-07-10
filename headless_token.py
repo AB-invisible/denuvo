@@ -697,6 +697,13 @@ class SteampassClient:
         """
         resp = _steampass_request(session_callable, *args, **kwargs)
         if resp is not None and resp.status_code in (401, 403) and self.used_cached_token:
+            # The cached bearer expired. DON'T auto-/auth/login (that's what
+            # gets the account blocked) — fail with instructions to refresh
+            # the bearer. Set STEAMPASS_ALLOW_AUTH_LOGIN=true to opt back in.
+            if not _ALLOW_AUTH_LOGIN:
+                raise RuntimeError(
+                    f"Cached bearer rejected ({resp.status_code}) — {_BEARER_REFRESH_HINT}"
+                )
             log(f"Steampass: cached bearer rejected ({resp.status_code}) — "
                 "re-authenticating with password once and retrying")
             self._password_login()  # updates self.session Authorization header
