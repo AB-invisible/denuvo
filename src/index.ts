@@ -7,7 +7,7 @@ import { createMainPanel, createVerificationPromptEmbed, createVerificationProce
 import { createTicket, claimTicket, closeTicket, handleCooldownSelection, handleDeductionChoice, unclaimTicket, autoCloseTicketForVerificationTimeout, triggerSessionFailure, pendingVerificationTimers, vouchTimers } from './utils/ticketManager';
 import { getEstimatedWaitTime } from './utils/stats';
 import { computeCooldownHours } from './utils/cooldown';
-import { consumeStock } from './utils/gameManager';
+import { consumeStock, updateStockForAllGames } from './utils/gameManager';
 import prisma from './lib/prisma';
 import { logAction } from './utils/logging';
 import { refreshAllPanels, resumeFromMaintenance } from './utils/panelManager';
@@ -546,16 +546,12 @@ client.on('interactionCreate', async (interaction) => {
         const sub = interaction.options.getSubcommand();
         const depletGuildId = interaction.guildId || '';
         if (sub === 'all') {
-          const depletedAt = new Date();
-          const [stockResult, restocksResult] = await prisma.$transaction([
-            prisma.serverStock.updateMany({ where: { guildId: depletGuildId }, data: { stock: 0, lastDepletedAt: depletedAt } }),
-            prisma.restock.deleteMany({ where: { guildId: depletGuildId } }),
-          ]);
+          const result = await updateStockForAllGames(0, depletGuildId);
           await refreshAllPanels();
           await interaction.editReply({
-            content: `✅ **All tokens depleted:** Set \`${stockResult.count}\` game(s) to \`0\` token(s). Cleared \`${restocksResult.count}\` pending restock(s).`,
+            content: `✅ **All tokens depleted:** Set \`${result.count}\` game(s) to \`0\` token(s). Cleared \`${result.restocksCleared}\` pending restock(s).`,
           });
-          logAction(interaction.guild!, '🗑️ Deplet All', `**${interaction.user.tag}** depleted all games (${stockResult.count}) and cleared ${restocksResult.count} restocks`, 0xFF0000);
+          logAction(interaction.guild!, '🗑️ Deplet All', `**${interaction.user.tag}** depleted all games (${result.count}) and cleared ${result.restocksCleared} restocks`, 0xFF0000);
         } else if (sub === 'game') {
           const gameName = interaction.options.getString('game', true);
           const game = await prisma.game.findUnique({ where: { name: gameName } });
