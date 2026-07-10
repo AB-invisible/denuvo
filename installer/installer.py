@@ -84,7 +84,14 @@ Compile to a single Windows .exe with PyInstaller:
 #        stays untouched per rev 12 — that question is still open (the
 #        right fix needs a stubbed/experimental Goldberg variant we
 #        don't have in _Core/ yet).
-__build_revision__ = 13
+# Rev 14: per-game steamclient64.dll placement override
+#        (_STEAMCLIENT_EXTRA_DIRS). GBE Pass 3 drops steamclient64.dll at a
+#        known-good relative subpath for AppIDs whose real exe folder the
+#        exe-detection heuristic doesn't reliably pick. Seeded with The Bus
+#        (491540 → TheBus/Binaries/Win64), a UE title with a nested project
+#        folder that otherwise loaded a stray steamclient64.dll and threw
+#        "Unable to create interface ISteamUser".
+__build_revision__ = 14
 
 import ctypes
 import io
@@ -515,6 +522,24 @@ def _place_steam_settings(src_settings: Path, dst_dir: Path, stats: dict | None 
         shutil.copytree(src_settings, target, dirs_exist_ok=True)
 
 
+# ─── Per-game steamclient64.dll placement overrides ──────────
+# Some titles keep their real executable in a subfolder our exe-detection
+# heuristic doesn't reliably rank #1 — usually Unreal Engine games with a
+# nested project folder — so steamclient64.dll can land in the wrong
+# directory and the game falls back to a stray/real steamclient (that's the
+# "Unable to create interface ISteamUser" error). For these AppIDs we ALSO
+# drop steamclient64.dll at a known-good subpath.
+#
+# Paths are RELATIVE to the Steam install dir (game_dir) — no drive letters —
+# so they resolve correctly on any drive / library location.
+_STEAMCLIENT_EXTRA_DIRS: dict[str, list[str]] = {
+    # The Bus (AppID 491540) — UE, nested project folder. Real exe lives in
+    # <game>/TheBus/Binaries/Win64/; confirmed working when steamclient64.dll
+    # is placed there.
+    "491540": ["TheBus/Binaries/Win64"],
+}
+
+
 def deploy_gbe(
     src_root: Path,
     game_dir: Path,
@@ -641,6 +666,26 @@ def deploy_gbe(
             if resolved not in seen:
                 _backup_and_overwrite(goldberg_client, main_exe_client, stats)
                 stats["client_locations"] += 1
+
+        # Pass 3: per-game override. For titles whose real exe folder our
+        # heuristic doesn't reliably pick (e.g. UE games with a nested
+        # project folder like The Bus), drop steamclient64.dll at each
+        # known-good relative subpath — resolved against THIS machine's
+        # game_dir, so it works regardless of drive/library location.
+        for rel_sub in _STEAMCLIENT_EXTRA_DIRS.get(str(app_id), []):
+            extra_dir = game_dir / rel_sub.replace("\\", "/")
+            if not extra_dir.is_dir():
+                continue
+            extra_client = extra_dir / "steamclient64.dll"
+            try:
+                resolved = extra_client.resolve()
+            except OSError:
+                resolved = extra_client
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            _backup_and_overwrite(goldberg_client, extra_client, stats)
+            stats["client_locations"] += 1
 
     return stats
 
