@@ -1,5 +1,6 @@
 import { EmbedBuilder } from 'discord.js';
 import prisma from '../lib/prisma';
+import { refreshAllPanels } from '../utils/panelManager';
 
 export async function execute(interaction: any): Promise<void> {
   const leaveGame = interaction.options.getString('leave');
@@ -18,6 +19,7 @@ export async function execute(interaction: any): Promise<void> {
     }
 
     await prisma.waitlist.delete({ where: { id: entry.id } });
+    await refreshAllPanels();
     return interaction.editReply({ content: `✅ Removed from the **${leaveGame}** waitlist.` });
   }
 

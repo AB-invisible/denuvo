@@ -208,7 +208,11 @@ export async function createTicket(interaction: StringSelectMenuInteraction, gam
     });
 
     if ('error' in result) {
-      return interaction.editReply({ content: result.error });
+      await interaction.editReply({ content: result.error });
+      if (typeof result.error === 'string' && result.error.includes('waitlist')) {
+        await refreshAllPanels();
+      }
+      return;
     }
 
     const { game } = result;

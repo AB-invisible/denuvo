@@ -97,9 +97,32 @@ export async function execute(interaction: any): Promise<void> {
         interaction.user,
         { url: upload.url, expiryText: upload.expiryText, sizeMB: zipMB.toFixed(1) },
       ).addFields(successFields);
-      delivered = await interaction.editReply({
+
+      // Post a visible channel message — auto-gen does the same. Relying on
+      // editReply alone buries the download link in the slash-command reply,
+      // which staff/users often miss (especially outside a ticket channel).
+      const targetChannel = interaction.channel;
+      if (!targetChannel?.isTextBased()) {
+        throw new Error('Cannot post delivery embed — channel is not text-based.');
+      }
+      delivered = await targetChannel.send({
         embeds: [hostedEmbed],
-        components: ticketHere ? [worksRow] : []
+        components: ticketHere ? [worksRow] : [],
+      });
+
+      await interaction.editReply({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle('✅ /tokengen Delivered')
+            .setDescription(
+              `Token delivery embed posted → [jump to message](${delivered.url})\n\n` +
+              `**[⬇️ Download Token Zip](${upload.url})** · ${upload.expiryText}`,
+            )
+            .addFields(successFields)
+            .setColor(0x57F287)
+            .setTimestamp(),
+        ],
+        components: [],
       });
 
       if (ticketHere && delivered?.id) {
@@ -122,7 +145,9 @@ export async function execute(interaction: any): Promise<void> {
           `Staff ${interaction.user} generated a token via **/tokengen** for **${game.name}** (AppID \`${game.appId}\`, ${zipMB.toFixed(1)} MB).\n` +
           `**Stock Deducted:** \`${deduct ? 'YES' : 'NO'}\`\n` +
           `**In ticket channel:** ${ticketHere ? `<#${interaction.channelId}>` : 'no — posted in a regular channel'}\n` +
-          `**Link:** ${persistent ? '🔓 **Persistent** (never expires, installer re-runnable)' : '⏱️ Single-use (expires + consumed on first install)'}`,
+          `**Delivery message:** ${delivered.url}\n` +
+          `**Download:** ${upload.url}\n` +
+          `**Link type:** ${persistent ? '🔓 **Persistent** (never expires, installer re-runnable)' : '⏱️ Single-use (expires + consumed on first install)'}`,
           0x57F287);
       }
       await logTenant(interaction.guildId, '📦 Token Delivered', `A token for **${game.name}** was delivered to <@${ticketHere?.userId || interaction.user.id}>.`, 0x57F287);

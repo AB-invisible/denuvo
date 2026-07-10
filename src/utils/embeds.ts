@@ -146,6 +146,10 @@ export async function createMainPanel(guildId?: string) {
             description = `🔥 High Demand (48h cd) • ${description}`;
           }
 
+          if (queueCount > 0 && !description.includes('in queue')) {
+            description += ` • ${queueCount} in queue`;
+          }
+
           return buildGameSelectOption(game, description, emoji);
         })
       );
@@ -334,7 +338,9 @@ export function createTokenDeliveryEmbed(
   // Step 1 changes depending on whether we have a download link. Keep
   // the rest of the copy identical so the user experience is uniform.
   const step1 = link
-    ? `1. **[⬇️ Download Token Zip](${link.url})**${sizeNote} — link expires in **${link.expiryText.replace(/^Link expires in /i, '')}**.`
+    ? link.expiryText.startsWith('Link is permanent')
+      ? `1. **[⬇️ Download Token Zip](${link.url})**${sizeNote} — **permanent link** (no expiry, installer re-runnable).`
+      : `1. **[⬇️ Download Token Zip](${link.url})**${sizeNote} — link expires in **${link.expiryText.replace(/^Link expires in /i, '')}**.`
     : `1. Download the **.zip** attached above.`;
 
   return new EmbedBuilder()

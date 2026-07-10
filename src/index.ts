@@ -293,6 +293,10 @@ const commands = [
     .addUserOption(o => o.setName('user').setDescription('The user to check').setRequired(true))
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
+    .setName('export')
+    .setDescription('Export panel games as JSON (hardcoded + manually added)')
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+  new SlashCommandBuilder()
     .setName('waitlist')
     .setDescription('View or leave your game waitlists')
     .addStringOption(o => o.setName('leave').setDescription('Game name to leave the waitlist for').setAutocomplete(true)),
@@ -311,7 +315,7 @@ async function registerCommands(targetGuildId?: string) {
     const addsupport = ADDSUPPORT_COMMAND.toJSON();
 
     const tenantCommands = [
-      ...commands.filter((c: any) => c.name !== 'test' && c.name !== 'simulate' && c.name !== 'deplet' && c.name !== 'lowstock' && c.name !== 'setsteampass' && c.name !== 'game' && c.name !== 'removegame' && c.name !== 'autogen' && c.name !== 'stock' && c.name !== 'settokens' && c.name !== 'exclude-auto' && c.name !== 'setmode' && c.name !== 'getmode' && c.name !== 'promo' && c.name !== 'requests' && c.name !== 'staffstats' && c.name !== 'restockall' && c.name !== 'steamhealth' && c.name !== 'steamaccount' && c.name !== 'steamauth'),
+      ...commands.filter((c: any) => c.name !== 'test' && c.name !== 'simulate' && c.name !== 'deplet' && c.name !== 'lowstock' && c.name !== 'setsteampass' && c.name !== 'game' && c.name !== 'removegame' && c.name !== 'autogen' && c.name !== 'stock' && c.name !== 'settokens' && c.name !== 'exclude-auto' && c.name !== 'setmode' && c.name !== 'getmode' && c.name !== 'promo' && c.name !== 'requests' && c.name !== 'staffstats' && c.name !== 'restockall' && c.name !== 'steamhealth' && c.name !== 'steamaccount' && c.name !== 'steamauth' && c.name !== 'export'),
       setlogs,
       setvouch,
       addsupport,

@@ -2,6 +2,7 @@ import prisma from '../lib/prisma';
 import { client } from '../client';
 import { EmbedBuilder } from 'discord.js';
 import { CONFIG } from '../config';
+import { refreshAllPanels } from './panelManager';
 
 export async function notifyWaitlist(gameId: number, gameName: string, amount: number) {
   const waitlisted = await prisma.waitlist.findMany({
@@ -37,6 +38,7 @@ export async function notifyWaitlist(gameId: number, gameName: string, amount: n
 
   if (notified.length > 0) {
     await prisma.waitlist.deleteMany({ where: { id: { in: notified } } });
+    await refreshAllPanels();
   }
 
   console.log(`[Waitlist] Notified ${notified.length}/${waitlisted.length} users for ${gameName}.`);
