@@ -122,6 +122,25 @@ const commands = [
     .setDescription('Show the Steam session cache — which account+game pairs skip steampass (owner only)')
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
+    .setName('steamaccount')
+    .setDescription('Manage owner-provided Steam accounts (used before steampass) — owner only')
+    .addSubcommand(sub => sub
+      .setName('add')
+      .setDescription('Register a Steam account you own for a game (used first, 5/day, then steampass)')
+      .addIntegerOption(o => o.setName('appid').setDescription('Steam AppID the account owns').setRequired(true))
+      .addStringOption(o => o.setName('login').setDescription('Steam account username').setRequired(true))
+      .addStringOption(o => o.setName('password').setDescription('Steam account password').setRequired(true))
+      .addStringOption(o => o.setName('shared_secret').setDescription('Mobile-authenticator TOTP secret (leave empty if Guard is OFF)').setRequired(false))
+      .addStringOption(o => o.setName('label').setDescription('Optional label/note').setRequired(false)))
+    .addSubcommand(sub => sub
+      .setName('list')
+      .setDescription('List registered Steam accounts + today\'s usage'))
+    .addSubcommand(sub => sub
+      .setName('remove')
+      .setDescription('Remove a registered Steam account by its ID')
+      .addIntegerOption(o => o.setName('id').setDescription('Account ID (from /steamaccount list)').setRequired(true)))
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+  new SlashCommandBuilder()
     .setName('tokengen')
     .setDescription('Generate a REAL token (staff bypass, posted publicly, no screenshot needed)')
     .addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true))
@@ -258,7 +277,7 @@ async function registerCommands(targetGuildId?: string) {
     const addsupport = ADDSUPPORT_COMMAND.toJSON();
 
     const tenantCommands = [
-      ...commands.filter((c: any) => c.name !== 'test' && c.name !== 'simulate' && c.name !== 'deplet' && c.name !== 'lowstock' && c.name !== 'setsteampass' && c.name !== 'game' && c.name !== 'removegame' && c.name !== 'autogen' && c.name !== 'stock' && c.name !== 'settokens' && c.name !== 'exclude-auto' && c.name !== 'setmode' && c.name !== 'getmode' && c.name !== 'promo' && c.name !== 'requests' && c.name !== 'staffstats' && c.name !== 'restockall' && c.name !== 'steamhealth'),
+      ...commands.filter((c: any) => c.name !== 'test' && c.name !== 'simulate' && c.name !== 'deplet' && c.name !== 'lowstock' && c.name !== 'setsteampass' && c.name !== 'game' && c.name !== 'removegame' && c.name !== 'autogen' && c.name !== 'stock' && c.name !== 'settokens' && c.name !== 'exclude-auto' && c.name !== 'setmode' && c.name !== 'getmode' && c.name !== 'promo' && c.name !== 'requests' && c.name !== 'staffstats' && c.name !== 'restockall' && c.name !== 'steamhealth' && c.name !== 'steamaccount'),
       setlogs,
       setvouch,
       addsupport,

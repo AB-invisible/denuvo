@@ -115,6 +115,36 @@ export async function generateTokenWithRetry(
   gameName: string,
   guildId?: string,
 ): Promise<RetryResult> {
+  const ownedGuildKey = (!guildId || guildId === CONFIG.OWNER_GUILD_ID) ? '' : guildId;
+
+  // ── Priority 1: owner-provided (BYO) Steam accounts ──
+  // If a Steam account the owner OWNS is registered for this game and still
+  // has daily quota, use it directly (zero steampass). Only when they're
+  // all exhausted or failing do we fall through to the steampass pool.
+  try {
+    const { getAvailableOwnedAccounts, recordOwnedUsage, saveOwnedRefreshToken, recordOwnedFailure } = await import('./ownedAccounts');
+    const ownedAccts = await getAvailableOwnedAccounts(appId, ownedGuildKey);
+    if (ownedAccts.length > 0) {
+      const g = await prisma.game.findFirst({ where: { appId } });
+      const uuid = g?.steampassUuid || String(appId);
+      const mode = (g as any)?.generationMode || 'gbe';
+      for (const owned of ownedAccts) {
+        console.log(`[TokenGen:Owned] Trying owned Steam account #${owned.id} (${owned.steamLogin}) for AppID ${appId}`);
+        const result = await generateHeadlessOwned(appId, gameName, uuid, mode, owned);
+        if (result.zipPath) {
+          await recordOwnedUsage(owned.id);
+          if (result.refreshToken) await saveOwnedRefreshToken(owned.id, result.refreshToken, result.steamId);
+          console.log(`[TokenGen:Owned] Success with owned account #${owned.id} — no steampass used`);
+          return { ...result, poolAccountId: null, exhausted: false };
+        }
+        await recordOwnedFailure(owned.id);
+        console.warn(`[TokenGen:Owned] Owned account #${owned.id} failed — trying next / falling back to steampass`);
+      }
+    }
+  } catch (e) {
+    console.warn('[TokenGen:Owned] owned-account path errored, falling back to steampass:', (e as Error).message);
+  }
+
   const { getAllAvailableOwnerAccounts, recordOwnerUsage } = await import('./steampassPool');
 
   const isOwner = !guildId || guildId === CONFIG.OWNER_GUILD_ID;
@@ -485,6 +515,88 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
           resolve({ zipPath: lastLine, logs, installerKey, ticketHash, expectedHmac, appIdBound });
         } else {
           console.error(`[TokenGen:Headless] No valid zip path found. Output:\n${stdout}`);
+          resolve({ zipPath: null, logs, installerKey });
+        }
+      }
+    );
+  });
+}
+
+export interface OwnedGenResult extends TokenGenResult {
+  /** refresh_token captured from the owned-account login, to cache for reuse. */
+  refreshToken?: string;
+  steamId?: string;
+}
+
+/**
+ * Generate a token using an owner-provided (BYO) Steam account — a direct
+ * Steam login, zero steampass. Passes the account's credentials to Python
+ * via OWNED_STEAM_* env vars; Python logs in (refresh_token first if cached,
+ * else creds + optional TOTP, or no Guard) and gens the ticket. Returns the
+ * same shape as generateHeadless plus the fresh refresh_token to cache.
+ */
+function generateHeadlessOwned(
+  appId: number,
+  gameName: string,
+  steampassUuid: string,
+  generationMode: string,
+  owned: { steamLogin: string; steamPassword: string; sharedSecret: string; refreshToken: string },
+): Promise<OwnedGenResult> {
+  const installerKey = crypto.randomBytes(24).toString('hex');
+  const publicUrlEnv = process.env.PUBLIC_URL || '';
+  const railwayDomainEnv = process.env.RAILWAY_PUBLIC_DOMAIN || '';
+
+  return new Promise((resolve) => {
+    const env = buildPythonEnv({
+      // Direct Steam creds — Python's owned-account branch skips steampass.
+      OWNED_STEAM_LOGIN: owned.steamLogin,
+      OWNED_STEAM_PASSWORD: owned.steamPassword,
+      OWNED_STEAM_SHARED_SECRET: owned.sharedSecret || '',
+      CACHED_STEAM_REFRESH_TOKEN: owned.refreshToken || '',
+      INSTALLER_KEY: installerKey,
+      HMAC_SECRET: process.env.HMAC_SECRET || '',
+      PUBLIC_URL: publicUrlEnv,
+      RAILWAY_PUBLIC_DOMAIN: railwayDomainEnv,
+    });
+
+    execFile(
+      PYTHON_EXE,
+      [HEADLESS_SCRIPT, String(appId), gameName, steampassUuid, generationMode],
+      { timeout: 120_000, maxBuffer: 20 * 1024 * 1024, env },
+      (error, stdout, stderr) => {
+        const logs = stdout + (stderr ? `\n${stderr}` : '');
+        if (error) {
+          console.error(`[TokenGen:Owned] Process error for AppID ${appId}:`, error.message);
+          resolve({ zipPath: null, logs, installerKey });
+          return;
+        }
+        const lines = stdout.trim().split('\n').filter(l => l.trim());
+        const lastLine = lines[lines.length - 1]?.trim();
+        if (lastLine && fs.existsSync(lastLine)) {
+          let ticketHash: string | undefined;
+          let expectedHmac: string | undefined;
+          let appIdBound: number | undefined;
+          let refreshToken: string | undefined;
+          let steamId: string | undefined;
+          const metaPath = lastLine + '.meta.json';
+          try {
+            if (fs.existsSync(metaPath)) {
+              const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+              ticketHash = typeof meta.ticket_hash === 'string' ? meta.ticket_hash : undefined;
+              expectedHmac = typeof meta.expected_hmac === 'string' && meta.expected_hmac ? meta.expected_hmac : undefined;
+              const ap = parseInt(String(meta.app_id), 10);
+              appIdBound = Number.isFinite(ap) ? ap : undefined;
+              refreshToken = typeof meta.refresh_token === 'string' && meta.refresh_token ? meta.refresh_token : undefined;
+              steamId = typeof meta.steam_id === 'string' && meta.steam_id ? meta.steam_id : undefined;
+              try { fs.unlinkSync(metaPath); } catch {}
+            }
+          } catch (e) {
+            console.warn('[TokenGen:Owned] Failed to read sidecar meta JSON:', e);
+          }
+          console.log(`[TokenGen:Owned] Success for AppID ${appId}: ${lastLine}`);
+          resolve({ zipPath: lastLine, logs, installerKey, ticketHash, expectedHmac, appIdBound, refreshToken, steamId });
+        } else {
+          console.error(`[TokenGen:Owned] No valid zip path found. Output:\n${stdout}`);
           resolve({ zipPath: null, logs, installerKey });
         }
       }

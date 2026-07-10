@@ -284,6 +284,58 @@ model SteampassUsage {
   @@unique([accountId, appId, usageDate])
 }
 
+// ─── Owner-provided (BYO) Steam accounts ─────────────────────────
+// A real Steam account the owner OWNS that already has a specific game.
+// The bot logs into it DIRECTLY (no steampass) and generates tokens for
+// its game, up to the Denuvo per-account daily cap (default 5). When the
+// day's quota is spent, gen falls back to the steampass pool. Added via
+// /addsteamaccount. Credentials are stored plaintext — same trust boundary
+// as SteampassAccount / SteamSession.
+model OwnedSteamAccount {
+  id            Int      @id @default(autoincrement())
+  // Owning server. "" = owner/home. Keeps one server's accounts from being
+  // used by another (accounts are visible only where they were added).
+  guildId       String   @default("")
+  // The Steam AppID this account owns and can generate for.
+  appId         Int
+  label         String?
+  steamLogin    String
+  steamPassword String
+  // TOTP mobile-authenticator secret. Null = the account has Steam Guard
+  // OFF (login with just username+password). When set, the bot generates
+  // the Guard code itself each login.
+  sharedSecret  String?
+  // Cached long-lived refresh_token (~200-day) so repeat gens skip even the
+  // password login. Captured after the first successful login.
+  refreshToken  String?
+  steamId       String?
+  active        Boolean  @default(true)
+  priority      Int      @default(100) // lower = tried first
+  failureCount  Int      @default(0)
+  lastFailureAt DateTime?
+  lastUsedAt    DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @default(now()) @updatedAt
+  usages        OwnedSteamUsage[]
+
+  @@unique([guildId, appId, steamLogin])
+}
+
+// Per-account, per-day token counter for owned accounts. usageDate is a
+// "YYYY-MM-DD" UTC string; count is capped in code at the Denuvo daily
+// limit (OWNER_TOKENS_PER_ACCOUNT_PER_DAY). One game per account, so this
+// is effectively per-account/day.
+model OwnedSteamUsage {
+  id        Int      @id @default(autoincrement())
+  accountId Int
+  account   OwnedSteamAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  usageDate String   // "YYYY-MM-DD" UTC
+  count     Int      @default(0)
+  updatedAt DateTime @default(now()) @updatedAt
+
+  @@unique([accountId, usageDate])
+}
+
 model TokenDownload {
   token         String   @id            // random opaque ID used in the download URL
   installerKey  String?  @unique        // separate per-zip secret embedded in payload-manifest.json

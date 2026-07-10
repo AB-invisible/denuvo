@@ -1056,29 +1056,44 @@ def _new_auth_login(client, username, password, guard_code):
     confirm_types = [f"{ac.get('confirmation_type')}({ac.get('associated_message')})" for ac in allowed]
     log(f"Steam [NewAuth]: session started (steamid={steamid}, allowed_confirmations={confirm_types})")
 
-    # ── Step 4: Submit guard code ──
-    code_type = 2  # default to email code (steampass uses email)
+    # ── Step 4: Submit guard code (only if the account actually needs one) ──
+    # allowed_confirmations tells us what Steam requires for THIS account:
+    #   1 = None (no Steam Guard)     → skip submission, poll directly
+    #   2 = EmailCode, 3 = DeviceCode → submit the guard_code we were given
+    # A user-owned account with Guard OFF reports only type 1, so we must NOT
+    # POST a (missing) code — that path 400s. Steampass accounts report 2/3.
+    guard_type = None
     for ac in allowed:
-        if ac.get("confirmation_type") == 3:
-            code_type = 3  # TOTP takes priority if offered
+        ct = ac.get("confirmation_type")
+        if ct == 3:
+            guard_type = 3  # TOTP preferred if offered
             break
-        elif ac.get("confirmation_type") == 2:
-            code_type = 2
-            break
+        elif ct == 2 and guard_type is None:
+            guard_type = 2  # email
 
-    log(f"Steam [NewAuth]: submitting guard code (type={'TOTP' if code_type == 3 else 'email'})...")
-    update_url = "https://api.steampowered.com/IAuthenticationService/UpdateAuthSessionWithSteamGuardCode/v1"
-    resp = requests.post(update_url, data={
-        "client_id": client_id,
-        "steamid": steamid,
-        "code": guard_code,
-        "code_type": code_type,
-    }, timeout=15)
-    
-    if not resp.ok:
-        raise RuntimeError(f"UpdateAuthSessionWithSteamGuardCode HTTP failed: {resp.status_code} {resp.text[:100]}")
-    
-    log("Steam [NewAuth]: guard code accepted!")
+    if guard_type and guard_code:
+        code_type = guard_type
+        log(f"Steam [NewAuth]: submitting guard code (type={'TOTP' if code_type == 3 else 'email'})...")
+        update_url = "https://api.steampowered.com/IAuthenticationService/UpdateAuthSessionWithSteamGuardCode/v1"
+        resp = requests.post(update_url, data={
+            "client_id": client_id,
+            "steamid": steamid,
+            "code": guard_code,
+            "code_type": code_type,
+        }, timeout=15)
+
+        if not resp.ok:
+            raise RuntimeError(f"UpdateAuthSessionWithSteamGuardCode HTTP failed: {resp.status_code} {resp.text[:100]}")
+
+        log("Steam [NewAuth]: guard code accepted!")
+    elif guard_type and not guard_code:
+        # Steam wants a code but we have none — can't finish this flow.
+        raise RuntimeError(
+            f"Steam requires a guard code (type {guard_type}) for this account "
+            f"but none was supplied"
+        )
+    else:
+        log("Steam [NewAuth]: account has no Steam Guard — skipping code submission")
 
     # ── Step 5: Poll for tokens ──
     # We specifically need the *refresh_token* — that's the credential the
@@ -1137,7 +1152,7 @@ def _new_auth_login(client, username, password, guard_code):
 
 
 def get_encrypted_ticket_headless(app_id, steam_login, steam_password, guard_code,
-                                  refresh_token=None):
+                                  refresh_token=None, allow_no_guard=False):
     """Connect to Steam CM servers headlessly and get an encrypted app ticket.
 
     Uses ValvePython's steam library — no Steam client needed.
@@ -1187,7 +1202,11 @@ def get_encrypted_ticket_headless(app_id, steam_login, steam_password, guard_cod
 
     # ── Cold-start path: credentials + guard code (steampass-issued) ──
     if logged_in_via is None:
-        if not guard_code:
+        # allow_no_guard=True means the caller KNOWS this account has Steam
+        # Guard OFF (an owner-provided account), so a password-only login is
+        # expected — don't demand a guard code. Otherwise a missing code here
+        # means a token-only reuse failed with nothing to fall back to.
+        if not guard_code and not allow_no_guard:
             client.disconnect()
             raise RuntimeError(
                 "Refresh-token login failed and no guard_code was supplied for "
@@ -1783,14 +1802,58 @@ def main(app_id, game_name, steampass_uuid, generation_mode="gbe"):
         ticket_bytes = b"FAKE_TEST_TICKET_DO_NOT_USE_" * 32
         token_b64 = base64.b64encode(ticket_bytes).decode()
     else:
-        # Steampass credentials from environment
-        sp_login = os.environ.get("STEAMPASS_LOGIN")
-        sp_password = os.environ.get("STEAMPASS_PASSWORD")
-        if not sp_login or not sp_password:
+        # Shared login state — set by whichever path succeeds below.
+        steam_login = None
+        steam_password = None
+        guarded = True
+        guard_code = None
+        sp = None  # lazy — only constructed if we actually hit steampass
+        session_source = None  # "owned_account" | "refresh_token" | "cached_creds" | "steampass"
+        new_refresh_token = None
+
+        # ── OWNED STEAM ACCOUNT MODE (zero steampass) ──
+        # When Node selected a user-provided Steam account, it passes the Steam
+        # credentials directly. We log in with them — refresh_token first if
+        # cached, else creds + optional TOTP (or no Guard at all) — skipping
+        # steampass entirely. Every steampass phase below is gated on
+        # session_source, so they no-op once this succeeds.
+        owned_login = (os.environ.get("OWNED_STEAM_LOGIN") or "").strip()
+        if owned_login:
+            owned_password = os.environ.get("OWNED_STEAM_PASSWORD") or ""
+            owned_secret = (os.environ.get("OWNED_STEAM_SHARED_SECRET") or "").strip()
+            owned_refresh = (os.environ.get("CACHED_STEAM_REFRESH_TOKEN") or "").strip()
+            log(f"Owned-account mode for {game_name} ({app_id}) — login={owned_login}, "
+                f"guard={'TOTP' if owned_secret else 'none'}, "
+                f"refresh_token={'yes' if owned_refresh else 'no'}")
+            owned_guard = None
+            if owned_secret:
+                from steam.guard import generate_twofactor_code
+                owned_guard = generate_twofactor_code(owned_secret)
+                log("Owned-account: generated TOTP guard code from shared_secret")
+            try:
+                ticket_bytes, steam_id, new_refresh_token = get_encrypted_ticket_headless(
+                    app_id, owned_login, owned_password, owned_guard,
+                    refresh_token=(owned_refresh or None),
+                    allow_no_guard=(owned_guard is None),
+                )
+            except Exception as e:
+                log(f"ERROR: owned-account login/gen failed: {e}")
+                sys.exit(1)
+            steam_login = owned_login
+            steam_password = owned_password
+            guarded = bool(owned_secret)
+            session_source = "owned_account"
+            log(f"Token generated (SteamID: {steam_id}, source: owned_account)")
+
+        # ── Steampass credentials (only when no owned account was used) ──
+        sp_login = os.environ.get("STEAMPASS_LOGIN") or ""
+        sp_password = os.environ.get("STEAMPASS_PASSWORD") or ""
+        if session_source is None and (not sp_login or not sp_password):
             log("ERROR: STEAMPASS_LOGIN and STEAMPASS_PASSWORD env vars required")
             sys.exit(1)
 
-        log(f"Generating token for {game_name} ({app_id})...")
+        if session_source is None:
+            log(f"Generating token for {game_name} ({app_id})...")
 
         # ── Cached session lookup ──
         # Node looks up the most recent SteamSession row for this UUID
@@ -1801,19 +1864,12 @@ def main(app_id, game_name, steampass_uuid, generation_mode="gbe"):
         cached_password = (os.environ.get("CACHED_STEAM_PASSWORD") or "").strip()
         cached_refresh_token = (os.environ.get("CACHED_STEAM_REFRESH_TOKEN") or "").strip()
         cached_guarded = (os.environ.get("CACHED_STEAM_GUARDED") or "").strip().lower() == "true"
-        if cached_login:
+        if cached_login and session_source is None:
             log(f"Found cached Steam session for this UUID (login={cached_login}, "
                 f"refresh_token={'yes' if cached_refresh_token else 'no'})")
 
-        steam_login = None
-        steam_password = None
-        guarded = True
-        guard_code = None
-        sp = None  # lazy — only construct if we actually need to hit steampass
-        session_source = None  # what worked: refresh_token | cached_creds | steampass
-
         # ── Phase 2: try refresh-token reuse (zero steampass calls) ──
-        if cached_login and cached_refresh_token:
+        if session_source is None and cached_login and cached_refresh_token:
             log("Attempting Steam CM login via cached refresh_token "
                 "(no steampass calls)...")
             try:
