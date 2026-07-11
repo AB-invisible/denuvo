@@ -17,4 +17,5 @@ Zips are **not** committed to git (FC 26 is ~377 MB). After deploy, place the fi
 1. Mount a Railway **volume** at `/app/ea-magic` (or set `EA_MAGIC_DIR` to your mount path), **or**
 2. Upload `EA SPORTS FC 26 magic files.zip` into that path via Railway shell / one-off copy.
 
-Ensure `PUBLIC_URL` points at your bot's public HTTP endpoint so users get a hosted download link.
+Default one-time seed URL (Railway env `EA_MAGIC_SEED_URL`):
+`https://pixeldrain.com/api/filesystem/DaTaPW8a`
