@@ -37,6 +37,7 @@ import { closeTicketForDailyLimit } from './ticketManager';
 import { resolveUbisoftForGame, catalogByMagicFile, resolveMagicDir, catalogBySteamAppId, locateMagicZip, normalizeMagicFilename } from './ubisoftCatalog';
 import { mintUbisoftToken, ubisoftServiceConfigured } from './ubisoftService';
 import { resolvePublicBaseUrl } from './downloadHost';
+import { createCallhomeInstaller } from './installerPackage';
 
 export const UBISOFT_STAGE_AWAITING = 'AWAITING_TOKEN_REQ';
 export const UBISOFT_STAGE_DONE = 'DONE';
@@ -108,16 +109,10 @@ function magicInstructions(gameName: string, layout: 'flat' | 'bin64'): string {
  * Called instead of autoGenerateAndDeliver for Ubisoft games right after the
  * screenshot verifies (or staff approves it).
  */
-export async function startUbisoftDelivery(channel: TextChannel, ticket: any, guild: Guild | null): Promise<void> {
-  const guildId = ticket.guildId ?? guild?.id ?? '';
-  const staffPing = await staffPingFor(guildId);
+/** Fallback: the original manual magic-zip flow (raw zip + paste token_req). */
+async function startUbisoftManualDelivery(channel: TextChannel, ticket: any, guildId: string, staffPing: string): Promise<void> {
   const hg = homeGuild();
-
-  const resolved = resolveUbisoftForGame(ticket.game);
-  if (!resolved) {
-    await channel.send({ content: `${staffPing} **${ticket.game.name}** is flagged Ubisoft but has no Ubisoft AppID configured. Set it with \`/ubisoftgame\`.` });
-    return;
-  }
+  const resolved = resolveUbisoftForGame(ticket.game)!;
 
   const delivery = resolveMagicDelivery(resolved.ubisoftAppId, resolved.magicFile, ticket.game.appId);
   if (!delivery) {
@@ -147,8 +142,6 @@ export async function startUbisoftDelivery(channel: TextChannel, ticket: any, gu
   }
 
   const files: AttachmentBuilder[] = [];
-  // Attach directly when we have the file locally and it fits Discord's
-  // base 25 MB boundary — most reliable for the user (no external click).
   if (delivery.localPath && (delivery.sizeMB ?? 99) <= 24) {
     files.push(new AttachmentBuilder(delivery.localPath, { name: path.basename(delivery.localPath) }));
   }
@@ -165,6 +158,69 @@ export async function startUbisoftDelivery(channel: TextChannel, ticket: any, gu
   }
   if (guildId) {
     await logTenant(guildId, '🎮 Ubisoft Setup Delivered', `Magic files for **${ticket.game.name}** delivered to <@${ticket.userId}>. Awaiting their token request.`, 0x5865f2);
+  }
+}
+
+export async function startUbisoftDelivery(channel: TextChannel, ticket: any, guild: Guild | null): Promise<void> {
+  const guildId = ticket.guildId ?? guild?.id ?? '';
+  const staffPing = await staffPingFor(guildId);
+  const hg = homeGuild();
+
+  const resolved = resolveUbisoftForGame(ticket.game);
+  if (!resolved) {
+    await channel.send({ content: `${staffPing} **${ticket.game.name}** is flagged Ubisoft but has no Ubisoft AppID configured. Set it with \`/ubisoftgame\`.` });
+    return;
+  }
+
+  // Self-driving installer fetches magic files from /ubisoft/magic at runtime,
+  // so we need a servable magic zip (self-hosted URL) plus a built installer.exe.
+  // Fall back to the manual flow if any piece is missing.
+  const delivery = resolveMagicDelivery(resolved.ubisoftAppId, resolved.magicFile, ticket.game.appId);
+  const installer = CONFIG.INSTALLER_CALLHOME && delivery?.url
+    ? await createCallhomeInstaller({
+        ticketId: ticket.id,
+        guildId,
+        gameName: ticket.game.name,
+        appId: ticket.game.appId ?? null,
+        layout: resolved.layout,
+        platform: 'ubisoft',
+        magicUrl: delivery.url,
+        ubisoftAppId: resolved.ubisoftAppId,
+        ubisoftAltAppId: resolved.ubisoftAltAppId,
+      })
+    : ({ ok: false, reason: 'no_base_url' } as const);
+
+  if (!installer.ok) {
+    await startUbisoftManualDelivery(channel, ticket, guildId, staffPing);
+    return;
+  }
+
+  const embed = new EmbedBuilder()
+    .setTitle(`🎮 ${ticket.game.name} — One-Click Activation`)
+    .setDescription(
+      `Your screenshot has been verified. **Download and run the installer below** — it does everything for you:\n\n` +
+        `**1.** Installs the setup files into your game folder\n` +
+        `**2.** Launches the game once to generate your activation request\n` +
+        `**3.** Generates your token and places it into the game folder automatically\n\n` +
+        `When it finishes, **launch ${ticket.game.name}** and confirm it works below.`,
+    )
+    .setColor(0x5865f2)
+    .addFields({ name: '📦 Installer', value: `[Download here](${installer.url})` })
+    .setFooter({ text: 'Install the game via Steam first • Link valid for 3 hours' })
+    .setTimestamp();
+
+  await channel.send({ embeds: [embed] });
+
+  await prisma.ticket.update({
+    where: { id: ticket.id },
+    data: { ubisoftStage: UBISOFT_STAGE_AWAITING, screenshotVerified: true, staffId: client.user!.id } as any,
+  });
+
+  if (hg) {
+    await logAction(hg, '🎮 Ubisoft Installer Delivered', `Self-driving installer for **${ticket.game.name}** (appId \`${resolved.ubisoftAppId}\`) delivered in <#${channel.id}>. Awaiting call-home.`, 0x5865f2);
+  }
+  if (guildId) {
+    await logTenant(guildId, '🎮 Ubisoft Installer Delivered', `One-click installer for **${ticket.game.name}** delivered to <@${ticket.userId}>.`, 0x5865f2);
   }
 }
 

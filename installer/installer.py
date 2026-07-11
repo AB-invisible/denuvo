@@ -2372,6 +2372,263 @@ def _derive_game_name(self_name: str, game_dir: Path) -> str:
     return game_dir.name
 
 
+# ─── Self-driving EA / Ubisoft "call-home" flow ──────────────────
+# A different kind of zip: installer.exe + payload-manifest.json with
+# flow="denuvo-callhome". No steam_appid.txt, no Goldberg payload. Instead the
+# installer downloads the magic files from the bot, drops them into the Steam
+# game folder, launches the game once so it emits a token_req, kills it, POSTs
+# token_req to /activate/<key> to mint the token, and writes token.ini back into
+# the game folder. Hands-off — the user only confirms it works afterward.
+
+def _callhome_target_dir(game_dir: Path, layout: str) -> Path:
+    if layout == "bin64":
+        return game_dir / "Bin" / "Win64"
+    return game_dir
+
+
+def _callhome_candidate_dirs(game_dir: Path, target_dir: Path) -> list[Path]:
+    dirs: list[Path] = []
+    for d in (game_dir, target_dir, game_dir / "Bin" / "Win64", game_dir / "Binaries" / "Win64"):
+        if d and d not in dirs:
+            dirs.append(d)
+    return dirs
+
+
+def _find_token_req(dirs: list[Path], names: list[str]) -> "tuple[Path, str] | None":
+    for d in dirs:
+        try:
+            if not d or not d.exists():
+                continue
+        except OSError:
+            continue
+        for n in names:
+            p = d / n
+            try:
+                if p.is_file():
+                    txt = p.read_text(encoding="utf-8", errors="ignore").strip()
+                    if txt:
+                        return p, txt
+            except OSError:
+                continue
+    return None
+
+
+def _wait_for_token_req(dirs: list[Path], names: list[str], timeout_s: int) -> "tuple[Path, str] | None":
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        found = _find_token_req(dirs, names)
+        if found:
+            return found
+        time.sleep(2)
+    return None
+
+
+def _launch_steam_game(app_id: str) -> None:
+    try:
+        os.startfile(f"steam://rungameid/{app_id}")  # type: ignore[attr-defined]
+    except Exception:
+        try:
+            subprocess.Popen(["cmd", "/c", "start", "", f"steam://rungameid/{app_id}"])
+        except Exception:
+            pass
+
+
+def _kill_game_processes(game_dir: Path, target_dir: Path) -> None:
+    names: set[str] = set()
+    for d in {game_dir, target_dir, game_dir / "Bin" / "Win64", game_dir / "Binaries" / "Win64"}:
+        try:
+            if d and d.exists():
+                for p in d.iterdir():
+                    if p.is_file() and p.suffix.lower() == ".exe":
+                        names.add(p.name)
+        except OSError:
+            continue
+    for name in names:
+        try:
+            subprocess.run(["taskkill", "/F", "/IM", name], capture_output=True, timeout=15)
+        except Exception:
+            pass
+
+
+def _extract_magic(zip_path: Path, dest: Path) -> None:
+    dest_res = str(dest.resolve())
+    with zipfile.ZipFile(zip_path) as zf:
+        for info in zf.infolist():
+            name = info.filename
+            if not name or name.endswith("/"):
+                continue
+            rel = name.replace("\\", "/")
+            out = (dest / rel).resolve()
+            if not str(out).startswith(dest_res):
+                continue  # skip path-traversal entries
+            out.parent.mkdir(parents=True, exist_ok=True)
+            if out.exists():
+                _clear_readonly(out)
+            with zf.open(info) as src, open(out, "wb") as f:
+                shutil.copyfileobj(src, f)
+
+
+def _post_activate(url: str, token_req: str, timeout: float = 180.0) -> dict:
+    body = json.dumps({"token_req": token_req}).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={"Content-Type": "application/json", "User-Agent": "GameGen-Installer/1.0"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", "ignore")
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8", "ignore")
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
+    try:
+        return json.loads(raw)
+    except (ValueError, json.JSONDecodeError):
+        return {"ok": False, "message": (raw[:300] or "Unexpected response from server.")}
+
+
+def run_callhome_flow(manifest: dict, here: Path, self_path: Path) -> None:
+    platform = str(manifest.get("platform") or "").lower()  # noqa: F841 (kept for clarity/logging)
+    app_id = str(manifest.get("app_id") or manifest.get("steam_appid") or "").strip()
+    game_name = manifest.get("game_name") or (f"App {app_id}" if app_id else "your game")
+    layout = str(manifest.get("layout") or "flat").lower()
+    magic_url = str(manifest.get("magic_url") or "").strip()
+    activate_url = str(manifest.get("activate_url") or "").strip()
+    names = manifest.get("token_req_names") or ["token_req.txt"]
+    if not isinstance(names, list) or not names:
+        names = ["token_req.txt"]
+
+    if not app_id.isdigit() or not magic_url or not activate_url:
+        gamegen_msgbox(
+            "This installer is missing required configuration and can't run.\n\n"
+            "Please re-open your ticket on Discord for a fresh installer.",
+            icon=MB_ICON_ERROR,
+        )
+        sys.exit(1)
+
+    # 1. Locate the Steam game.
+    game_dir = find_game_folder(app_id)
+    if not game_dir:
+        gamegen_msgbox(
+            f"Couldn't find {game_name} (App ID {app_id}) in any Steam library.\n\n"
+            "Install the game through Steam first, then run this installer again.",
+            icon=MB_ICON_ERROR,
+        )
+        sys.exit(1)
+
+    target_dir = _callhome_target_dir(game_dir, layout)
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+
+    # 2. Ensure we can write; elevate if needed.
+    if not can_write_to(target_dir):
+        if is_admin():
+            gamegen_msgbox(
+                f"Even as administrator, the installer can't write to:\n\n{target_dir}\n\n"
+                "Check that the folder isn't read-only, then try again.",
+                icon=MB_ICON_ERROR,
+            )
+            sys.exit(1)
+        relaunch_elevated()
+        return
+
+    # 3. Download + install the setup (magic) files.
+    tmp = Path(tempfile.mkdtemp(prefix="gamegen-magic-"))
+    magic_zip = tmp / "magic.zip"
+    if not _download(magic_url, magic_zip, timeout=300.0):
+        gamegen_msgbox(
+            "Couldn't download the setup files. Check your internet connection and run the installer again.",
+            icon=MB_ICON_ERROR,
+        )
+        sys.exit(1)
+    try:
+        _extract_magic(magic_zip, target_dir)
+    except Exception as e:
+        gamegen_msgbox(f"The setup files couldn't be installed.\n\n{e}", icon=MB_ICON_ERROR)
+        sys.exit(1)
+
+    # 4. Clear any stale token_req, then launch the game so it emits a fresh one.
+    dirs = _callhome_candidate_dirs(game_dir, target_dir)
+    for d in dirs:
+        for n in names:
+            try:
+                (d / n).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    gamegen_msgbox(
+        f"Setup files installed for {game_name}.\n\n"
+        "The game will now start briefly to generate your activation request, then close automatically.\n\n"
+        "Click OK to continue — this only takes a moment.",
+    )
+    _launch_steam_game(app_id)
+
+    found = _wait_for_token_req(dirs, names, timeout_s=180)
+    if not found:
+        # Some titles need an in-game click before they write the request.
+        gamegen_msgbox(
+            f"{game_name} is starting. If a window or prompt appears, click through it, then return here.\n\n"
+            "Click OK and the installer will keep watching for the activation request.",
+        )
+        found = _wait_for_token_req(dirs, names, timeout_s=180)
+
+    _kill_game_processes(game_dir, target_dir)
+
+    if not found:
+        gamegen_msgbox(
+            "Couldn't detect the activation request from the game.\n\n"
+            "Please launch the game once, let it open, then paste your token_req into your Discord ticket "
+            "and the team will finish your activation.",
+            icon=MB_ICON_ERROR,
+        )
+        sys.exit(1)
+
+    _, token_req = found
+
+    # 5. Mint the token via the bot.
+    result = _post_activate(activate_url, token_req)
+    if not result.get("ok"):
+        gamegen_msgbox(
+            result.get("message") or "Activation failed. Please try again or contact staff on Discord.",
+            icon=MB_ICON_ERROR,
+        )
+        sys.exit(1)
+
+    # 6. Write token.ini into the game folder.
+    token_ini = result.get("tokenIni") or ""
+    filename = result.get("filename") or "token.ini"
+    if "/" in filename or "\\" in filename or ".." in filename:
+        filename = "token.ini"
+    try:
+        out = target_dir / filename
+        if out.exists():
+            _clear_readonly(out)
+        out.write_text(token_ini, encoding="utf-8")
+    except OSError as e:
+        gamegen_msgbox(
+            f"Your token was generated but couldn't be saved automatically.\n\n{e}\n\n"
+            "Contact staff on Discord and they'll send it to you directly.",
+            icon=MB_ICON_ERROR,
+        )
+        sys.exit(1)
+
+    # 7. Success — clean up the installer.
+    gamegen_msgbox(
+        f"✅ {game_name} is activated!\n\n"
+        "Launch the game from Steam, then head back to your Discord ticket and confirm it's working.",
+    )
+    try:
+        shutil.rmtree(tmp, ignore_errors=True)
+    except Exception:
+        pass
+    nuclear_self_destruct(here, self_path)
+    sys.exit(0)
+
+
 def main() -> None:
     here = payload_root()
     self_name = Path(sys.argv[0]).name
@@ -2417,6 +2674,15 @@ def main() -> None:
     # consequence is the test-mode branch below deploys to a fake folder
     # on the Desktop instead of the real game, which is a no-op).
     manifest = _detect_thin_manifest(here)
+
+    # Self-driving EA / Ubisoft installer: a different manifest shape that
+    # downloads magic files, launches the game to capture token_req, mints the
+    # token via /activate, and drops token.ini — then returns. It does NOT use
+    # the Steam Goldberg payload / steam_appid.txt path below.
+    if manifest and manifest.get("flow") == "denuvo-callhome":
+        run_callhome_flow(manifest, here, self_path)
+        return
+
     test_mode = bool(manifest and manifest.get("_test_mode"))
     if manifest and not test_mode:
         ok, reason = _validate_installer_key(manifest)

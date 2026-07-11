@@ -35,6 +35,7 @@ import {
 } from './eaCatalog';
 import { mintEaToken, eaServiceConfigured } from './eaService';
 import { resolvePublicBaseUrl } from './downloadHost';
+import { createCallhomeInstaller } from './installerPackage';
 
 export const EA_STAGE_AWAITING = 'AWAITING_TICKET';
 export const EA_STAGE_DONE = 'DONE';
@@ -151,11 +152,9 @@ export async function sendEaMagicPackage(
   return { ok: true, ...delivery };
 }
 
-export async function startEaDelivery(channel: TextChannel, ticket: any, guild: Guild | null): Promise<void> {
-  const guildId = ticket.guildId ?? guild?.id ?? '';
-  const staffPing = await staffPingFor(guildId);
+/** Fallback to the original manual magic-zip flow (raw zip + paste token_req). */
+async function startEaManualDelivery(channel: TextChannel, ticket: any, guildId: string, staffPing: string): Promise<void> {
   const hg = homeGuild();
-
   const result = await sendEaMagicPackage(channel, ticket.game);
   if (!result.ok) {
     const prefix = result.reason === 'not_ea' ? staffPing : `${staffPing} Screenshot verified for **${ticket.game.name}**, but the`;
@@ -167,17 +166,65 @@ export async function startEaDelivery(channel: TextChannel, ticket: any, guild: 
     });
     if (result.reason === 'missing_zip' && hg) {
       const resolved = resolveEaForGame(ticket.game);
-      await logAction(
-        hg,
-        '⚠️ EA Magic Files Missing',
-        `No setup zip for **${ticket.game.name}** (contentId \`${resolved?.eaContentId ?? '?'}\`) in <#${channel.id}>.`,
-        0xed4245,
-      );
+      await logAction(hg, '⚠️ EA Magic Files Missing', `No setup zip for **${ticket.game.name}** (contentId \`${resolved?.eaContentId ?? '?'}\`) in <#${channel.id}>.`, 0xed4245);
     }
     return;
   }
+  await prisma.ticket.update({
+    where: { id: ticket.id },
+    data: { eaStage: EA_STAGE_AWAITING, screenshotVerified: true, staffId: client.user!.id } as any,
+  });
+}
 
-  const resolved = resolveEaForGame(ticket.game)!;
+export async function startEaDelivery(channel: TextChannel, ticket: any, guild: Guild | null): Promise<void> {
+  const guildId = ticket.guildId ?? guild?.id ?? '';
+  const staffPing = await staffPingFor(guildId);
+  const hg = homeGuild();
+
+  const resolved = resolveEaForGame(ticket.game);
+  if (!resolved) {
+    await channel.send({ content: `${staffPing} **${ticket.game.name}** is not configured as an EA title. Use \`/eagame set\` first.` });
+    return;
+  }
+
+  // The self-driving installer fetches the setup files from /ea/magic at
+  // runtime, so we need the magic zip servable (self-hosted URL) plus a built
+  // installer.exe. If any piece is missing, fall back to the manual flow.
+  const delivery = resolveMagicDelivery(resolved.eaContentId, resolved.magicFile, ticket.game.appId, resolved.magicUrl);
+  const installer = CONFIG.INSTALLER_CALLHOME && delivery?.url
+    ? await createCallhomeInstaller({
+        ticketId: ticket.id,
+        guildId,
+        gameName: ticket.game.name,
+        appId: ticket.game.appId ?? null,
+        layout: resolved.layout,
+        platform: 'ea',
+        magicUrl: delivery.url,
+        eaContentId: resolved.eaContentId,
+        eaEngine: resolved.eaEngine,
+      })
+    : ({ ok: false, reason: 'no_base_url' } as const);
+
+  if (!installer.ok) {
+    await startEaManualDelivery(channel, ticket, guildId, staffPing);
+    return;
+  }
+
+  const embed = new EmbedBuilder()
+    .setTitle(`🎮 ${ticket.game.name} — One-Click Activation`)
+    .setDescription(
+      `Your screenshot has been verified. **Download and run the installer below** — it does everything for you:\n\n` +
+        `**1.** Installs the setup files into your game folder\n` +
+        `**2.** Launches the game once to generate your activation request\n` +
+        `**3.** Generates your token and places it into the game folder automatically\n\n` +
+        `When it finishes, **launch ${ticket.game.name}** and confirm it works below.`,
+    )
+    .setColor(0x5865f2)
+    .addFields({ name: '📦 Installer', value: `[Download here](${installer.url})` })
+    .setFooter({ text: 'Install the game via Steam first • Link valid for 3 hours' })
+    .setTimestamp();
+
+  await channel.send({ embeds: [embed] });
 
   await prisma.ticket.update({
     where: { id: ticket.id },
@@ -185,15 +232,10 @@ export async function startEaDelivery(channel: TextChannel, ticket: any, guild: 
   });
 
   if (hg) {
-    await logAction(
-      hg,
-      '🎮 EA Setup Delivered',
-      `Delivered setup files for **${ticket.game.name}** (contentId \`${resolved.eaContentId}\`) in <#${channel.id}>. Awaiting ticket.`,
-      0x5865f2,
-    );
+    await logAction(hg, '🎮 EA Installer Delivered', `Self-driving installer for **${ticket.game.name}** (contentId \`${resolved.eaContentId}\`) delivered in <#${channel.id}>. Awaiting call-home.`, 0x5865f2);
   }
   if (guildId) {
-    await logTenant(guildId, '🎮 EA Setup Delivered', `Setup files for **${ticket.game.name}** delivered to <@${ticket.userId}>. Awaiting ticket.`, 0x5865f2);
+    await logTenant(guildId, '🎮 EA Installer Delivered', `One-click installer for **${ticket.game.name}** delivered to <@${ticket.userId}>.`, 0x5865f2);
   }
 }
 

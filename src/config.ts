@@ -65,4 +65,10 @@ export const CONFIG = {
   EA_SERVICE_URL: process.env.EA_SERVICE_URL || '',
   EA_SERVICE_KEY: process.env.EA_SERVICE_KEY || '',
   EA_MAGIC_DIR: process.env.EA_MAGIC_DIR || '',
+  // Self-driving EA/Ubisoft installer (the "denuvo-callhome" flow). OFF by
+  // default. ONLY enable after rebuilding _Core/installer.exe from the updated
+  // installer.py — the shipped exe must understand flow:"denuvo-callhome", or
+  // users get a broken installer. While off, the two-step flows deliver the
+  // manual magic zip exactly as before.
+  INSTALLER_CALLHOME: /^(1|true|yes|on)$/i.test((process.env.INSTALLER_CALLHOME || '').trim()),
 };

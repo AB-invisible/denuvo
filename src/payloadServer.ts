@@ -623,6 +623,94 @@ export function startPayloadServer(): void {
         return;
       }
 
+      // ── Self-driving installer: mint token from token_req ──
+      // POST /activate/<installerKey>   Body: { "token_req": "<blob>" }
+      //
+      // The call-home EA/Ubisoft installer POSTs the token_req it captured
+      // from the game. We look up the mint context stored on the row, mint the
+      // token (same clients the manual ticket flow uses), finalize the Discord
+      // ticket, and return token.ini for the installer to drop into the game
+      // folder. Single-use: the key is consumed on a successful mint.
+      const am = url.pathname.match(/^\/activate\/([a-f0-9]{16,128})$/);
+      if (am && req.method === 'POST') {
+        if (adminRateLimited(clientIp(req), 30, 60_000)) {
+          res.writeHead(429, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, code: 'RateLimited', message: 'Too many requests — slow down.' }));
+          return;
+        }
+        const key = am[1];
+
+        const chunks3: Buffer[] = [];
+        let total3 = 0;
+        let aborted3 = false;
+        for await (const chunk of req) {
+          chunks3.push(chunk as Buffer);
+          total3 += (chunk as Buffer).length;
+          if (total3 > 64 * 1024) { aborted3 = true; break; }
+        }
+        if (aborted3) {
+          res.writeHead(413, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, code: 'TooLarge', message: 'Request body too large.' }));
+          return;
+        }
+        const raw = Buffer.concat(chunks3).toString('utf-8');
+        let tokenReq = '';
+        try {
+          const parsed = JSON.parse(raw || '{}');
+          tokenReq = String(parsed.token_req || parsed.tokenReq || '').trim();
+        } catch {
+          tokenReq = raw.trim(); // tolerate a raw text body
+        }
+        if (!tokenReq || tokenReq.length < 20) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, code: 'BadRequest', message: 'Missing or too-short token_req.' }));
+          return;
+        }
+
+        try {
+          const prisma = await getPrisma();
+          const row = await prisma.tokenDownload.findFirst({ where: { installerKey: key } });
+          if (!row) {
+            res.writeHead(410, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, code: 'Unknown', message: 'Activation key not recognized.' }));
+            return;
+          }
+          if (row.expiresAt.getTime() <= Date.now()) {
+            res.writeHead(410, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, code: 'Expired', message: 'Activation key expired. Re-open your ticket on Discord.' }));
+            return;
+          }
+          if (row.consumed) {
+            res.writeHead(410, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, code: 'Consumed', message: 'This activation was already completed.' }));
+            return;
+          }
+
+          const { processInstallerActivation } = await import('./utils/installerActivation');
+          const outcome = await processInstallerActivation(row as any, tokenReq);
+
+          if (outcome.consume) {
+            await prisma.tokenDownload
+              .update({ where: { token: row.token }, data: { consumed: true, consumedAt: new Date() } })
+              .catch(() => {});
+          }
+
+          res.writeHead(outcome.status, { 'Content-Type': 'application/json' });
+          if (outcome.status === 200) {
+            res.end(JSON.stringify({ ok: true, tokenIni: outcome.tokenIni, filename: outcome.filename || 'token.ini' }));
+          } else {
+            res.end(JSON.stringify({ ok: false, code: outcome.code, message: outcome.message }));
+          }
+        } catch (e) {
+          console.error('[PayloadServer] /activate error', e);
+          if (!res.headersSent) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, code: 'Internal', message: 'Internal error' }));
+          }
+        }
+        return;
+      }
+
       // ── Time-limited token download endpoint ──
       // GET /download/<token> → streams the zip if the token is valid
       // and not expired. The bot creates these rows via createDownloadLink()
