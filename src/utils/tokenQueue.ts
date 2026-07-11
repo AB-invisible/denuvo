@@ -46,7 +46,7 @@ export async function enqueueTokenGen(
           new EmbedBuilder()
             .setTitle('⏳ You’re in the queue')
             .setDescription(
-              `I generate tokens **one at a time** so we stay fast *and* don’t trip Steam’s rate limits.\n\n` +
+              `I generate tokens **one at a time** so we stay fast and don’t overload Steam or steampass.\n\n` +
                 `**Your position:** #${ahead + 1} in line\n` +
                 `Your **${label}** token will start **automatically** when it’s your turn — you don’t need to do anything.`,
             )

@@ -20,6 +20,9 @@ export const CONFIG = {
   // giving up. Caps the burst one bad game can cause (each account = a full
   // steampass login flow). refresh_token/owned/steamauth attempts don't count.
   STEAMPASS_MAX_ACCOUNTS_PER_GEN: process.env.STEAMPASS_MAX_ACCOUNTS_PER_GEN !== undefined ? Number(process.env.STEAMPASS_MAX_ACCOUNTS_PER_GEN) : 2,
+  // Hard ceiling on steampass API calls per UTC day (login + profile + guard).
+  // Once hit, only refresh_token gens run until midnight UTC.
+  STEAMPASS_DAILY_BUDGET: process.env.STEAMPASS_DAILY_BUDGET !== undefined ? Number(process.env.STEAMPASS_DAILY_BUDGET) : 80,
   STAFF_ROLE_ID: process.env.STAFF_ROLE_ID || '1484195272270811226',
   DONATOR_ROLE_ID: process.env.DONATOR_ROLE_ID || '1485995423633117224',
   BRONZE_ROLE_ID: process.env.BRONZE_ROLE_ID || '1486006821775872222',

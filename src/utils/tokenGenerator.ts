@@ -21,6 +21,8 @@ import { CONFIG } from '../config';
 import { resolveServerConfig } from './tenant';
 import { isSteampassBlocked, tripSteampassBreaker, resetSteampassBreaker } from './steampassCircuit';
 import { acquireSteampassSlot } from './steampassRateLimiter';
+import { isSteampassBudgetExhausted, assertSteampassBudget, recordSteampassApiCall, steampassDailyBudgetRemaining, getSteampassLedgerJson, steampassCooldownsJson } from './steampassLedger';
+import { getCachedGuardCode, setCachedGuardCode } from './steampassGuardCache';
 
 // Resolve Python — env override, venv, or system python3.
 function resolvePython(): string {
@@ -490,6 +492,43 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
     const railwayDomainEnv = process.env.RAILWAY_PUBLIC_DOMAIN || '';
     console.log(`[TokenGen] Forwarding PUBLIC_URL='${publicUrlEnv}' RAILWAY_PUBLIC_DOMAIN='${railwayDomainEnv}' to Python`);
 
+    // ── Steampass human-mode: budget, endpoint pacing, guard-code reuse ──
+    let steampassDisabledFinal = steampassDisabled;
+    let cachedGuardCode = '';
+    let cachedGuardUntil = '';
+    const mightCallSteampass = steampassUuid !== 'FAKE' && !cachedRefreshToken && spLogin;
+
+    if (mightCallSteampass && !steampassDisabledFinal) {
+      const guardHit = await getCachedGuardCode(spLogin, steampassUuid);
+      if (guardHit) {
+        cachedGuardCode = guardHit.code;
+        cachedGuardUntil = guardHit.validUntil;
+        console.log(`[TokenGen] Reusing cached steampass guard code (valid until ${cachedGuardUntil})`);
+      }
+
+      if (await isSteampassBudgetExhausted()) {
+        steampassDisabledFinal = true;
+        console.warn('[TokenGen] Daily steampass API budget exhausted — refresh_token-only mode for this gen');
+      } else {
+        const endpoints: ('login' | 'profile' | 'guard')[] = [];
+        if (!cachedToken) endpoints.push('login');
+        if (!cachedSteamLogin || !cachedSteamPassword) {
+          endpoints.push('profile');
+          if (!cachedGuardCode) endpoints.push('guard');
+        } else if (cachedGuarded && !cachedGuardCode) {
+          endpoints.push('guard');
+        }
+        if (endpoints.length) {
+          const budgetLeft = await steampassDailyBudgetRemaining();
+          console.log(`[TokenGen] Steampass budget today: ${budgetLeft} call(s) remaining`);
+          const ok = await assertSteampassBudget(endpoints.length, `${gameName} (${appId})`);
+          if (!ok) steampassDisabledFinal = true;
+        }
+      }
+    }
+
+    const steampassLedgerJson = spLogin ? await getSteampassLedgerJson(spLogin) : '{}';
+
     const env = buildPythonEnv({
       STEAMPASS_LOGIN: spLogin,
       STEAMPASS_PASSWORD: spPassword,
@@ -510,7 +549,14 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
       // When the circuit breaker is open, Python skips every steampass call
       // (/auth/login, /profile/product-credentials, /email/code/main) and
       // only attempts the cached refresh_token login.
-      STEAMPASS_DISABLED: steampassDisabled ? 'true' : '',
+      STEAMPASS_DISABLED: steampassDisabledFinal ? 'true' : '',
+      // Reuse a guard code steampass already issued (within valid_until).
+      STEAMPASS_CACHED_GUARD_CODE: cachedGuardCode,
+      STEAMPASS_CACHED_GUARD_UNTIL: cachedGuardUntil,
+      // Last-call timestamps + cooldown table — Python waits before each
+      // steampass endpoint so calls inside one gen are spaced like a human.
+      STEAMPASS_LEDGER_STATE: steampassLedgerJson,
+      STEAMPASS_LEDGER_COOLDOWNS: steampassCooldownsJson(),
       // JSON { steamLogin: refresh_token } of every session this steampass
       // account has cached, so a cold gen can reuse a token from another game
       // on the same Steam account and skip the guard-code call.
@@ -526,7 +572,7 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
     // cached refresh_token, real UUID, breaker closed) goes through the global
     // one-at-a-time rate limiter so we never burst the site. Warm gens
     // (refresh_token cached) make zero steampass calls and run immediately.
-    const willUseSteampass = steampassUuid !== 'FAKE' && !steampassDisabled && !cachedRefreshToken;
+    const willUseSteampass = steampassUuid !== 'FAKE' && !steampassDisabledFinal && !cachedRefreshToken;
     const releaseSlot = willUseSteampass ? await acquireSteampassSlot(`AppID ${appId}`) : null;
     const releaseOnce = () => { if (releaseSlot) releaseSlot(); };
 
@@ -647,6 +693,19 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
           // neither trip nor reset it.
           if (meta && (meta.session_source === 'steampass' || meta.session_source === 'cached_creds')) {
             await resetSteampassBreaker();
+          }
+
+          // Persist guard-code reuse window + ledger counts from this run.
+          if (meta && spLogin && steampassUuid !== 'FAKE') {
+            if (meta.guard_code && meta.guard_valid_until) {
+              await setCachedGuardCode(spLogin, steampassUuid, meta.guard_code, meta.guard_valid_until);
+            }
+            const calls: string[] = Array.isArray(meta.steampass_calls) ? meta.steampass_calls : [];
+            for (const ep of calls) {
+              if (ep === 'login' || ep === 'profile' || ep === 'guard') {
+                await recordSteampassApiCall(spLogin, ep);
+              }
+            }
           }
 
           // Persist a freshly-captured steampass bearer so future gens on
