@@ -136,12 +136,25 @@ export async function generateTokenWithRetry(
   try {
     const {
       getAvailableSteamAuthAccounts,
+      hasLinkedSteamAuthAccounts,
       recordSteamAuthUsage,
       saveSteamAuthRefreshToken,
       recordSteamAuthFailure,
       resolveSteamAuthLoginMaterial,
       steamAuthEnabled,
     } = await import('./steamAuthAccounts');
+
+    const steamAuthLinked = await hasLinkedSteamAuthAccounts(appId, ownedGuildKey);
+
+    if (steamAuthLinked && !steamAuthEnabled()) {
+      return {
+        zipPath: null,
+        logs: 'SteamAuth account(s) are linked for this game but STEAMAUTH_API_KEY is not set in env.',
+        installerKey: '',
+        poolAccountId: null,
+        exhausted: false,
+      };
+    }
 
     if (steamAuthEnabled()) {
       const authAccts = await getAvailableSteamAuthAccounts(appId, ownedGuildKey);
@@ -203,6 +216,15 @@ export async function generateTokenWithRetry(
           await recordSteamAuthFailure(authAcct.id);
           console.warn(`[TokenGen:SteamAuth] Account #${authAcct.id} failed — trying next / falling back`);
         }
+      } else if (steamAuthLinked) {
+        console.warn(`[TokenGen:SteamAuth] All linked accounts exhausted for AppID ${appId}`);
+        return {
+          zipPath: null,
+          logs: 'All linked SteamAuth accounts have used their daily quota for this game.',
+          installerKey: '',
+          poolAccountId: null,
+          exhausted: true,
+        };
       }
     }
   } catch (e) {
@@ -238,11 +260,14 @@ export async function generateTokenWithRetry(
   }
 
   if (CONFIG.STEAMPASS_DISABLED) {
+    const { hasLinkedSteamAuthAccounts } = await import('./steamAuthAccounts');
+    const linked = await hasLinkedSteamAuthAccounts(appId, ownedGuildKey);
     console.log('[TokenGen] Steampass disabled — skipping pool / tenant login paths');
     return {
       zipPath: null,
-      logs:
-        'Steampass is disabled. Link SteamAuth accounts (`/steamauth sync`) or register BYO Steam accounts (`/steamaccount add`).',
+      logs: linked
+        ? 'Linked SteamAuth account(s) failed to generate a token. Check `/steamauth list` and SteamAuth API health (`/steamauth status`).'
+        : 'Steampass is disabled. Link SteamAuth accounts (`/steamauth link` or `/steamauth sync`) or register BYO Steam accounts (`/steamaccount add`).',
       installerKey: '',
       poolAccountId: null,
       exhausted: false,

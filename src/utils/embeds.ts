@@ -2,6 +2,8 @@ import { EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, StringSelectMe
 import { Game, Ticket, Cooldown, Subscription } from '@prisma/client';
 import { CONFIG } from '../config';
 import { getActiveGames, REGEN_TIME, processGuildRestocks, getServerStockMapForGuild } from './gameManager';
+import { usesAccountSyncedStock } from './accountCapacity';
+import { isUbisoftGame } from './ubisoftCatalog';
 import { getEstimatedWaitTime, getStaffStats } from './stats';
 import { getActiveStaffCount } from './dutyManager';
 import { getPanelAssetUrl } from './downloadHost';
@@ -60,12 +62,19 @@ export async function createMainPanel(guildId?: string) {
   // Per-server stock: fetch all ServerStock entries for this guild
   let serverStockMap = new Map<number, { stock: number; lastDepletedAt: Date | null }>();
   if (guildId) {
+    if (usesAccountSyncedStock(guildId)) {
+      const { syncAllOwnerGameStock } = await import('./accountCapacity');
+      await syncAllOwnerGameStock(guildId);
+    }
     serverStockMap = await getServerStockMapForGuild(guildId);
   }
 
+  const accountSynced = guildId ? usesAccountSyncedStock(guildId) : false;
+
   const totalStock = allGames.reduce((acc: number, game: GameWithCount) => {
     const ss = serverStockMap.get(game.id);
-    return acc + (ss ? ss.stock : 5);
+    const authoritative = accountSynced && !!game.appId && !isUbisoftGame(game);
+    return acc + (ss ? ss.stock : (authoritative ? 0 : 5));
   }, 0);
   const totalReserved = allGames.reduce((acc: number, game: GameWithCount) => {
     return acc + (serverReservedMap.get(game.id) || 0);
@@ -111,7 +120,8 @@ export async function createMainPanel(guildId?: string) {
       .addOptions(
         chunk.map((game: GameWithCount) => {
           const ss = serverStockMap.get(game.id);
-          const gameStock = ss ? ss.stock : 5;
+          const authoritative = accountSynced && !!game.appId && !isUbisoftGame(game);
+          const gameStock = ss ? ss.stock : (authoritative ? 0 : 5);
           const gameLastDepleted = ss ? ss.lastDepletedAt : null;
           const reserved = serverReservedMap.get(game.id) || 0;
           const availableStock = Math.max(0, gameStock - reserved);

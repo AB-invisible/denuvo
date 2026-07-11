@@ -59,7 +59,7 @@ export async function execute(interaction: any): Promise<void> {
     try {
       const { linked, skipped } = await syncSteamAuthLinks('');
       const { syncAllOwnerGameStock } = await import('../utils/accountCapacity');
-      await syncAllOwnerGameStock();
+      await syncAllOwnerGameStock(CONFIG.OWNER_GUILD_ID, { forceRaise: true });
       const { refreshAllPanels } = await import('../utils/panelManager');
       refreshAllPanels();
       await interaction.editReply({
@@ -148,7 +148,7 @@ export async function execute(interaction: any): Promise<void> {
       const gameName = game?.name || `AppID ${appId}`;
       const cap = CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
       const { syncStockForAppId } = await import('../utils/accountCapacity');
-      const remaining = await syncStockForAppId(appId);
+      const remaining = await syncStockForAppId(appId, CONFIG.OWNER_GUILD_ID, { forceRaise: true });
       const { refreshAllPanels } = await import('../utils/panelManager');
       refreshAllPanels();
       await interaction.editReply({

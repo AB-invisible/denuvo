@@ -148,8 +148,17 @@ export async function getDefaultStockForApp(appId: number, guildId: string): Pro
   return breakdown.totalCapacity;
 }
 
+export interface SyncStockOptions {
+  /** When true, set stock to full account capacity even if excludeRegen capped it. */
+  forceRaise?: boolean;
+}
+
 /** Push account-derived remaining tokens into ServerStock for one game. */
-export async function syncStockForGame(gameId: number, guildId: string): Promise<number> {
+export async function syncStockForGame(
+  gameId: number,
+  guildId: string,
+  opts: SyncStockOptions = {},
+): Promise<number> {
   if (!usesAccountSyncedStock(guildId)) return -1;
 
   const game = await prisma.game.findUnique({ where: { id: gameId } });
@@ -168,8 +177,11 @@ export async function syncStockForGame(gameId: number, guildId: string): Promise
   const current = existing?.stock ?? remaining;
 
   // When regen is excluded (or staff manually depleted), never raise stock from
-  // account sync — only allow it to drop if quotas are exhausted.
-  const newStock = game.excludeRegen ? Math.min(remaining, current) : remaining;
+  // account sync — only allow it to drop if quotas are exhausted. forceRaise
+  // bypasses this when staff adds a new account source (/steamauth link, etc.).
+  const newStock = opts.forceRaise || !game.excludeRegen
+    ? remaining
+    : Math.min(remaining, current);
 
   await prisma.serverStock.upsert({
     where: { gameId_guildId: { gameId, guildId } },
@@ -188,14 +200,21 @@ export async function syncStockForGame(gameId: number, guildId: string): Promise
   return newStock;
 }
 
-export async function syncStockForAppId(appId: number, guildId: string = CONFIG.OWNER_GUILD_ID): Promise<number> {
+export async function syncStockForAppId(
+  appId: number,
+  guildId: string = CONFIG.OWNER_GUILD_ID,
+  opts: SyncStockOptions = {},
+): Promise<number> {
   const game = await prisma.game.findFirst({ where: { appId, disabled: false } });
   if (!game) return -1;
-  return syncStockForGame(game.id, guildId);
+  return syncStockForGame(game.id, guildId, opts);
 }
 
 /** Recompute stock for every catalog game on the owner server. */
-export async function syncAllOwnerGameStock(guildId: string = CONFIG.OWNER_GUILD_ID): Promise<number> {
+export async function syncAllOwnerGameStock(
+  guildId: string = CONFIG.OWNER_GUILD_ID,
+  opts: SyncStockOptions = {},
+): Promise<number> {
   if (!usesAccountSyncedStock(guildId)) return 0;
 
   const games = await prisma.game.findMany({
@@ -205,7 +224,7 @@ export async function syncAllOwnerGameStock(guildId: string = CONFIG.OWNER_GUILD
 
   let synced = 0;
   for (const game of games) {
-    await syncStockForGame(game.id, guildId);
+    await syncStockForGame(game.id, guildId, opts);
     synced++;
   }
 

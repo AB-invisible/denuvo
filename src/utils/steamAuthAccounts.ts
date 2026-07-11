@@ -79,6 +79,21 @@ export async function getAvailableSteamAuthAccounts(
   return available;
 }
 
+/** True when at least one active SteamAuth link exists for this game (ignores daily quota). */
+export async function hasLinkedSteamAuthAccounts(
+  appId: number,
+  guildId: string = '',
+): Promise<boolean> {
+  try {
+    const count = await (prisma as any).steamAuthAccount.count({
+      where: { guildId, appId, active: true },
+    });
+    return count > 0;
+  } catch {
+    return false;
+  }
+}
+
 export async function recordSteamAuthUsage(accountId: number): Promise<void> {
   const today = utcDateKey();
   try {
