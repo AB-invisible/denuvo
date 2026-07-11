@@ -33,32 +33,35 @@ function formatGameSelectDescription(input: {
   boosterOnly: boolean;
   highDemand: boolean;
 }): string {
-  const { appId, availableStock, reserved, queueCount, gameLastDepleted, now } = input;
-  const id = appId ?? 'N/A';
+  const { availableStock, reserved, queueCount, gameLastDepleted, now } = input;
   let line = '';
 
+  // Plain, human phrasing. Separators are ASCII " - " on purpose: descriptions
+  // are run through an emoji strip below, which would also eat characters like
+  // the "·" middle dot and leave a mushy space-separated blob.
   if (availableStock >= 10) {
-    line = `OK · ${availableStock} left (${reserved} res) · ${id}`;
+    line = `In stock - ${availableStock} available`;
   } else if (availableStock > 0) {
-    line = `LOW · ${availableStock} left (${reserved} res) · ${id}`;
-  } else if (availableStock === 0 && gameLastDepleted) {
+    line = `Low stock - only ${availableStock} left`;
+  } else if (gameLastDepleted) {
     const timeDiff = now.getTime() - gameLastDepleted.getTime();
     const remaining = Math.max(0, REGEN_TIME - timeDiff);
     const hours = Math.floor(remaining / (1000 * 60 * 60));
     const minutes = Math.floor((remaining % (1000 * 60 * 60)) / (1000 * 60));
-    const queue = queueCount > 0 ? ` · Q${queueCount}` : '';
-    line = `OUT · restock ${hours}h ${minutes}m${queue} · ${id}`;
-  } else if (availableStock === 0 && reserved > 0) {
-    const queue = queueCount > 0 ? ` · Q${queueCount}` : '';
-    line = `OUT · ${reserved} reserved${queue} · ${id}`;
+    line = hours > 0
+      ? `Out of stock - restocks in ${hours}h ${minutes}m`
+      : `Out of stock - restocks in ${minutes}m`;
+  } else if (reserved > 0) {
+    line = `Out of stock - ${reserved} in progress`;
   } else {
-    const queue = queueCount > 0 ? ` · Q${queueCount}` : '';
-    line = `OUT · 0 left${queue} · ${id}`;
+    line = 'Out of stock';
   }
 
-  if (input.donatorOnly) line = `DONATOR · ${line}`;
-  else if (input.boosterOnly) line = `BOOSTER · ${line}`;
-  else if (input.highDemand) line = `HIGH · ${line}`;
+  if (queueCount > 0) line += ` (${queueCount} waiting)`;
+
+  if (input.donatorOnly) line = `Supporter only - ${line}`;
+  else if (input.boosterOnly) line = `Booster only - ${line}`;
+  else if (input.highDemand) line = `High demand - ${line}`;
 
   return truncateDiscordText(line.replace(/[^\x20-\x7E]/g, ''), 100);
 }
@@ -126,7 +129,7 @@ export async function createMainPanel(guildId?: string) {
       { name: '🕒 Automatic Reset', value: 'Depleted games automatically restore **5 tokens** every **24 hours**.', inline: true },
       { name: '🛰️ Staff Availability', value: await (async () => { const count = await getActiveStaffCount(); return count > 0 ? `🟢 **${count} Staff Active**` : '🌙 **Staff Away** (Delays Expected)'; })(), inline: true },
       { name: '━━━━━━━━━━━━━━━━━━━━━━', value: ' ', inline: false },
-      { name: 'Status legend', value: '**OK** = 10+ tokens · **LOW** = 1-9 · **OUT** = depleted / restock timer', inline: false }
+      { name: 'Status legend', value: '**In stock** = 10+ available · **Low stock** = under 10 · **Out of stock** = restocking', inline: false }
     )
     .setColor(0x5865F2)
     .setImage(getPanelAssetUrl('gamegen.png') ?? 'attachment://gamegen.png')
