@@ -16,6 +16,8 @@ export interface EaCatalogEntry {
   eaContentId: number;
   eaEngine: string;
   eaMagicFile?: string;
+  /** Direct download when no local zip is hosted (e.g. Pixeldrain). */
+  eaMagicUrl?: string;
   layout?: EaLayout;
 }
 
@@ -26,7 +28,9 @@ export const EA_CATALOG: EaCatalogEntry[] = [
     eaContentId: 16425677,
     // FC 26 tickets use TICKET|0|16425677 — content id is the third segment.
     eaEngine: '0',
-    eaMagicFile: 'FC26 Magic Files.zip',
+    eaMagicFile: 'EA SPORTS FC 26 Not A Crack Files.zip',
+    eaMagicUrl:
+      'https://pixeldrain.com/d/DaTaPW8a/EA%20SPORTS%20FC%2026%20Not%20A%20Crack%20Files.zip',
     layout: 'flat',
   },
 ];
@@ -53,15 +57,16 @@ export function resolveEaForGame(game: {
   eaContentId?: number | null;
   eaEngine?: string | null;
   eaMagicFile?: string | null;
-}): { eaContentId: number; eaEngine: string; magicFile: string | null; layout: EaLayout } | null {
+}): { eaContentId: number; eaEngine: string; magicFile: string | null; magicUrl: string | null; layout: EaLayout } | null {
   const catalog = game.appId ? catalogBySteamAppId(game.appId) : undefined;
   const eaContentId = game.eaContentId ?? catalog?.eaContentId ?? null;
   const eaEngine = (game.eaEngine ?? catalog?.eaEngine ?? '').trim() || null;
   if (!eaContentId || !eaEngine) return null;
 
   const magicFile = game.eaMagicFile ?? catalog?.eaMagicFile ?? null;
+  const magicUrl = catalog?.eaMagicUrl ?? null;
   const layout = catalog?.layout ?? 'flat';
-  return { eaContentId, eaEngine, magicFile, layout };
+  return { eaContentId, eaEngine, magicFile, magicUrl, layout };
 }
 
 export function isEaGame(game: {

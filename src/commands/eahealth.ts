@@ -21,11 +21,18 @@ export async function execute(interaction: any): Promise<void> {
     ? `🟢 Reachable · python minter ${health.tool ? 'ready ✅' : 'MISSING ⚠️'}${health.configured === false ? ' · env incomplete (remid/signature/machine hash)' : ''}`
     : `🔴 Unreachable — ${health.error ?? 'unknown error'}`;
 
-  const magicLine = !magic.dir
-    ? '⚠️ `EA_MAGIC_DIR` not set — setup zips can only be delivered via attachment if present.'
-    : magic.present.length
-    ? magic.present.map((f) => `• \`${f}\``).join('\n')
-    : `📭 No recognized EA setup zips in \`${magic.dir}\`.`;
+  const magicLine = [
+    magic.present.length ? magic.present.map((f) => `• \`${f}\` (local)`).join('\n') : null,
+    magic.external.length ? magic.external.map((f) => `• \`${f}\``).join('\n') : null,
+    !magic.dir && !magic.present.length && !magic.external.length
+      ? '⚠️ `EA_MAGIC_DIR` not set — using catalog external links where configured.'
+      : null,
+    magic.dir && !magic.present.length && !magic.external.length
+      ? `📭 No recognized EA setup zips in \`${magic.dir}\`.`
+      : null,
+  ]
+    .filter(Boolean)
+    .join('\n') || '—';
 
   const embed = new EmbedBuilder()
     .setTitle('🎮 EA Token Service Health')

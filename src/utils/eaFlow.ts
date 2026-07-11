@@ -31,6 +31,7 @@ import {
   catalogBySteamAppId,
   locateMagicZip,
   normalizeMagicFilename,
+  EA_CATALOG,
 } from './eaCatalog';
 import { mintEaToken, eaServiceConfigured } from './eaService';
 import { resolvePublicBaseUrl } from './downloadHost';
@@ -56,22 +57,25 @@ function resolveMagicDelivery(
   eaContentId: number,
   magicFile: string | null,
   steamAppId?: number | null,
+  magicUrl?: string | null,
 ): { url?: string; localPath?: string; sizeMB?: number; resolvedFile?: string } | null {
   const base = resolvePublicBaseUrl();
   const dir = resolveMagicDir();
   const catalog = steamAppId ? catalogBySteamAppId(steamAppId) : undefined;
+  const externalUrl = magicUrl ?? catalog?.eaMagicUrl ?? null;
 
   const located = dir ? locateMagicZip(dir, magicFile, catalog) : null;
   let localPath: string | undefined;
   let sizeMB: number | undefined;
-  let resolvedFile = magicFile ?? undefined;
+  let resolvedFile = magicFile ?? catalog?.eaMagicFile ?? undefined;
   if (located) {
     localPath = located.path;
     resolvedFile = located.filename;
     sizeMB = fs.statSync(located.path).size / (1024 * 1024);
   }
 
-  const url = base && localPath ? `${base}/ea/magic/${eaContentId}` : undefined;
+  const selfHostedUrl = base && localPath ? `${base}/ea/magic/${eaContentId}` : undefined;
+  const url = selfHostedUrl ?? externalUrl ?? undefined;
   if (!url && !localPath) return null;
   return { url, localPath, sizeMB, resolvedFile };
 }
@@ -105,12 +109,12 @@ export async function startEaDelivery(channel: TextChannel, ticket: any, guild: 
     return;
   }
 
-  const delivery = resolveMagicDelivery(resolved.eaContentId, resolved.magicFile, ticket.game.appId);
+  const delivery = resolveMagicDelivery(resolved.eaContentId, resolved.magicFile, ticket.game.appId, resolved.magicUrl);
   if (!delivery) {
     await channel.send({
       content:
         `${staffPing} Screenshot verified for **${ticket.game.name}**, but the setup zip ` +
-        `(\`${resolved.magicFile ?? 'unknown'}\`) isn't available. Upload it to \`EA_MAGIC_DIR\` or set \`PUBLIC_URL\`. Manual delivery needed.`,
+        `(\`${resolved.magicFile ?? 'unknown'}\`) isn't available. Upload it to \`EA_MAGIC_DIR\`, add a catalog URL, or set \`PUBLIC_URL\`. Manual delivery needed.`,
     });
     if (hg) {
       await logAction(
@@ -352,12 +356,17 @@ export async function handleEaTicket(message: Message, ticket: any): Promise<boo
   return true;
 }
 
-export function eaMagicFileStatus(): { dir: string; present: string[] } {
+export function eaMagicFileStatus(): { dir: string; present: string[]; external: string[] } {
   const dir = resolveMagicDir();
   const present: string[] = [];
-  if (!dir || !fs.existsSync(dir)) return { dir, present };
-  for (const f of fs.readdirSync(dir)) {
-    if (catalogByMagicFile(f) || catalogByMagicFile(normalizeMagicFilename(f))) present.push(f);
+  const external: string[] = [];
+  if (dir && fs.existsSync(dir)) {
+    for (const f of fs.readdirSync(dir)) {
+      if (catalogByMagicFile(f) || catalogByMagicFile(normalizeMagicFilename(f))) present.push(f);
+    }
   }
-  return { dir, present };
+  for (const entry of EA_CATALOG) {
+    if (entry.eaMagicUrl && entry.eaMagicFile) external.push(`${entry.eaMagicFile} (external)`);
+  }
+  return { dir, present, external };
 }
