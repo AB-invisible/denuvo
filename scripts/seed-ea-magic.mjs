@@ -31,7 +31,7 @@ async function main() {
     throw new Error(`download failed: HTTP ${res.status}`);
   }
 
-  const nodeStream = Readable.fromWeb(res.body as any);
+  const nodeStream = Readable.fromWeb(res.body);
   await pipeline(nodeStream, fs.createWriteStream(dest));
 
   const size = fs.statSync(dest).size;
