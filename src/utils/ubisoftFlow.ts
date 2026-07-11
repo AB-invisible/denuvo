@@ -33,6 +33,7 @@ import prisma from '../lib/prisma';
 import { CONFIG } from '../config';
 import { client } from '../client';
 import { logAction, logTenant } from './logging';
+import { closeTicketForDailyLimit } from './ticketManager';
 import { resolveUbisoftForGame, catalogByMagicFile, resolveMagicDir, catalogBySteamAppId, locateMagicZip, normalizeMagicFilename } from './ubisoftCatalog';
 import { mintUbisoftToken, ubisoftServiceConfigured } from './ubisoftService';
 import { resolvePublicBaseUrl } from './downloadHost';
@@ -253,8 +254,10 @@ export async function handleUbisoftTokenReq(message: Message, ticket: any): Prom
       const description = hadLocalQuota
         ? `**${ticket.game.name}** — Ubisoft reported the **daily activation limit** for our account, but our counter still shows activations available.\n\n` +
           `Staff has been notified to investigate (often a wrong AppID order or a counter sync issue). ` +
-          `Fresh activations unlock at **00:00 UTC** if the limit was genuinely reached.`
-        : `**${ticket.game.name}** is **out of Ubisoft activations for today.** Fresh activations unlock at **00:00 UTC** — please try again tomorrow.`;
+          `Fresh activations unlock at **00:00 UTC** if the limit was genuinely reached.\n\n` +
+          `This ticket will close shortly. **No cooldown** will be applied — you can open a new ticket after activations reset.`
+        : `**${ticket.game.name}** is **out of Ubisoft activations for today.** Fresh activations unlock at **00:00 UTC** — please try again tomorrow.\n\n` +
+          `This ticket will close shortly. **No cooldown** will be applied — you can open a new ticket after activations reset.`;
 
       await genMsg.edit({
         embeds: [
@@ -277,6 +280,7 @@ export async function handleUbisoftTokenReq(message: Message, ticket: any): Prom
           0xed4245,
         );
       }
+      await closeTicketForDailyLimit(channel, ticket);
       return true;
     }
 

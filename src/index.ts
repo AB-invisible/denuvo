@@ -4,7 +4,7 @@ import { commandHandlers } from './commands';
 import path from 'path';
 import { REST, Routes, InteractionType, PermissionsBitField, PermissionFlagsBits, SlashCommandBuilder, TextChannel, AttachmentBuilder, Events, ActionRowBuilder, ButtonBuilder, ButtonStyle, ActivityType, MessageFlags, EmbedBuilder, Message, GuildMember, Guild } from 'discord.js';
 import { createMainPanel, createVerificationPromptEmbed, createVerificationProcessingEmbed, createVerificationSuccessEmbed, createVerificationFailureEmbed, createTokenDeliveryEmbed, createVouchRequestEmbed } from './utils/embeds';
-import { createTicket, claimTicket, closeTicket, handleCooldownSelection, handleDeductionChoice, unclaimTicket, autoCloseTicketForVerificationTimeout, triggerSessionFailure, pendingVerificationTimers, vouchTimers } from './utils/ticketManager';
+import { createTicket, claimTicket, closeTicket, handleCooldownSelection, handleDeductionChoice, unclaimTicket, autoCloseTicketForVerificationTimeout, triggerSessionFailure, pendingVerificationTimers, vouchTimers, closeTicketForDailyLimit } from './utils/ticketManager';
 import { getEstimatedWaitTime } from './utils/stats';
 import { computeCooldownHours } from './utils/cooldown';
 import { consumeStock, updateStockForAllGames, manualConsumeStock } from './utils/gameManager';
@@ -962,10 +962,14 @@ async function autoGenerateAndDeliver(channel: TextChannel, ticket: any, guild: 
     if (retryResult.exhausted) {
       const outEmbed = new EmbedBuilder()
         .setTitle('🔴 Out of Tokens Today')
-        .setDescription(`**${ticket.game.name}** is **out of tokens for today.** Fresh tokens unlock at 00:00 UTC — please try again tomorrow.`)
+        .setDescription(
+          `**${ticket.game.name}** is **out of tokens for today.** Fresh tokens unlock at **00:00 UTC** — please try again tomorrow.\n\n` +
+            `This ticket will close shortly. **No cooldown** will be applied — you can open a new ticket after tokens reset.`,
+        )
         .setColor(0xED4245)
         .setTimestamp();
       await genMsg.edit({ embeds: [outEmbed] });
+      await closeTicketForDailyLimit(channel, ticket);
       return;
     }
     console.log(`[TokenGen] Logs for ${ticket.game.name}:\n${logs}`);

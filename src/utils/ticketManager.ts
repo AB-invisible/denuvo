@@ -674,3 +674,60 @@ export async function autoCloseTicketForVerificationTimeout(channelId: string, g
   }
 }
 
+/**
+ * Close a ticket when daily token/activation quota is exhausted.
+ * Clears any cooldown so the user can reopen after the reset — not their fault.
+ */
+export async function closeTicketForDailyLimit(
+  channel: TextChannel,
+  ticket: { id: number; channelId: string; userId: string; guildId?: string | null; game?: { name: string } },
+): Promise<void> {
+  const current = await prisma.ticket.findUnique({ where: { id: ticket.id } });
+  if (!current || current.status === 'CLOSED') return;
+
+  const effectiveGuildId = ticket.guildId || channel.guildId || '';
+
+  await prisma.cooldown.deleteMany({
+    where: { userId: ticket.userId, guildId: effectiveGuildId },
+  });
+
+  await prisma.pendingVerification.deleteMany({ where: { ticketId: ticket.id } }).catch(() => {});
+
+  await prisma.ticket.update({
+    where: { id: ticket.id },
+    data: {
+      status: 'CLOSED',
+      closedAt: new Date(),
+      screenshotVerified: true,
+      vouchExpiresAt: null,
+      activeClosingStaffId: null,
+    },
+  });
+
+  untrackTicketChannel(ticket.channelId);
+
+  const vTimer = pendingVerificationTimers.get(ticket.channelId);
+  if (vTimer) {
+    clearTimeout(vTimer);
+    pendingVerificationTimers.delete(ticket.channelId);
+  }
+
+  const vouchTimer = vouchTimers.get(ticket.userId);
+  if (vouchTimer) {
+    clearTimeout(vouchTimer);
+    vouchTimers.delete(ticket.userId);
+  }
+
+  if (channel.guild) {
+    await logAction(
+      channel.guild,
+      '🔒 Ticket Closed (Daily Limit)',
+      `Closed <#${ticket.channelId}> for <@${ticket.userId}> — **${ticket.game?.name ?? 'game'}** daily quota exhausted. No cooldown applied.`,
+      0xed4245,
+    );
+  }
+
+  refreshAllPanels();
+  setTimeout(() => channel.delete().catch(() => {}), 10000);
+}
+
