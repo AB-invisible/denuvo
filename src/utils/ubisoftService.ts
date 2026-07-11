@@ -33,6 +33,10 @@ export interface UbisoftMintFailure {
   error: string;
   logs?: string;
   exhausted?: boolean; // true when every account hit ExceededActivations today
+  /** How many BYO accounts had local quota when mint started (0 = env-default only). */
+  poolQuotaAtStart?: number;
+  /** Last Ubisoft AppID attempted before this failure. */
+  usedAppId?: number;
 }
 
 export type UbisoftMintResult = UbisoftMintSuccess | UbisoftMintFailure;
@@ -105,8 +109,15 @@ async function getAvailableUbisoftAccounts(guildId: string): Promise<Array<{ id:
 
   let accounts: any[] = [];
   try {
+    const where: Record<string, unknown> = { active: true };
+    // Owner pool lives under guildId "". Tenant tickets should still use it.
+    if (guildId) {
+      where.OR = [{ guildId: '' }, { guildId }];
+    } else {
+      where.guildId = '';
+    }
     accounts = await (prisma as any).ubisoftAccount.findMany({
-      where: { guildId, active: true },
+      where,
       orderBy: [{ priority: 'asc' }, { id: 'asc' }],
     });
   } catch (e) {
@@ -174,6 +185,7 @@ function mapResult(
     code: body.code || (status === 504 ? 'Timeout' : status === 503 ? 'ServiceUnavailable' : 'Failure'),
     error: body.error || `service returned HTTP ${status}`,
     logs: body.logs,
+    usedAppId,
   };
 }
 
@@ -202,6 +214,7 @@ export async function mintUbisoftToken(
   const ownerGuildKey = !guildId || guildId === CONFIG.OWNER_GUILD_ID ? '' : guildId;
 
   const accounts = await getAvailableUbisoftAccounts(ownerGuildKey);
+  const poolQuotaAtStart = accounts.length;
 
   // Build the attempt list: BYO accounts first, then the env-default account
   // (represented by creds=null so the service uses UBISOFT_EMAIL/PASSWORD).
@@ -232,14 +245,18 @@ export async function mintUbisoftToken(
         return result;
       }
 
-      lastFailure = result;
+      lastFailure = { ...result, poolQuotaAtStart };
 
       // NotOwned on the primary → try the alt appId on the SAME account.
       if (result.code === 'NotOwned') continue;
 
-      // Daily cap on this account → mark spent + rotate to the next account.
+      // Daily cap — try the alternate build before giving up on this account.
+      // Magic files are Steam-based; the wrong AppID can burn activations or
+      // return a misleading limit error on the native build ID.
       if (result.code === 'ExceededActivations') {
         sawExceededOnThisAccount = true;
+        const appIdx = appIds.indexOf(appId);
+        if (appIdx >= 0 && appIdx < appIds.length - 1) continue;
         if (attempt.id) await markAccountExhaustedToday(attempt.id);
         break;
       }
@@ -260,10 +277,12 @@ export async function mintUbisoftToken(
       code: 'ExceededActivations',
       error: 'All Ubisoft accounts have hit their daily activation cap.',
       exhausted: true,
+      poolQuotaAtStart,
     };
   }
 
-  return lastFailure ?? { ok: false, code: 'Failure', error: 'no attempt produced a result' };
+  if (lastFailure) return { ...lastFailure, poolQuotaAtStart };
+  return { ok: false, code: 'Failure', error: 'no attempt produced a result', poolQuotaAtStart };
 }
 
 /** Force an account's daily counter to the cap so rotation skips it today. */

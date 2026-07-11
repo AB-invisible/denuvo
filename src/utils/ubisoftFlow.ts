@@ -248,15 +248,39 @@ export async function handleUbisoftTokenReq(message: Message, ticket: any): Prom
 
   if (!result.ok) {
     if (result.exhausted || result.code === 'ExceededActivations') {
+      const hadLocalQuota = (result.poolQuotaAtStart ?? 0) > 0;
+      const title = hadLocalQuota ? '🔴 Activation Rejected by Ubisoft' : '🔴 Out of Tokens Today';
+      const description = hadLocalQuota
+        ? `**${ticket.game.name}** — Ubisoft reported the **daily activation limit** for our account, but our counter still shows activations available.\n\n` +
+          `Staff has been notified to investigate (often a wrong AppID order or a counter sync issue). ` +
+          `Fresh activations unlock at **00:00 UTC** if the limit was genuinely reached.`
+        : `**${ticket.game.name}** is **out of Ubisoft activations for today.** Fresh activations unlock at **00:00 UTC** — please try again tomorrow.`;
+
       await genMsg.edit({
         embeds: [
           new EmbedBuilder()
-            .setTitle('🔴 Out of Tokens Today')
-            .setDescription(`**${ticket.game.name}** is **out of Ubisoft activations for today.** Fresh activations unlock at 00:00 UTC — please try again tomorrow.`)
+            .setTitle(title)
+            .setDescription(description)
             .setColor(0xed4245)
             .setTimestamp(),
         ],
       });
+      const appHint = result.usedAppId ? ` (last AppID \`${result.usedAppId}\`)` : '';
+      const logTail = (result.logs || '').slice(-400);
+      await channel.send({
+        content:
+          `${staffPing} Ubisoft mint hit **ExceededActivations** for **${ticket.game.name}**${appHint}` +
+          `${hadLocalQuota ? ' — **local quota still shows availability**' : ''}. ` +
+          `${logTail ? `\`\`\`\n${logTail}\n\`\`\`` : ''}`,
+      }).catch(() => {});
+      if (hg) {
+        await logAction(
+          hg,
+          '⚠️ Ubisoft Activation Limit',
+          `**${ticket.game.name}**${appHint} — ExceededActivations${hadLocalQuota ? ' (local quota remaining)' : ''} in <#${channel.id}>.\n${(result.logs || '').slice(-600)}`,
+          0xed4245,
+        );
+      }
       return true;
     }
 

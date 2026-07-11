@@ -103,14 +103,13 @@ export const UBISOFT_CATALOG: UbisoftCatalogEntry[] = [
     layout: 'bin64',
   },
   {
-    // Uplay registry: 65043 = "Assassin's Creed Black Flag Resynced"
-    // (Ubisoft Connect / Epic build). 66088 is the Steam build's Uplay
-    // product ID (from its savegame-folder ID) — used as the alt so the tool
-    // tries both, mirroring the AC Shadows 8006/1081 (Ubisoft/Steam) pattern.
+    // Uplay registry: 65043 = Ubisoft Connect / Epic native build.
+    // 66088 = Steam-integrated build (magic files use steam_api64.dll).
+    // Try the Steam build first — same convention as Anno 1800 (4554/4553).
     name: "Assassin's Creed Black Flag Resynced",
     steamAppId: 3751950,
-    ubisoftAppId: 65043,
-    ubisoftAltAppId: 66088,
+    ubisoftAppId: 66088,
+    ubisoftAltAppId: 65043,
     magicFile: "Assassin's Creed Black Flag Resynced Magic Files.zip",
     layout: 'flat',
   },
