@@ -249,6 +249,17 @@ const commands = [
     .setDescription('Check the EA token service + setup zip availability — owner only')
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
+    .setName('eatest')
+    .setDescription('Test-deliver EA magic files to this channel — owner only')
+    .addStringOption((o) =>
+      o
+        .setName('game')
+        .setDescription(`EA game name (default: ${'EA SPORTS FC 26'})`)
+        .setRequired(false)
+        .setAutocomplete(true),
+    )
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+  new SlashCommandBuilder()
     .setName('tokengen')
     .setDescription('Generate a REAL token (staff bypass, posted publicly, no screenshot needed)')
     .addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true))
@@ -397,7 +408,7 @@ async function registerCommands(targetGuildId?: string) {
     const addsupport = ADDSUPPORT_COMMAND.toJSON();
 
     const tenantCommands = [
-      ...commands.filter((c: any) => c.name !== 'test' && c.name !== 'simulate' && c.name !== 'deplet' && c.name !== 'lowstock' && c.name !== 'setsteampass' && c.name !== 'game' && c.name !== 'removegame' && c.name !== 'autogen' && c.name !== 'stock' && c.name !== 'settokens' && c.name !== 'exclude-auto' && c.name !== 'setmode' && c.name !== 'getmode' && c.name !== 'promo' && c.name !== 'requests' && c.name !== 'staffstats' && c.name !== 'restockall' && c.name !== 'steamhealth' && c.name !== 'steamaccount' && c.name !== 'steamauth' && c.name !== 'export' && c.name !== 'ubisoftaccount' && c.name !== 'ubisoftgame' && c.name !== 'ubisofthealth' && c.name !== 'eagame' && c.name !== 'eahealth'),
+      ...commands.filter((c: any) => c.name !== 'test' && c.name !== 'simulate' && c.name !== 'deplet' && c.name !== 'lowstock' && c.name !== 'setsteampass' && c.name !== 'game' && c.name !== 'removegame' && c.name !== 'autogen' && c.name !== 'stock' && c.name !== 'settokens' && c.name !== 'exclude-auto' && c.name !== 'setmode' && c.name !== 'getmode' && c.name !== 'promo' && c.name !== 'requests' && c.name !== 'staffstats' && c.name !== 'restockall' && c.name !== 'steamhealth' && c.name !== 'steamaccount' && c.name !== 'steamauth' && c.name !== 'export' && c.name !== 'ubisoftaccount' && c.name !== 'ubisoftgame' && c.name !== 'ubisofthealth' && c.name !== 'eagame' && c.name !== 'eahealth' && c.name !== 'eatest'),
       setlogs,
       setvouch,
       addsupport,
@@ -790,14 +801,19 @@ if (interaction.guildId) {
 });
 
 async function handleAutocomplete(interaction: any) {
-  if (interaction.commandName === 'stock' || interaction.commandName === 'exclude-auto' || interaction.commandName === 'test' || interaction.commandName === 'tokengen' || interaction.commandName === 'setmode' || interaction.commandName === 'getmode' || interaction.commandName === 'game' || interaction.commandName === 'removegame' || interaction.commandName === 'settokens' || interaction.commandName === 'autogen' || interaction.commandName === 'simulate' || interaction.commandName === 'deplet' || interaction.commandName === 'waitlist' || interaction.commandName === 'queue' || interaction.commandName === 'ubisoftgame' || interaction.commandName === 'steampass') {
+  if (interaction.commandName === 'stock' || interaction.commandName === 'exclude-auto' || interaction.commandName === 'test' || interaction.commandName === 'tokengen' || interaction.commandName === 'setmode' || interaction.commandName === 'getmode' || interaction.commandName === 'game' || interaction.commandName === 'removegame' || interaction.commandName === 'settokens' || interaction.commandName === 'autogen' || interaction.commandName === 'simulate' || interaction.commandName === 'deplet' || interaction.commandName === 'waitlist' || interaction.commandName === 'queue' || interaction.commandName === 'ubisoftgame' || interaction.commandName === 'eagame' || interaction.commandName === 'eatest' || interaction.commandName === 'steampass') {
     const focusedValue = interaction.options.getFocused();
     const games = await prisma.game.findMany({
       where: { name: { contains: focusedValue, mode: 'insensitive' } },
       take: 24, // leave room for the synthetic "ALL" entry on bulk-capable commands
     });
 
-    const entries = games.map((g: { name: string }) => ({ name: g.name, value: g.name }));
+    let entries = games.map((g: { name: string }) => ({ name: g.name, value: g.name }));
+
+    if (interaction.commandName === 'eatest' || interaction.commandName === 'eagame') {
+      const { isEaGame } = await import('./utils/eaCatalog');
+      entries = games.filter((g: any) => isEaGame(g) || interaction.commandName === 'eagame').map((g: { name: string }) => ({ name: g.name, value: g.name }));
+    }
 
     // /setmode and /getmode accept "ALL" to act on every game. Surface it as
     // the first autocomplete suggestion when the input is empty or matches "a".
@@ -815,6 +831,12 @@ async function handleAutocomplete(interaction: any) {
 
 async function handleChatCommand(interaction: any) {
   if (interaction.commandName === 'test' && interaction.guildId !== CONFIG.OWNER_GUILD_ID) {
+    return interaction.reply({
+      content: '❌ This command is not available in this server.',
+      flags: [MessageFlags.Ephemeral],
+    }).catch(() => {});
+  }
+  if (interaction.commandName === 'eatest' && interaction.guildId !== CONFIG.OWNER_GUILD_ID) {
     return interaction.reply({
       content: '❌ This command is not available in this server.',
       flags: [MessageFlags.Ephemeral],

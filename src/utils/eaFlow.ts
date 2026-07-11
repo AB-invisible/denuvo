@@ -96,49 +96,50 @@ function magicInstructions(gameName: string, layout: 'flat' | 'bin64'): string {
   );
 }
 
-export async function startEaDelivery(channel: TextChannel, ticket: any, guild: Guild | null): Promise<void> {
-  const guildId = ticket.guildId ?? guild?.id ?? '';
-  const staffPing = await staffPingFor(guildId);
-  const hg = homeGuild();
+export type EaMagicSendResult =
+  | { ok: true; url?: string; localPath?: string; sizeMB?: number; resolvedFile?: string }
+  | { ok: false; reason: 'not_ea' | 'missing_zip'; message: string };
 
-  const resolved = resolveEaForGame(ticket.game);
+/** Post the EA setup zip embed (and attachment when small enough) to a channel. */
+export async function sendEaMagicPackage(
+  channel: TextChannel,
+  game: { name: string; appId?: number | null; eaContentId?: number | null; eaEngine?: string | null; eaMagicFile?: string | null },
+  options?: { test?: boolean },
+): Promise<EaMagicSendResult> {
+  const resolved = resolveEaForGame(game);
   if (!resolved) {
-    await channel.send({
-      content: `${staffPing} **${ticket.game.name}** is flagged EA but has no content ID / engine configured. Set it with \`/eagame\`.`,
-    });
-    return;
+    return {
+      ok: false,
+      reason: 'not_ea',
+      message: `**${game.name}** is not configured as an EA title. Use \`/eagame set\` first.`,
+    };
   }
 
-  const delivery = resolveMagicDelivery(resolved.eaContentId, resolved.magicFile, ticket.game.appId, resolved.magicUrl);
+  const delivery = resolveMagicDelivery(resolved.eaContentId, resolved.magicFile, game.appId, resolved.magicUrl);
   if (!delivery) {
-    await channel.send({
-      content:
-        `${staffPing} Screenshot verified for **${ticket.game.name}**, but the setup zip ` +
-        `(\`${resolved.magicFile ?? 'unknown'}\`) isn't available. Upload it to \`EA_MAGIC_DIR\`, add a catalog URL, or set \`PUBLIC_URL\`. Manual delivery needed.`,
-    });
-    if (hg) {
-      await logAction(
-        hg,
-        '⚠️ EA Magic Files Missing',
-        `No setup zip for **${ticket.game.name}** (contentId \`${resolved.eaContentId}\`) in <#${channel.id}>.`,
-        0xed4245,
-      );
-    }
-    return;
+    return {
+      ok: false,
+      reason: 'missing_zip',
+      message:
+        `Setup zip \`${resolved.magicFile ?? 'unknown'}\` is not available. ` +
+        `Upload it to \`EA_MAGIC_DIR\`, add a catalog URL, or set \`PUBLIC_URL\`.`,
+    };
   }
+
+  const testBanner = options?.test
+    ? `🧪 **Staff test delivery** — same package users get after screenshot verification.\n\n`
+    : `Your screenshot has been verified. Please complete the steps below to proceed with activation.\n\n`;
 
   const embed = new EmbedBuilder()
-    .setTitle(`🎮 ${ticket.game.name} — Activation Setup`)
-    .setDescription(
-      `Your screenshot has been verified. Please complete the steps below to proceed with activation.\n\n` +
-        magicInstructions(ticket.game.name, resolved.layout),
-    )
-    .setColor(0x5865f2)
-    .setFooter({ text: 'Awaiting Denuvo ticket' })
+    .setTitle(`🎮 ${game.name} — Activation Setup${options?.test ? ' (Test)' : ''}`)
+    .setDescription(testBanner + magicInstructions(game.name, resolved.layout))
+    .setColor(options?.test ? 0xfee75c : 0x5865f2)
+    .setFooter({ text: options?.test ? 'EA magic files test' : 'Awaiting Denuvo ticket' })
     .setTimestamp();
 
   if (delivery.url) {
-    embed.addFields({ name: '📦 Setup Package', value: `[Download here](${delivery.url})` });
+    const sizeHint = delivery.sizeMB ? ` (~${delivery.sizeMB.toFixed(1)} MB)` : '';
+    embed.addFields({ name: '📦 Setup Package', value: `[Download here](${delivery.url})${sizeHint}` });
   }
 
   const files: AttachmentBuilder[] = [];
@@ -147,6 +148,36 @@ export async function startEaDelivery(channel: TextChannel, ticket: any, guild: 
   }
 
   await channel.send({ embeds: [embed], ...(files.length ? { files } : {}) });
+  return { ok: true, ...delivery };
+}
+
+export async function startEaDelivery(channel: TextChannel, ticket: any, guild: Guild | null): Promise<void> {
+  const guildId = ticket.guildId ?? guild?.id ?? '';
+  const staffPing = await staffPingFor(guildId);
+  const hg = homeGuild();
+
+  const result = await sendEaMagicPackage(channel, ticket.game);
+  if (!result.ok) {
+    const prefix = result.reason === 'not_ea' ? staffPing : `${staffPing} Screenshot verified for **${ticket.game.name}**, but the`;
+    await channel.send({
+      content:
+        result.reason === 'missing_zip'
+          ? `${prefix} setup zip (\`${ticket.game.eaMagicFile ?? 'unknown'}\`) isn't available. Upload it to \`EA_MAGIC_DIR\`, add a catalog URL, or set \`PUBLIC_URL\`. Manual delivery needed.`
+          : `${staffPing} ${result.message}`,
+    });
+    if (result.reason === 'missing_zip' && hg) {
+      const resolved = resolveEaForGame(ticket.game);
+      await logAction(
+        hg,
+        '⚠️ EA Magic Files Missing',
+        `No setup zip for **${ticket.game.name}** (contentId \`${resolved?.eaContentId ?? '?'}\`) in <#${channel.id}>.`,
+        0xed4245,
+      );
+    }
+    return;
+  }
+
+  const resolved = resolveEaForGame(ticket.game)!;
 
   await prisma.ticket.update({
     where: { id: ticket.id },
