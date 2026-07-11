@@ -1890,6 +1890,14 @@ def main(app_id, game_name, steampass_uuid, generation_mode="gbe"):
         cached_password = (os.environ.get("CACHED_STEAM_PASSWORD") or "").strip()
         cached_refresh_token = (os.environ.get("CACHED_STEAM_REFRESH_TOKEN") or "").strip()
         cached_guarded = (os.environ.get("CACHED_STEAM_GUARDED") or "").strip().lower() == "true"
+        # Circuit breaker (set by Node when steampass recently 429/403'd us).
+        # When open, we run ONLY the free refresh_token path below and refuse
+        # any phase that would call steampass (/profile, /email, /auth/login),
+        # so we stop hammering a blocked endpoint until the cooldown expires.
+        steampass_disabled = (os.environ.get("STEAMPASS_DISABLED") or "").strip().lower() == "true"
+        if steampass_disabled and session_source is None:
+            log("Steampass DISABLED (circuit breaker open) — only the cached "
+                "refresh_token path will be attempted this run.")
         if cached_login and session_source is None:
             log(f"Found cached Steam session for this UUID (login={cached_login}, "
                 f"refresh_token={'yes' if cached_refresh_token else 'no'})")
@@ -1920,7 +1928,11 @@ def main(app_id, game_name, steampass_uuid, generation_mode="gbe"):
                 steam_id = None
 
         # ── Phase 1: try cached creds (skip /profile/product-credentials) ──
-        if session_source is None and cached_login and cached_password:
+        # Gated by the breaker: a guarded account here still needs a guard code
+        # from steampass, so when the breaker is open we only allow this path
+        # for an unguarded account (which makes zero steampass calls).
+        if (session_source is None and cached_login and cached_password
+                and (not steampass_disabled or not cached_guarded)):
             log("Using cached Steam credentials — skipping steampass "
                 "/profile/product-credentials call")
             steam_login = cached_login
@@ -1948,6 +1960,15 @@ def main(app_id, game_name, steampass_uuid, generation_mode="gbe"):
                 new_refresh_token = None
                 ticket_bytes = None
                 steam_id = None
+
+        # ── Breaker open + no free path worked → stop before touching steampass ──
+        if session_source is None and steampass_disabled:
+            log("ERROR: steampass is temporarily disabled (circuit breaker open "
+                "after a rate-limit/ban) and no cached refresh_token was usable "
+                "for this game. Skipping steampass to avoid deepening the block — "
+                "this game will work again after the cooldown, or immediately once "
+                "it has a cached refresh_token.")
+            sys.exit(1)
 
         # ── Cold start: full steampass flow (last resort) ──
         if session_source is None:

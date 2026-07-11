@@ -8,6 +8,10 @@ export const CONFIG = {
   OWNER_GUILD_ID: process.env.OWNER_GUILD_ID || process.env.GUILD_ID || '1205897412502224947',
   OWNER_ROLE_ID: process.env.OWNER_ROLE_ID || '1495828353649999984',
   OWNER_TOKENS_PER_ACCOUNT_PER_DAY: process.env.OWNER_TOKENS_PER_ACCOUNT_PER_DAY !== undefined ? Number(process.env.OWNER_TOKENS_PER_ACCOUNT_PER_DAY) : 5,
+  // Minutes the steampass circuit breaker stays open after a 429/403 throttle.
+  // While open, gens only use the free cached refresh_token path (no steampass
+  // calls) so we stop hammering a rate-limited / banned endpoint.
+  STEAMPASS_COOLDOWN_MINUTES: process.env.STEAMPASS_COOLDOWN_MINUTES !== undefined ? Number(process.env.STEAMPASS_COOLDOWN_MINUTES) : 20,
   STAFF_ROLE_ID: process.env.STAFF_ROLE_ID || '1484195272270811226',
   DONATOR_ROLE_ID: process.env.DONATOR_ROLE_ID || '1485995423633117224',
   BRONZE_ROLE_ID: process.env.BRONZE_ROLE_ID || '1486006821775872222',

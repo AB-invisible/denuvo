@@ -1,5 +1,6 @@
 import prisma from '../lib/prisma';
 import { logAction } from '../utils/logging';
+import { resetSteampassBreaker } from '../utils/steampassCircuit';
 
 export async function execute(interaction: any): Promise<void> {
   const newToken = (interaction.options.getString('token') || '').trim();
@@ -43,6 +44,8 @@ export async function execute(interaction: any): Promise<void> {
 
     const cleaned = newToken.replace(/^Bearer\s+/i, '').trim();
     await (prisma as any).steampassAccount.update({ where: { id: accountId }, data: { token: cleaned } });
+    // A fresh bearer means steampass is reachable again — close the breaker.
+    await resetSteampassBreaker();
     await interaction.editReply({
       content:
         `✅ **Cached bearer saved for pool account #${accountId}** (\`${acct.login}\`, token ${cleaned.slice(0, 8)}…${cleaned.slice(-4)}, length ${cleaned.length}). ` +
@@ -91,6 +94,8 @@ export async function execute(interaction: any): Promise<void> {
     update: { value: cleanedToken },
     create: { key: 'steampass_token', value: cleanedToken },
   });
+  // A fresh bearer means steampass is reachable again — close the breaker.
+  await resetSteampassBreaker();
 
   await interaction.editReply({
     content:

@@ -19,6 +19,7 @@ import fs from 'fs';
 import prisma from '../lib/prisma';
 import { CONFIG } from '../config';
 import { resolveServerConfig } from './tenant';
+import { isSteampassBlocked, tripSteampassBreaker, resetSteampassBreaker } from './steampassCircuit';
 
 // Resolve Python — env override, venv, or system python3.
 function resolvePython(): string {
@@ -396,6 +397,16 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
     // session per game, so account A's refresh_token is never reused for
     // account B. Before this key change the pool bypassed the cache
     // entirely and hit steampass on every gen (rate-limit / block risk).
+    // Circuit breaker: if steampass recently throttled/banned us, disable all
+    // steampass calls for the cooldown window. Python then only runs the free
+    // cached refresh_token path — warm games still succeed, cold games fail
+    // cleanly instead of us hammering a blocked endpoint. FAKE (test) gens
+    // never touch steampass, so they're never gated.
+    const steampassDisabled = steampassUuid !== 'FAKE' ? await isSteampassBlocked() : false;
+    if (steampassDisabled) {
+      console.warn(`[TokenGen] Steampass circuit breaker OPEN — gen for UUID ${String(steampassUuid).slice(0, 8)}… will use cached refresh_token only (no steampass calls).`);
+    }
+
     let cachedSteamLogin = '';
     let cachedSteamPassword = '';
     let cachedRefreshToken = '';
@@ -456,6 +467,10 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
       CACHED_STEAM_PASSWORD: cachedSteamPassword,
       CACHED_STEAM_REFRESH_TOKEN: cachedRefreshToken,
       CACHED_STEAM_GUARDED: cachedGuarded ? 'true' : 'false',
+      // When the circuit breaker is open, Python skips every steampass call
+      // (/auth/login, /profile/product-credentials, /email/code/main) and
+      // only attempts the cached refresh_token login.
+      STEAMPASS_DISABLED: steampassDisabled ? 'true' : '',
       // Force-include the public URL bits so headless_token.py's
       // _public_base_url() can route to build_thin_zip instead of
       // falling back to the 50+ MB embedded multi-mode zip.
@@ -472,6 +487,13 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
 
         if (error) {
           console.error(`[TokenGen:Headless] Process error for AppID ${appId}:`, error.message);
+          // Trip the circuit breaker on a steampass throttle/ban so the NEXT
+          // gen doesn't immediately re-hammer the blocked endpoint. Only the
+          // 429/403 signal trips it — ordinary failures (bad Denuvo, Steam CM
+          // hiccup) don't, since those aren't caused by call volume.
+          if (steampassUuid !== 'FAKE' && steampassIsThrottling(logs)) {
+            await tripSteampassBreaker(logs.match(/HTTP (?:429|403)[^\n]*/)?.[0] || '429/403');
+          }
           // Bump failure count on THIS account's SteamSession row so we
           // don't keep hammering a dead account silently. The row is keyed
           // by (guildId, steampassLogin, steampassUuid) — i.e. the exact
@@ -564,6 +586,14 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
             } catch (e) {
               console.warn('[TokenGen] SteamSession upsert failed (non-fatal):', e);
             }
+          }
+
+          // A gen that actually reached steampass and succeeded proves the
+          // endpoint is healthy again → close the breaker. Pure refresh_token
+          // gens (source='refresh_token') never touched steampass, so they
+          // neither trip nor reset it.
+          if (meta && (meta.session_source === 'steampass' || meta.session_source === 'cached_creds')) {
+            await resetSteampassBreaker();
           }
 
           // Persist a freshly-captured steampass bearer so future gens on

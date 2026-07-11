@@ -2,6 +2,7 @@ import { EmbedBuilder } from 'discord.js';
 import prisma from '../lib/prisma';
 import { CONFIG } from '../config';
 import { getPoolStatus } from '../utils/steampassPool';
+import { steampassBlockRemainingMs } from '../utils/steampassCircuit';
 
 /**
  * /steamhealth — owner-only visibility into the Steam session cache.
@@ -37,14 +38,22 @@ export async function execute(interaction: any): Promise<void> {
   const withToken = sessions.filter((s) => (s.refreshToken || '').trim()).length;
   const total = sessions.length;
 
+  // Circuit-breaker state — when open, steampass calls are paused and only
+  // cached refresh_token gens run (see steampassCircuit.ts).
+  const blockMs = await steampassBlockRemainingMs();
+  const breakerLine = blockMs > 0
+    ? `\n**🚧 Steampass breaker:** OPEN — paused for **${Math.ceil(blockMs / 60_000)}m** more (only refresh_token gens run)`
+    : `\n**Steampass breaker:** 🟢 closed (normal)`;
+
   const embed = new EmbedBuilder()
     .setTitle('🩺 Steam Session Health')
-    .setColor(0x5865F2)
+    .setColor(blockMs > 0 ? 0xED4245 : 0x5865F2)
     .setTimestamp()
     .setDescription(
       `**Cached Steam sessions:** ${total}\n` +
       `**With live refresh_token** (gen skips steampass): **${withToken}**\n` +
-      `**Creds-only** (still fetches a guard code from steampass): **${total - withToken}**`
+      `**Creds-only** (still fetches a guard code from steampass): **${total - withToken}**` +
+      breakerLine
     );
 
   // Pool accounts + their cached steampass bearer.
