@@ -27,7 +27,7 @@ import http from 'http';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import { UBISOFT_CATALOG } from './utils/ubisoftCatalog';
+import { UBISOFT_CATALOG, resolveMagicDir } from './utils/ubisoftCatalog';
 
 const CORE_DIR = path.join(__dirname, '..', '_Core');
 const PANEL_ASSET_DIR = path.join(__dirname, 'public');
@@ -209,12 +209,7 @@ export function startPayloadServer(): void {
       const magicMatch = url.pathname.match(/^\/ubisoft\/magic\/([0-9]+)$/);
       if (req.method === 'GET' && magicMatch) {
         const appId = magicMatch[1];
-        const magicDir = (process.env.UBISOFT_MAGIC_DIR || '').trim();
-        if (!magicDir) {
-          res.writeHead(503, { 'Content-Type': 'text/plain' });
-          res.end('ubisoft magic hosting not configured');
-          return;
-        }
+        const magicDir = resolveMagicDir();
         const resolved = resolveMagicFile(magicDir, appId);
         if (!resolved) {
           res.writeHead(404, { 'Content-Type': 'text/plain' });

@@ -33,7 +33,7 @@ import prisma from '../lib/prisma';
 import { CONFIG } from '../config';
 import { client } from '../client';
 import { logAction, logTenant } from './logging';
-import { resolveUbisoftForGame, catalogByMagicFile } from './ubisoftCatalog';
+import { resolveUbisoftForGame, catalogByMagicFile, resolveMagicDir } from './ubisoftCatalog';
 import { mintUbisoftToken, ubisoftServiceConfigured } from './ubisoftService';
 import { resolvePublicBaseUrl } from './downloadHost';
 
@@ -64,7 +64,7 @@ function resolveMagicDelivery(
   magicFile: string | null,
 ): { url?: string; localPath?: string; sizeMB?: number } | null {
   const base = resolvePublicBaseUrl();
-  const dir = (CONFIG.UBISOFT_MAGIC_DIR || '').trim();
+  const dir = resolveMagicDir();
 
   let localPath: string | undefined;
   let sizeMB: number | undefined;
@@ -321,7 +321,7 @@ export async function handleUbisoftTokenReq(message: Message, ticket: any): Prom
 
 /** Convenience for staff commands: is the magic file present/servable? */
 export function magicFileStatus(): { dir: string; present: string[]; missing: string[] } {
-  const dir = (CONFIG.UBISOFT_MAGIC_DIR || '').trim();
+  const dir = resolveMagicDir();
   const present: string[] = [];
   const missing: string[] = [];
   if (!dir || !fs.existsSync(dir)) {

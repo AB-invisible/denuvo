@@ -47,6 +47,27 @@ var defaultPassword = Env("UBISOFT_PASSWORD");
 // device survives redeploys and 2FA is only needed once.
 var loginStorePath = Env("LOGIN_STORE_PATH", "/data/LoginStore.dat");
 
+// One-time seed: if LOGIN_STORE_B64 is set and no LoginStore.dat exists yet
+// at loginStorePath, decode it and write it out. This lets you seed the
+// trusted device WITHOUT manually uploading a file into a Railway volume —
+// paste the base64 of a locally-produced LoginStore.dat into an env var and
+// the service materializes it on first boot. Any later device-trust refresh
+// is written back to loginStorePath (persisted if that path is a volume).
+try
+{
+    var seedB64 = Env("LOGIN_STORE_B64");
+    if (seedB64.Length > 0 && !File.Exists(loginStorePath))
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(loginStorePath)!);
+        File.WriteAllBytes(loginStorePath, Convert.FromBase64String(seedB64));
+        log.LogInformation("Seeded LoginStore.dat from LOGIN_STORE_B64 at {Path}.", loginStorePath);
+    }
+}
+catch (Exception e)
+{
+    log.LogWarning("Could not seed LoginStore.dat from LOGIN_STORE_B64: {Msg}", e.Message);
+}
+
 // Shared secret the bot must present. If unset the service refuses to start
 // authenticated routes (fail closed rather than run wide open).
 var apiKey = Env("UBISOFT_SERVICE_KEY");

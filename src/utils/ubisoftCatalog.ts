@@ -22,6 +22,20 @@
  * before minting can succeed.
  */
 
+import path from 'path';
+
+/**
+ * Directory the magic-files zips are served from. Prefers UBISOFT_MAGIC_DIR
+ * (e.g. a Railway volume), but falls back to the repo-committed `ubisoft-magic/`
+ * folder so hosting works out-of-the-box on deploy with zero configuration.
+ * (__dirname here is src/utils, so ../.. is the repo root.)
+ */
+export function resolveMagicDir(): string {
+  const env = (process.env.UBISOFT_MAGIC_DIR || '').trim();
+  if (env) return env;
+  return path.join(__dirname, '..', '..', 'ubisoft-magic');
+}
+
 export interface UbisoftCatalogEntry {
   /** Human name (matches the Game.name where possible). */
   name: string;
