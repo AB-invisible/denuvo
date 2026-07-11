@@ -4,6 +4,7 @@ import { CONFIG } from '../config';
 import { utcDateKey } from '../utils/steampassPool';
 import { logAction } from '../utils/logging';
 import {
+  accountCanProvideGuardCode,
   checkSteamAuthHealth,
   getSteamAuthAccount,
   isSteamAuthConfigured,
@@ -45,9 +46,10 @@ export async function execute(interaction: any): Promise<void> {
     }
     return interaction.editReply({
       content:
-        `✅ **SteamAuth API OK** — ${health.accountCount} account(s) visible via API.\n` +
-        `URL: \`${CONFIG.STEAMAUTH_API_URL}\`\n` +
-        `API: \`GET /api/v1/accounts/:id/credentials\` (API key only, no password stored)\n` +
+        `✅ **SteamAuth API OK** — uptime \`${health.uptime?.toFixed(0) ?? '?'}s\`, ${health.accountCount} account(s) via API.\n` +
+        `URL: \`${CONFIG.STEAMAUTH_API_URL}\` · Docs: https://steamauth.gamegen.lol/docs\n` +
+        `Health: \`GET /health\` · List: \`GET /api/v1/accounts\` · Guard: \`GET /api/v1/accounts/:id/guard-code\`\n` +
+        `Credentials: \`GET /api/v1/accounts/:id/credentials\` (API key only, no password stored on bot)\n` +
         `Link with \`/steamauth sync\` or \`/steamauth link\` — top autogen priority.`,
     });
   }
@@ -92,7 +94,9 @@ export async function execute(interaction: any): Promise<void> {
       let body = '';
       for (const m of matches) {
         const shortId = m.apiAccount.account_id.slice(0, 8) + '…';
-        body += `**${m.apiAccount.steam_username}** (\`${shortId}\`)\n`;
+        const guardOk = m.apiAccount.has_steam_guard !== false && !m.apiAccount.guard_revoked;
+        const guardLabel = guardOk ? '🔐 guard ok' : '⚠️ no guard';
+        body += `**${m.apiAccount.steam_username}** (\`${shortId}\`) · ${guardLabel}\n`;
         for (let i = 0; i < m.appIds.length; i++) {
           body += `╰─ AppID \`${m.appIds[i]}\` — **${m.gameNames[i]}**\n`;
         }
@@ -132,8 +136,11 @@ export async function execute(interaction: any): Promise<void> {
       }
 
       const apiAcct = await getSteamAuthAccount(accountId).catch(() => null);
-      if (apiAcct?.guard_revoked) {
-        return interaction.editReply({ content: '❌ That SteamAuth account has Guard revoked on the service.' });
+      if (apiAcct && !accountCanProvideGuardCode(apiAcct)) {
+        const reason = apiAcct.guard_revoked
+          ? 'Guard revoked on the service'
+          : 'No shared secret (has_steam_guard: false)';
+        return interaction.editReply({ content: `❌ That SteamAuth account cannot provide guard codes — ${reason}.` });
       }
 
       const acct = await upsertSteamAuthLink({

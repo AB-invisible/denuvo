@@ -123,6 +123,50 @@ function steampassIsThrottling(logs: string): boolean {
     || /Steampass (?:credentials|guard-code) API (?:429|403)\b/i.test(logs);
 }
 
+async function steampassDisabledFailureMessage(
+  appId: number,
+  gameName: string,
+  guildKey: string,
+): Promise<string> {
+  const { hasLinkedSteamAuthAccounts, steamAuthEnabled } = await import('./steamAuthAccounts');
+
+  const linkedAuth = await hasLinkedSteamAuthAccounts(appId, guildKey);
+  if (linkedAuth) {
+    return (
+      `Linked SteamAuth account(s) failed to generate a token for **${gameName}** (AppID \`${appId}\`). ` +
+      'Check `/steamauth list`, `/steamauth status`, and SteamAuth dashboard guard health.'
+    );
+  }
+
+  let ownedCount = 0;
+  try {
+    ownedCount = await (prisma as any).ownedSteamAccount.count({
+      where: { guildId: guildKey, appId, active: true },
+    });
+  } catch {
+    ownedCount = 0;
+  }
+  if (ownedCount > 0) {
+    return (
+      `Steampass is disabled and BYO account(s) failed for **${gameName}** (AppID \`${appId}\`). ` +
+      'Check `/steamaccount list` — credentials, guard secret, or daily quota may be the issue.'
+    );
+  }
+
+  if (!steamAuthEnabled()) {
+    return (
+      'Steampass is disabled and `STEAMAUTH_API_KEY` is not set. ' +
+      'Create a key at https://steamauth.gamegen.lol/dashboard, add it to the bot env, redeploy, then run `/steamauth sync` in the owner server.'
+    );
+  }
+
+  return (
+    `Steampass is disabled and no SteamAuth accounts are linked for **${gameName}** (AppID \`${appId}\`). ` +
+    'In the owner server: `/steamauth discover` → `/steamauth sync` (or `/steamauth link account_id:<uuid> appid:<id>`). ' +
+    'Alternatively register BYO Steam accounts with `/steamaccount add`.'
+  );
+}
+
 export async function generateTokenWithRetry(
   appId: number,
   gameName: string,
@@ -260,14 +304,10 @@ export async function generateTokenWithRetry(
   }
 
   if (CONFIG.STEAMPASS_DISABLED) {
-    const { hasLinkedSteamAuthAccounts } = await import('./steamAuthAccounts');
-    const linked = await hasLinkedSteamAuthAccounts(appId, ownedGuildKey);
     console.log('[TokenGen] Steampass disabled — skipping pool / tenant login paths');
     return {
       zipPath: null,
-      logs: linked
-        ? 'Linked SteamAuth account(s) failed to generate a token. Check `/steamauth list` and SteamAuth API health (`/steamauth status`).'
-        : 'Steampass is disabled. Link SteamAuth accounts (`/steamauth link` or `/steamauth sync`) or register BYO Steam accounts (`/steamaccount add`).',
+      logs: await steampassDisabledFailureMessage(appId, gameName, ownedGuildKey),
       installerKey: '',
       poolAccountId: null,
       exhausted: false,

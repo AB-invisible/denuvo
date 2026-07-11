@@ -10,6 +10,7 @@ import prisma from '../lib/prisma';
 import { CONFIG } from '../config';
 import { utcDateKey } from './steampassPool';
 import {
+  accountCanProvideGuardCode,
   fetchSteamAuthCredentials,
   fetchSteamAuthGuardCode,
   getSteamAuthAccount,
@@ -154,6 +155,9 @@ export async function resolveSteamAuthLoginMaterial(
   linked: SteamAuthLinkedAccount,
 ): Promise<SteamAuthLoginMaterial> {
   const creds = await fetchSteamAuthCredentials(linked.accountId);
+  if (!creds.code) {
+    throw new Error('SteamAuth credentials response missing guard code');
+  }
   return {
     steamLogin: (creds.steam_username || linked.steamLogin || '').trim(),
     steamPassword: creds.password,
@@ -200,7 +204,7 @@ export async function discoverSteamAuthMatches(): Promise<DiscoverMatch[]> {
 
   const matches: DiscoverMatch[] = [];
   for (const apiAccount of allAccounts) {
-    if (apiAccount.guard_revoked) continue;
+    if (!accountCanProvideGuardCode(apiAccount)) continue;
     const ownedAppIds: number[] = [];
     const gameNames: string[] = [];
     for (const g of apiAccount.games ?? []) {

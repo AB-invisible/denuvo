@@ -420,6 +420,20 @@ client.once(Events.ClientReady, async () => {
   console.log(`${CONFIG.NAME} is online!`);
   if (CONFIG.STEAMPASS_DISABLED) {
     console.log('[Steampass] Disabled — autogen uses SteamAuth + BYO owned accounts only.');
+    try {
+      const { steamAuthEnabled, syncSteamAuthLinks } = await import('./utils/steamAuthAccounts');
+      if (!steamAuthEnabled()) {
+        console.warn('[SteamAuth] STEAMAUTH_API_KEY missing — link/sync unavailable until env is set.');
+      } else {
+        const { linked, skipped } = await syncSteamAuthLinks('');
+        if (linked > 0) {
+          console.log(`[SteamAuth] Startup sync linked ${linked} account(s) (${skipped} already linked).`);
+          await syncAllOwnerGameStock(CONFIG.OWNER_GUILD_ID, { forceRaise: true });
+        }
+      }
+    } catch (e) {
+      console.warn('[SteamAuth] Startup sync failed (non-fatal):', (e as Error).message);
+    }
   }
   await registerCommands();
 
