@@ -446,6 +446,39 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
       }
     }
 
+    // ── Account-wide refresh_token sharing (steamLogin → refresh_token) ──
+    // A Steam refresh_token is per Steam ACCOUNT, not per game — so a token we
+    // captured generating game A works for game B if steampass hands out the
+    // SAME Steam account for both. We pass every refresh_token this steampass
+    // account has cached (across all games), keyed by Steam login. On a cold
+    // gen of a new game, once Python learns its Steam login from /profile it
+    // can reuse a matching token and SKIP the guard-code call (/email/code/main
+    // — the endpoint steampass throttles). This is what lets "one login" cover
+    // many games instead of re-authenticating per game.
+    let accountSessionsJson = '{}';
+    if (steampassUuid && steampassUuid !== 'FAKE' && spLogin) {
+      try {
+        const rows = await (prisma as any).steamSession.findMany({
+          where: { guildId: sessionGuildKey, steampassLogin: spLogin, refreshToken: { not: null } },
+          select: { steamLogin: true, refreshToken: true },
+          orderBy: { updatedAt: 'desc' },
+          take: 100,
+        });
+        const map: Record<string, string> = {};
+        for (const r of rows) {
+          const l = (r.steamLogin || '').trim();
+          const t = (r.refreshToken || '').trim();
+          if (l && t && !map[l]) map[l] = t; // most-recent token per Steam login
+        }
+        if (Object.keys(map).length) {
+          accountSessionsJson = JSON.stringify(map);
+          console.log(`[TokenGen] Passing ${Object.keys(map).length} cached account refresh_token(s) for reuse across games.`);
+        }
+      } catch (e) {
+        console.warn('[TokenGen] Account-session map lookup failed (non-fatal):', (e as Error).message);
+      }
+    }
+
     // Explicitly forward PUBLIC_URL / RAILWAY_PUBLIC_DOMAIN to Python.
     // The implicit { ...process.env } spread in buildPythonEnv() should
     // already carry these over, but we hit a case where Python's
@@ -478,6 +511,10 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
       // (/auth/login, /profile/product-credentials, /email/code/main) and
       // only attempts the cached refresh_token login.
       STEAMPASS_DISABLED: steampassDisabled ? 'true' : '',
+      // JSON { steamLogin: refresh_token } of every session this steampass
+      // account has cached, so a cold gen can reuse a token from another game
+      // on the same Steam account and skip the guard-code call.
+      CACHED_ACCOUNT_SESSIONS: accountSessionsJson,
       // Force-include the public URL bits so headless_token.py's
       // _public_base_url() can route to build_thin_zip instead of
       // falling back to the 50+ MB embedded multi-mode zip.

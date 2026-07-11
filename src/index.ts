@@ -17,6 +17,7 @@ import { generateToken, generateTokenWithRetry } from './utils/tokenGenerator';
 import { uploadFile } from './utils/fileHost';
 import { isUbisoftGame } from './utils/ubisoftCatalog';
 import { startUbisoftDelivery, handleUbisoftTokenReq, UBISOFT_STAGE_AWAITING } from './utils/ubisoftFlow';
+import { enqueueTokenGen } from './utils/tokenQueue';
 import { updateTicketWaitTimes, checkWeeklyStaffStats, checkDutyStatusReset, checkStaleTickets, cleanupExpiredCooldowns } from './utils/scheduler';
 import { addSubscription } from './utils/subscriptionManager';
 import { logTenant } from './utils/logging';
@@ -1176,7 +1177,8 @@ async function handleVerifyApprove(interaction: any) {
     return;
   }
 
-  await autoGenerateAndDeliver(interaction.channel as TextChannel, ticket, interaction.guild);
+  const ch = interaction.channel as TextChannel;
+  await enqueueTokenGen(ch, ticket.game.name, () => autoGenerateAndDeliver(ch, ticket, interaction.guild));
 }
 
 /**
@@ -1506,7 +1508,8 @@ client.on(Events.MessageCreate, async (message) => {
           return; // Skip the rest of the auto-gen block
         }
 
-        await autoGenerateAndDeliver(message.channel as TextChannel, ticket, message.guild);
+        const genCh = message.channel as TextChannel;
+        await enqueueTokenGen(genCh, ticket.game.name, () => autoGenerateAndDeliver(genCh, ticket, message.guild));
       } else {
         const newRetryCount = ticket.verification.retryCount + 1;
         await prisma.pendingVerification.update({

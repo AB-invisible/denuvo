@@ -1898,6 +1898,16 @@ def main(app_id, game_name, steampass_uuid, generation_mode="gbe"):
         if steampass_disabled and session_source is None:
             log("Steampass DISABLED (circuit breaker open) — only the cached "
                 "refresh_token path will be attempted this run.")
+
+        # { steam_login: refresh_token } for every game this steampass account
+        # has cached. Lets a cold gen reuse a token from another game on the
+        # SAME Steam account and skip the guard-code call.
+        try:
+            acct_sessions = json.loads(os.environ.get("CACHED_ACCOUNT_SESSIONS") or "{}")
+            if not isinstance(acct_sessions, dict):
+                acct_sessions = {}
+        except Exception:
+            acct_sessions = {}
         if cached_login and session_source is None:
             log(f"Found cached Steam session for this UUID (login={cached_login}, "
                 f"refresh_token={'yes' if cached_refresh_token else 'no'})")
@@ -1979,22 +1989,47 @@ def main(app_id, game_name, steampass_uuid, generation_mode="gbe"):
                     sp = SteampassClient(sp_login, sp_password)
                     sp.authenticate()
                 steam_login, steam_password, guarded = sp.get_steam_credentials(steampass_uuid)
-                guard_code = None
-                if guarded:
-                    log("Requesting Steam Guard code...")
-                    guard_code = sp.get_guard_code(steampass_uuid)
 
-                log("Connecting to Steam servers (headless)...")
-                ticket_bytes, steam_id, new_refresh_token = get_encrypted_ticket_headless(
-                    app_id, steam_login, steam_password, guard_code,
-                )
+                # Before spending a guard-code call, see if we already hold a
+                # refresh_token for THIS Steam account from another game. If so,
+                # reuse it — this cold gen then costs only the /profile call
+                # (no /email/code/main, the throttled endpoint).
+                shared_token = acct_sessions.get(steam_login)
+                if shared_token:
+                    try:
+                        log(f"Have a cached refresh_token for Steam account '{steam_login}' "
+                            f"(from another game) — trying it, skipping /email/code/main...")
+                        ticket_bytes, steam_id, new_refresh_token = get_encrypted_ticket_headless(
+                            app_id, steam_login, steam_password, None,
+                            refresh_token=shared_token,
+                        )
+                        session_source = "refresh_token"
+                        log("Shared refresh_token worked — cold gen used only /profile "
+                            "(no guard code)")
+                    except Exception as e:
+                        log(f"Shared refresh_token for '{steam_login}' failed ({e}) — "
+                            f"requesting a guard code instead")
+                        ticket_bytes = None
+                        steam_id = None
+                        new_refresh_token = None
+
+                if session_source is None:
+                    guard_code = None
+                    if guarded:
+                        log("Requesting Steam Guard code...")
+                        guard_code = sp.get_guard_code(steampass_uuid)
+
+                    log("Connecting to Steam servers (headless)...")
+                    ticket_bytes, steam_id, new_refresh_token = get_encrypted_ticket_headless(
+                        app_id, steam_login, steam_password, guard_code,
+                    )
+                    session_source = "steampass"
             except Exception as e:
                 # Clean exit (not a raw traceback) so the Node retry loop can
                 # rotate to the next pool account, and the log shows WHY it
                 # failed (the steampass response body is in the message).
                 log(f"ERROR: steampass/steam flow failed: {e}")
                 sys.exit(1)
-            session_source = "steampass"
 
         token_b64 = base64.b64encode(ticket_bytes).decode()
         log(f"Token generated (SteamID: {steam_id}, source: {session_source})")
