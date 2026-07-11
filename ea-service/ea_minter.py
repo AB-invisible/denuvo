@@ -36,8 +36,21 @@ DEFAULT_EA_APP_VERSION = "13.560.0.6073"
 LICENSE_NS = "{http://ea.com/license}"
 
 TICKET_RE = re.compile(
-    r"^((?:[A-Za-z0-9_\-]{4}){40,}(?:[A-Za-z0-9_\-]{2}==|[A-Za-z0-9_\-]{3}=)?)\|(\d+)\|([a-zA-Z_\d]+)$"
+    r"^((?:[A-Za-z0-9+\/_\-]{4}){40,}(?:[A-Za-z0-9+\/_\-]{2}==|[A-Za-z0-9+\/_\-]{3}=)?)\|(\d+)\|([a-zA-Z_\d]+)$"
 )
+
+
+def _extract_ticket_line(raw: str) -> str:
+    text = (raw or "").strip().replace("\r", "")
+    if not text:
+        return ""
+    for line in text.split("\n"):
+        line = line.strip()
+        if TICKET_RE.match(line):
+            return line
+        if len(line) >= 40 and re.search(r"\|[0-9]+\|[0-9a-zA-Z_]+\s*$", line):
+            return line
+    return text.replace("\n", "")
 
 PC_SIGN_KEYS = {
     "v1": b"ISa3dpGOc8wW7Adn4auACSQmaccrOyR2",
@@ -204,7 +217,7 @@ def get_access_token(cfg: EaConfig, sess: requests.Session) -> str:
 
 
 def normalize_ticket(raw: str, content_id: Optional[int], engine: Optional[str]) -> tuple[str, int, str]:
-    text = (raw or "").strip().replace("\r", "").replace("\n", "")
+    text = _extract_ticket_line(raw)
     m = TICKET_RE.match(text)
     if m:
         cid = int(m.group(2))

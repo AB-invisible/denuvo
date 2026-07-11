@@ -41,9 +41,46 @@ export const EA_STAGE_AWAITING = 'AWAITING_TICKET';
 export const EA_STAGE_DONE = 'DONE';
 
 const TICKET_FULL_RE =
-  /^((?:[A-Za-z0-9_\-]{4}){40,}(?:[A-Za-z0-9_\-]{2}==|[A-Za-z0-9_\-]{3}=)?)\|(\d+)\|([a-zA-Z_\d]+)$/;
+  /^((?:[A-Za-z0-9+\/_\-]{4}){40,}(?:[A-Za-z0-9+\/_\-]{2}==|[A-Za-z0-9+\/_\-]{3}=)?)\|(\d+)\|([a-zA-Z_\d]+)$/;
+const TICKET_PIPE_TAIL_RE = /\|[0-9]+\|[0-9a-zA-Z_]+\s*$/;
 const TICKET_BLOB_RE = /[A-Za-z0-9+/=_\-]{40,}/;
 const TICKET_MIN_LEN = 40;
+
+/** Pull the pipe-separated Denuvo line out of a multi-line Denuvo_ticket_*.txt file. */
+export function normalizeEaTicketInput(raw: string): string {
+  const text = (raw || '').trim().replace(/\r/g, '');
+  if (!text) return '';
+
+  for (const line of text.split('\n').map((l) => l.trim()).filter(Boolean)) {
+    if (TICKET_FULL_RE.test(line)) return line;
+    if (line.length >= TICKET_MIN_LEN && TICKET_PIPE_TAIL_RE.test(line)) return line;
+  }
+
+  const flat = text.replace(/\s+/g, '');
+  if (TICKET_FULL_RE.test(flat)) return flat.match(TICKET_FULL_RE)![0];
+  return text;
+}
+
+function parseEaTicketLine(line: string, contentId: number, engine: string): { ticket: string; contentId: number; engine: string } | null {
+  const full = line.match(TICKET_FULL_RE);
+  if (full) {
+    let cid = Number(full[2]);
+    let eng = full[3];
+    if (cid === 0 && /^\d+$/.test(eng)) {
+      cid = Number(eng);
+      eng = '0';
+    }
+    return { ticket: full[0], contentId: cid, engine: eng };
+  }
+  const blob = line.match(TICKET_BLOB_RE);
+  if (blob && blob[0].length >= TICKET_MIN_LEN) {
+    return { ticket: blob[0], contentId, engine };
+  }
+  if (line.length >= TICKET_MIN_LEN && !/\s/.test(line)) {
+    return { ticket: line, contentId, engine };
+  }
+  return null;
+}
 
 function homeGuild() {
   return client.guilds.cache.get(CONFIG.GUILD_ID) ?? null;
@@ -91,9 +128,9 @@ function magicInstructions(gameName: string, layout: 'flat' | 'bin64'): string {
     `**Install setup files**\n` +
     `Download the package above, extract it, and copy the contents into ${dropTarget}. Overwrite existing files if prompted.\n\n` +
     `**Generate activation ticket**\n` +
-    `Launch **${gameName}** once. The game will not load fully at this stage — this is expected. A file named **\`token_req.txt\`** (or similar ticket file) will be created in your game directory.\n\n` +
+    `Launch **${gameName}** once. The game will not load fully at this stage — this is expected. A file named **\`Denuvo_ticket_*.txt\`** (or **\`token_req.txt\`**) will be created in your game directory.\n\n` +
     `**Submit for activation**\n` +
-    `Attach **\`token_req.txt\`** to this ticket. Your activation file, **\`token.ini\`**, will be delivered here once processing is complete.`
+    `Attach that ticket file to this channel. Your activation file, **\`token.ini\`**, will be delivered here once processing is complete.`
   );
 }
 
@@ -202,6 +239,7 @@ export async function startEaDelivery(channel: TextChannel, ticket: any, guild: 
         magicUrl: delivery.url,
         eaContentId: resolved.eaContentId,
         eaEngine: resolved.eaEngine,
+        tokenReqNames: resolved.tokenReqNames,
       })
     : ({ ok: false, reason: 'no_base_url' } as const);
 
@@ -267,25 +305,10 @@ export async function extractEaTicket(
   if (body) candidates.push(body);
 
   for (const raw of candidates) {
-    const line = raw.split('\n').map((l) => l.trim()).find((l) => l.length >= TICKET_MIN_LEN) || raw.replace(/\s+/g, '');
-    const full = line.match(TICKET_FULL_RE);
-    if (full) {
-      let cid = Number(full[2]);
-      let eng = full[3];
-      // FC 26 (and similar) emit TICKET|0|<contentId> instead of TICKET|<contentId>|<engine>.
-      if (cid === 0 && /^\d+$/.test(eng)) {
-        cid = Number(eng);
-        eng = '0';
-      }
-      return { ticket: full[0], contentId: cid, engine: eng };
-    }
-    const blob = line.match(TICKET_BLOB_RE);
-    if (blob && blob[0].length >= TICKET_MIN_LEN) {
-      return { ticket: blob[0], contentId, engine };
-    }
-    if (line.length >= TICKET_MIN_LEN && !/\s/.test(line)) {
-      return { ticket: line, contentId, engine };
-    }
+    const line = normalizeEaTicketInput(raw);
+    if (!line) continue;
+    const parsed = parseEaTicketLine(line, contentId, engine);
+    if (parsed) return parsed;
   }
   return null;
 }
@@ -309,7 +332,7 @@ export async function handleEaTicket(message: Message, ticket: any): Promise<boo
         new EmbedBuilder()
           .setTitle('📎 Activation ticket required')
           .setDescription(
-            `Please attach **\`token_req.txt\`** to this ticket to continue.\n\n` +
+            `Please attach your **Denuvo ticket file** (\`Denuvo_ticket_*.txt\` or \`token_req.txt\`) to continue.\n\n` +
               `This file is generated after installing the setup files and launching **${ticket.game.name}** once.`,
           )
           .setColor(0xfee75c),
@@ -452,6 +475,7 @@ export async function createEaTestInstaller(
     magicUrl: delivery.url,
     eaContentId: resolved.eaContentId,
     eaEngine: resolved.eaEngine,
+    tokenReqNames: resolved.tokenReqNames,
     test: true,
   });
   if (!r.ok) {

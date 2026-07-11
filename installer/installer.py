@@ -2402,6 +2402,20 @@ def _find_token_req(dirs: list[Path], names: list[str]) -> "tuple[Path, str] | N
         except OSError:
             continue
         for n in names:
+            if "*" in n:
+                try:
+                    matches = sorted(d.glob(n), key=lambda p: p.stat().st_mtime, reverse=True)
+                except OSError:
+                    matches = []
+                for p in matches:
+                    try:
+                        if p.is_file():
+                            txt = p.read_text(encoding="utf-8", errors="ignore").strip()
+                            if txt:
+                                return p, txt
+                    except OSError:
+                        continue
+                continue
             p = d / n
             try:
                 if p.is_file():
@@ -2557,7 +2571,11 @@ def run_callhome_flow(manifest: dict, here: Path, self_path: Path) -> None:
     for d in dirs:
         for n in names:
             try:
-                (d / n).unlink(missing_ok=True)
+                if "*" in n:
+                    for p in d.glob(n):
+                        p.unlink(missing_ok=True)
+                else:
+                    (d / n).unlink(missing_ok=True)
             except OSError:
                 pass
 

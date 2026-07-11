@@ -16,6 +16,8 @@ export interface EaCatalogEntry {
   eaContentId: number;
   eaEngine: string;
   eaMagicFile?: string;
+  /** Filenames / globs the game writes after launch (installer watches these). */
+  eaTokenReqNames?: string[];
   /** Direct download when no local zip is hosted (e.g. Pixeldrain). */
   eaMagicUrl?: string;
   layout?: EaLayout;
@@ -29,6 +31,7 @@ export const EA_CATALOG: EaCatalogEntry[] = [
     // FC 26 tickets use TICKET|0|16425677 — content id is the third segment.
     eaEngine: '0',
     eaMagicFile: 'EA SPORTS FC 26 magic files.zip',
+    eaTokenReqNames: ['token_req.txt', 'Denuvo_ticket*.txt'],
     layout: 'flat',
   },
 ];
@@ -57,7 +60,7 @@ export function resolveEaForGame(game: {
   eaContentId?: number | null;
   eaEngine?: string | null;
   eaMagicFile?: string | null;
-}): { eaContentId: number; eaEngine: string; magicFile: string | null; magicUrl: string | null; layout: EaLayout } | null {
+}): { eaContentId: number; eaEngine: string; magicFile: string | null; magicUrl: string | null; layout: EaLayout; tokenReqNames: string[] } | null {
   const catalog = game.appId ? catalogBySteamAppId(game.appId) : undefined;
   const eaContentId = game.eaContentId ?? catalog?.eaContentId ?? null;
   const eaEngine = (game.eaEngine ?? catalog?.eaEngine ?? '').trim() || null;
@@ -66,7 +69,8 @@ export function resolveEaForGame(game: {
   const magicFile = game.eaMagicFile ?? catalog?.eaMagicFile ?? null;
   const magicUrl = catalog?.eaMagicUrl ?? null;
   const layout = catalog?.layout ?? 'flat';
-  return { eaContentId, eaEngine, magicFile, magicUrl, layout };
+  const tokenReqNames = catalog?.eaTokenReqNames ?? ['token_req.txt', 'Denuvo_ticket*.txt'];
+  return { eaContentId, eaEngine, magicFile, magicUrl, layout, tokenReqNames };
 }
 
 export function isEaGame(game: {

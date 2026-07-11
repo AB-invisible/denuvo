@@ -25,7 +25,7 @@ import { logAction, logTenant } from './logging';
 import { closeTicketForDailyLimit } from './ticketManager';
 import { mintEaToken } from './eaService';
 import { mintUbisoftToken } from './ubisoftService';
-import { EA_STAGE_DONE } from './eaFlow';
+import { EA_STAGE_DONE, normalizeEaTicketInput } from './eaFlow';
 import { UBISOFT_STAGE_DONE } from './ubisoftFlow';
 
 export type ActivationPlatform = 'ea' | 'ubisoft';
@@ -152,7 +152,8 @@ export async function processInstallerActivation(row: ActivationRow, tokenReq: s
     if (!row.eaContentId || !row.eaEngine) {
       return { status: 500, code: 'Misconfigured', message: 'This activation is missing its EA content id / engine. Contact staff.' };
     }
-    const result = await mintEaToken(tokenReq, row.eaContentId, row.eaEngine);
+    const ticketLine = normalizeEaTicketInput(tokenReq);
+    const result = await mintEaToken(ticketLine, row.eaContentId, row.eaEngine);
     if (result.ok) {
       await finalizeTicket(row, gameName, 'ea');
       return { status: 200, tokenIni: `[token]\ntoken=${result.token}\n`, filename: 'token.ini', consume: true };
