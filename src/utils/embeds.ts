@@ -21,18 +21,11 @@ function truncateDiscordText(text: string, max: number): string {
   return chars.slice(0, max).join('');
 }
 
-function buildGameSelectOption(game: GameWithCount, description: string, emoji: string) {
-  const option = new StringSelectMenuOptionBuilder()
+function buildGameSelectOption(game: GameWithCount, description: string) {
+  return new StringSelectMenuOptionBuilder()
     .setLabel(truncateDiscordText(game.name, 100))
     .setDescription(truncateDiscordText(description, 100))
-    .setValue(truncateDiscordText(game.name, 100));
-
-  // Discord intermittently 500s on some unicode emoji in select options.
-  if (emoji && [...emoji].length <= 2) {
-    option.setEmoji(emoji);
-  }
-
-  return option;
+    .setValue(String(game.id));
 }
 
 export async function createMainPanel(guildId?: string) {
@@ -59,13 +52,9 @@ export async function createMainPanel(guildId?: string) {
     serverReservedMap = new Map(serverCounts.map(c => [c.gameId, c._count]));
   }
 
-  // Per-server stock: fetch all ServerStock entries for this guild
+  // Per-server stock: read cached ServerStock (synced by scheduler / account link commands).
   let serverStockMap = new Map<number, { stock: number; lastDepletedAt: Date | null }>();
   if (guildId) {
-    if (usesAccountSyncedStock(guildId)) {
-      const { syncAllOwnerGameStock } = await import('./accountCapacity');
-      await syncAllOwnerGameStock(guildId);
-    }
     serverStockMap = await getServerStockMapForGuild(guildId);
   }
 
@@ -127,32 +116,30 @@ export async function createMainPanel(guildId?: string) {
           const availableStock = Math.max(0, gameStock - reserved);
           const queueCount = waitlistMap.get(game.id) || 0;
 
-          let emoji = '🔴';
+          let statusPrefix = '🔴';
           let description = `ID: ${game.appId || 'N/A'} • ${availableStock} tokens remaining (${reserved} reserved)`;
 
-          if (availableStock >= 10) emoji = '🟢';
-          else if (availableStock > 0) emoji = '🟡';
+          if (availableStock >= 10) statusPrefix = '🟢';
+          else if (availableStock > 0) statusPrefix = '🟡';
           else if (availableStock === 0 && gameLastDepleted) {
             const timeDiff = now.getTime() - gameLastDepleted.getTime();
             const remaining = Math.max(0, REGEN_TIME - timeDiff);
             const hours = Math.floor(remaining / (1000 * 60 * 60));
             const minutes = Math.floor((remaining % (1000 * 60 * 60)) / (1000 * 60));
             const queueText = queueCount > 0 ? ` • ${queueCount} in queue` : '';
-            description = `ID: ${game.appId || 'N/A'} • 🔄 Restock in ${hours}h ${minutes}m${queueText}`;
+            description = `${statusPrefix} ID: ${game.appId || 'N/A'} • 🔄 Restock in ${hours}h ${minutes}m${queueText}`;
           } else if (availableStock === 0 && reserved > 0) {
-            emoji = '🔴';
             const queueText = queueCount > 0 ? ` • ${queueCount} in queue` : '';
-            description = `ID: ${game.appId || 'N/A'} • ⏳ Out of stock (${reserved} reserved${queueText})`;
+            description = `${statusPrefix} ID: ${game.appId || 'N/A'} • ⏳ Out of stock (${reserved} reserved${queueText})`;
+          } else {
+            description = `${statusPrefix} ${description}`;
           }
 
           if (game.donatorOnly) {
-            emoji = '💎';
             description = `💎 Donator Only (2h cd) • ${description}`;
           } else if (game.boosterOnly) {
-            emoji = '✨';
             description = `✨ Booster Only • ${description}`;
           } else if (game.highDemand) {
-            if (availableStock > 0) emoji = '🔥';
             description = `🔥 High Demand (48h cd) • ${description}`;
           }
 
@@ -160,7 +147,7 @@ export async function createMainPanel(guildId?: string) {
             description += ` • ${queueCount} in queue`;
           }
 
-          return buildGameSelectOption(game, description, emoji);
+          return buildGameSelectOption(game, description);
         })
       );
 

@@ -465,6 +465,8 @@ client.once(Events.ClientReady, async () => {
     syncAllOwnerGameStock(),
   ]);
 
+  refreshAllPanels(1000);
+
   // New: Check for persisted states on startup
   await checkActiveMaintenance();
   await rehydrateVerificationTimers();

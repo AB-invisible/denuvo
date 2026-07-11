@@ -53,7 +53,18 @@ async function getInfoContent() {
   }
 }
 
-export async function createTicket(interaction: StringSelectMenuInteraction, gameName: string) {
+/** Panel select values are game IDs; legacy panels may still send game names. */
+async function resolveGameFromSelectValue(raw: string) {
+  const trimmed = raw.trim();
+  const id = Number.parseInt(trimmed, 10);
+  if (!Number.isNaN(id) && String(id) === trimmed) {
+    return prisma.game.findFirst({ where: { id, disabled: false } });
+  }
+  return prisma.game.findFirst({ where: { name: trimmed, disabled: false } });
+}
+
+export async function createTicket(interaction: StringSelectMenuInteraction, selectedValue: string) {
+  let gameName = selectedValue;
   try {
     // ─── Replay guard ──────────────────────────────────────────
     // Discord can re-deliver the same interactionCreate event when the
@@ -72,6 +83,14 @@ export async function createTicket(interaction: StringSelectMenuInteraction, gam
     await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
     const guild = interaction.guild;
     if (!guild) return;
+
+    const gameRecord = await resolveGameFromSelectValue(selectedValue);
+    if (!gameRecord) {
+      return interaction.editReply({
+        content: '❌ **Target Invalid:** The selected game is currently offline or does not exist.',
+      });
+    }
+    gameName = gameRecord.name;
 
     // ─── Closed-panel / maintenance guard ──────────────────────
     // /closepanel deletes the panel message + the panel DB record, but
@@ -136,11 +155,8 @@ export async function createTicket(interaction: StringSelectMenuInteraction, gam
     const ticketGuildId = interaction.guildId || '';
     await processGuildRestocks(ticketGuildId);
 
-    const gamePreview = await prisma.game.findUnique({
-      where: { name: gameName, disabled: false },
-      select: { id: true, appId: true },
-    });
-    if (gamePreview?.appId && usesAccountSyncedStock(ticketGuildId)) {
+    const gamePreview = gameRecord;
+    if (gamePreview.appId && usesAccountSyncedStock(ticketGuildId)) {
       await syncStockForGame(gamePreview.id, ticketGuildId);
     }
 
@@ -176,7 +192,7 @@ export async function createTicket(interaction: StringSelectMenuInteraction, gam
       }
 
       const game = await tx.game.findUnique({
-        where: { name: gameName, disabled: false },
+        where: { id: gameRecord.id, disabled: false },
       });
 
       if (!game) return { error: '❌ **Target Invalid:** The selected game is currently offline or does not exist.' };

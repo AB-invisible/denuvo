@@ -29,6 +29,15 @@ function isDiscord500(err: unknown): boolean {
   return (err as { status?: number }).status === 500;
 }
 
+function isRateLimited(err: unknown): boolean {
+  const e = err as { status?: number; code?: number };
+  return e?.status === 429 || e?.code === 429;
+}
+
+function isRetryableDiscordError(err: unknown): boolean {
+  return isDiscord500(err) || isRateLimited(err);
+}
+
 function logDiscordApiError(context: string, err: unknown): void {
   const raw = (err as { rawError?: unknown }).rawError;
   if (raw) console.error(`[Panel] ${context} Discord API error:`, JSON.stringify(raw));
@@ -87,15 +96,16 @@ function buildPanelEditPayload(
   return payload;
 }
 
-async function editMessageWithRetry(message: Message, payload: MessageEditOptions, retries = 3): Promise<void> {
+async function editMessageWithRetry(message: Message, payload: MessageEditOptions, retries = 4): Promise<void> {
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       await message.edit(payload);
       return;
     } catch (err) {
       if (isStaleDiscordResource(err)) throw err;
-      if (isDiscord500(err) && attempt < retries) {
-        await sleep(1000 * (attempt + 1));
+      if (isRetryableDiscordError(err) && attempt < retries) {
+        const delay = isRateLimited(err) ? 2000 * (attempt + 1) : 1000 * (attempt + 1);
+        await sleep(delay);
         continue;
       }
       logDiscordApiError('edit', err);
@@ -104,30 +114,57 @@ async function editMessageWithRetry(message: Message, payload: MessageEditOption
   }
 }
 
+async function repostPanelMessage(
+  channel: TextChannel,
+  panelRecord: { id: number; messageId: string },
+  panelContent: Awaited<ReturnType<typeof createMainPanel>>,
+  oldMessage: Message,
+): Promise<void> {
+  const payload: Parameters<TextChannel['send']>[0] = {
+    embeds: panelContent.embeds,
+    components: panelContent.components,
+  };
+  if (!getPanelAssetUrl('gamegen.png')) {
+    payload.files = [new AttachmentBuilder(panelImageAttachmentPath('gamegen.png'), { name: 'gamegen.png' })];
+  }
+
+  const sentMessage = await sendMessageWithRetry(channel, payload);
+  await prisma.panel.update({
+    where: { id: panelRecord.id },
+    data: { messageId: sentMessage.id },
+  }).catch(() => {});
+  await oldMessage.delete().catch(() => {});
+  console.log(`[Panel] Reposted panel #${panelRecord.id} in #${channel.id} (new message ${sentMessage.id})`);
+}
+
 async function editPanelMessage(
   message: Message,
+  channel: TextChannel,
+  panelRecord: { id: number; messageId: string },
   panelContent: Awaited<ReturnType<typeof createMainPanel>>,
 ): Promise<void> {
-  try {
-    await editMessageWithRetry(message, buildPanelEditPayload(message, panelContent));
-    return;
-  } catch (err) {
-    if (!isDiscord500(err)) throw err;
-    console.warn(`[Panel] Full edit failed for ${message.id}, retrying without embed image…`);
+  const embeds = embedsForPanelRefresh(message, panelContent.embeds);
+
+  const attempts: { label: string; payload: MessageEditOptions }[] = [
+    { label: 'full', payload: buildPanelEditPayload(message, panelContent) },
+    { label: 'embeds+components', payload: { embeds, components: panelContent.components } },
+    { label: 'imageless', payload: buildPanelEditPayload(message, panelContent, { stripImage: true }) },
+    { label: 'components-only', payload: { components: panelContent.components } },
+  ];
+
+  for (const attempt of attempts) {
+    try {
+      await editMessageWithRetry(message, attempt.payload);
+      return;
+    } catch (err) {
+      if (isStaleDiscordResource(err)) throw err;
+      if (!isRetryableDiscordError(err)) throw err;
+      console.warn(`[Panel] ${attempt.label} edit failed for ${message.id}, trying next strategy…`);
+    }
   }
 
-  try {
-    await editMessageWithRetry(message, buildPanelEditPayload(message, panelContent, { stripImage: true }));
-    return;
-  } catch (err) {
-    if (!isDiscord500(err)) throw err;
-    console.warn(`[Panel] Imageless edit failed for ${message.id}, retrying components-only…`);
-  }
-
-  await editMessageWithRetry(message, {
-    components: panelContent.components,
-    attachments: [],
-  });
+  console.warn(`[Panel] All edit strategies failed for ${message.id} — reposting panel message`);
+  await repostPanelMessage(channel, panelRecord, panelContent, message);
 }
 
 export async function sendMessageWithRetry(
@@ -157,6 +194,7 @@ export async function sendMessageWithRetry(
 async function refreshAllPanelsNow() {
   try {
     const panels = await prisma.panel.findMany();
+    if (panels.length === 0) return;
 
     // Group panels by guild to avoid regenerating the same content per-guild
     const guildPanels = new Map<string, typeof panels>();
@@ -177,10 +215,20 @@ async function refreshAllPanelsNow() {
       }
     }
 
+    let refreshed = 0;
+    let failed = 0;
+
     // Generate per-guild panel content and update sequentially — parallel
     // PATCHes across channels often trigger transient Discord 500s.
     for (const [guildId, guildPanelList] of guildPanels) {
-      const panelContent = await createMainPanel(guildId);
+      let panelContent: Awaited<ReturnType<typeof createMainPanel>>;
+      try {
+        panelContent = await createMainPanel(guildId);
+      } catch (err) {
+        console.error(`[Panel] Failed to build panel content for guild ${guildId}:`, err);
+        failed += guildPanelList.length;
+        continue;
+      }
 
       for (const panelRecord of guildPanelList) {
         try {
@@ -194,11 +242,13 @@ async function refreshAllPanelsNow() {
           }
 
           try {
-            await editPanelMessage(message, panelContent);
+            await editPanelMessage(message, channel, panelRecord, panelContent);
+            refreshed++;
           } catch (err) {
             if (isStaleDiscordResource(err)) {
               await prisma.panel.delete({ where: { id: panelRecord.id } }).catch(() => {});
             } else {
+              failed++;
               console.error(`Failed to edit message ${panelRecord.messageId}:`, err);
             }
           }
@@ -206,12 +256,17 @@ async function refreshAllPanelsNow() {
           if (isStaleDiscordResource(err)) {
             await prisma.panel.delete({ where: { id: panelRecord.id } }).catch(() => {});
           } else {
+            failed++;
             console.error(`Error refreshing panel ${panelRecord.id}:`, err);
           }
         }
 
         await sleep(PANEL_EDIT_DELAY_MS);
       }
+    }
+
+    if (refreshed > 0 || failed > 0) {
+      console.log(`[Panel] Refresh complete — ${refreshed} updated, ${failed} failed`);
     }
   } catch (err) {
     console.error('Error refreshing panels:', err);
