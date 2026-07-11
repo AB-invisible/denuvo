@@ -153,7 +153,7 @@ export async function processInstallerActivation(row: ActivationRow, tokenReq: s
       return { status: 500, code: 'Misconfigured', message: 'This activation is missing its EA content id / engine. Contact staff.' };
     }
     const ticketLine = normalizeEaTicketInput(tokenReq);
-    const result = await mintEaToken(ticketLine, row.eaContentId, row.eaEngine);
+    const result = await mintEaToken(ticketLine, row.eaContentId, row.eaEngine, row.guildId || '');
     if (result.ok) {
       await finalizeTicket(row, gameName, 'ea');
       return { status: 200, tokenIni: `[token]\ntoken=${result.token}\n`, filename: 'token.ini', consume: true };

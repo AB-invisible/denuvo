@@ -16,7 +16,9 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from ea_auth import bootstrap_session, ensure_default_account_configured, resolve_config
 from ea_minter import EaConfig, EaMintError, mint_ticket
+from ea_session import load_session, merge_env_session
 
 app = FastAPI(title="EaTokenService", version="2.0.0")
 RUN_LOCK = threading.Lock()
@@ -34,6 +36,8 @@ class TokenRequest(BaseModel):
     ticket: str = Field(..., min_length=10)
     contentId: Optional[int] = None
     engine: Optional[str] = None
+    email: Optional[str] = None
+    password: Optional[str] = None
     remid: Optional[str] = None
     signature: Optional[str] = None
     machineHash: Optional[str] = None
@@ -61,28 +65,39 @@ def require_api_key(x_api_key: Optional[str]) -> None:
 
 
 def build_config(body: TokenRequest) -> EaConfig:
-    cfg = EaConfig.from_env()
-    if body.remid:
-        cfg.remid = body.remid.strip()
-    if body.signature:
-        cfg.login_signature = body.signature.strip()
-    if body.machineHash:
-        cfg.machine_hash = body.machineHash.strip()
-    return cfg
+    return resolve_config(
+        email=body.email,
+        password=body.password,
+        remid=body.remid,
+        signature=body.signature,
+        machine_hash=body.machineHash,
+    )
+
+
+@app.on_event("startup")
+def warm_default_session() -> None:
+    try:
+        ensure_default_account_configured()
+    except Exception:
+        pass
 
 
 @app.get("/health")
 def health() -> dict:
-    cfg = EaConfig.from_env()
-    ready = bool(cfg.remid and cfg.login_signature and cfg.machine_hash)
+    stored = merge_env_session(load_session())
+    has_env_creds = bool(env("EA_EMAIL") and env("EA_PASSWORD"))
+    has_manual = bool(env("EA_LOGIN_REMID") and env("EA_LOGIN_SIGNATURE") and env("EA_MACHINE_HASH"))
+    ready = stored.is_complete() or has_env_creds or has_manual
     return {
         "ok": True,
         "tool": True,
         "mode": "python",
         "configured": ready,
-        "has_remind": bool(cfg.remid),
-        "has_signature": bool(cfg.login_signature),
-        "has_machine_hash": bool(cfg.machine_hash),
+        "has_remind": bool(stored.remid or env("EA_LOGIN_REMID")),
+        "has_signature": bool(stored.login_signature or env("EA_LOGIN_SIGNATURE")),
+        "has_machine_hash": bool(stored.machine_hash or env("EA_MACHINE_HASH")),
+        "has_email_password": has_env_creds,
+        "session_email": stored.email or None,
     }
 
 
@@ -96,11 +111,21 @@ def mint_token(body: TokenRequest, x_api_key: Optional[str] = Header(default=Non
             token = mint_ticket(body.ticket, body.contentId, body.engine, cfg)
             return TokenResponse(token=token)
         except EaMintError as e:
+            # Stale remid on volume — force re-login when creds are available.
+            if e.code == "AuthError" and (body.email and body.password):
+                try:
+                    bootstrap_session(body.email.strip(), body.password, force=True)
+                    cfg = build_config(body)
+                    token = mint_ticket(body.ticket, body.contentId, body.engine, cfg)
+                    return TokenResponse(token=token)
+                except EaMintError as e2:
+                    e = e2
             status = {
                 "LimitExceeded": 429,
                 "NotEntitled": 502,
                 "InvalidRequest": 400,
                 "AuthError": 401,
+                "EmailVerificationRequired": 401,
                 "NotConfigured": 503,
                 "Timeout": 504,
                 "ServiceUnavailable": 503,

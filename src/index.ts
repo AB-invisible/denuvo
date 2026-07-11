@@ -227,6 +227,23 @@ const commands = [
     .setDescription('Check the Ubisoft token service + magic-files availability — owner only')
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
+    .setName('eaaccount')
+    .setDescription('Manage EA accounts used to mint Denuvo tokens — owner only')
+    .addSubcommand(sub => sub
+      .setName('add')
+      .setDescription('Register an EA account (auto-login on ea-service, 5/day each)')
+      .addStringOption(o => o.setName('email').setDescription('EA account email').setRequired(true))
+      .addStringOption(o => o.setName('password').setDescription('EA account password').setRequired(true))
+      .addStringOption(o => o.setName('label').setDescription('Optional label/note').setRequired(false)))
+    .addSubcommand(sub => sub
+      .setName('list')
+      .setDescription('List registered EA accounts + today\'s usage'))
+    .addSubcommand(sub => sub
+      .setName('remove')
+      .setDescription('Remove a registered EA account by its ID')
+      .addIntegerOption(o => o.setName('id').setDescription('Account ID (from /eaaccount list)').setRequired(true)))
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+  new SlashCommandBuilder()
     .setName('eagame')
     .setDescription('Configure a game as an EA/Origin Denuvo title — owner only')
     .addSubcommand(sub => sub
@@ -419,7 +436,7 @@ async function registerCommands(targetGuildId?: string) {
     const addsupport = ADDSUPPORT_COMMAND.toJSON();
 
     const tenantCommands = [
-      ...commands.filter((c: any) => c.name !== 'test' && c.name !== 'simulate' && c.name !== 'deplet' && c.name !== 'lowstock' && c.name !== 'setsteampass' && c.name !== 'game' && c.name !== 'removegame' && c.name !== 'autogen' && c.name !== 'stock' && c.name !== 'settokens' && c.name !== 'exclude-auto' && c.name !== 'setmode' && c.name !== 'getmode' && c.name !== 'promo' && c.name !== 'requests' && c.name !== 'staffstats' && c.name !== 'restockall' && c.name !== 'steamhealth' && c.name !== 'steamaccount' && c.name !== 'steamauth' && c.name !== 'export' && c.name !== 'ubisoftaccount' && c.name !== 'ubisoftgame' && c.name !== 'ubisofthealth' && c.name !== 'eagame' && c.name !== 'eahealth' && c.name !== 'eatest' && c.name !== 'installertest'),
+      ...commands.filter((c: any) => c.name !== 'test' && c.name !== 'simulate' && c.name !== 'deplet' && c.name !== 'lowstock' && c.name !== 'setsteampass' && c.name !== 'game' && c.name !== 'removegame' && c.name !== 'autogen' && c.name !== 'stock' && c.name !== 'settokens' && c.name !== 'exclude-auto' && c.name !== 'setmode' && c.name !== 'getmode' && c.name !== 'promo' && c.name !== 'requests' && c.name !== 'staffstats' && c.name !== 'restockall' && c.name !== 'steamhealth' && c.name !== 'steamaccount' && c.name !== 'steamauth' && c.name !== 'export' && c.name !== 'ubisoftaccount' && c.name !== 'ubisoftgame' && c.name !== 'ubisofthealth' && c.name !== 'eaaccount' && c.name !== 'eagame' && c.name !== 'eahealth' && c.name !== 'eatest' && c.name !== 'installertest'),
       setlogs,
       setvouch,
       addsupport,

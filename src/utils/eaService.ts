@@ -1,17 +1,22 @@
 /**
- * eaService.ts — client for the EA token-minting service (ea-service/, POST /ea/token).
+ * eaService.ts — client for ea-service (POST /ea/token) with BYO EA account
+ * rotation, mirroring ubisoftService.ts.
  *
- * The Windows sidecar runs EAtoken_generator.exe with stored EA remid/signature
- * cookies. This module sends the user's Denuvo ticket and returns { token }.
+ * ea-service auto-logins with email/password (remid + synthetic pc_sign +
+ * machine_hash) and persists trust cookies on its volume — no manual
+ * EAtoken_generator / Origin Helper setup required.
  */
 
+import prisma from '../lib/prisma';
 import { CONFIG } from '../config';
+import { utcDateKey } from './steampassPool';
 
 export interface EaMintSuccess {
   ok: true;
   token: string;
   usedContentId: number;
   usedEngine: string;
+  accountId: number | null;
 }
 
 export interface EaMintFailure {
@@ -21,6 +26,9 @@ export interface EaMintFailure {
   logs?: string;
   usedContentId?: number;
   usedEngine?: string;
+  accountId?: number | null;
+  exhausted?: boolean;
+  poolQuotaAtStart?: number;
 }
 
 export type EaMintResult = EaMintSuccess | EaMintFailure;
@@ -47,19 +55,20 @@ function unwrapBody(body: RawServiceResponse): RawServiceResponse {
   return body;
 }
 
-export async function mintEaToken(
+async function callService(
   ticket: string,
   contentId: number,
   engine: string,
-): Promise<EaMintResult> {
-  if (!eaServiceConfigured()) {
-    return { ok: false, code: 'NotConfigured', error: 'EA_SERVICE_URL / EA_SERVICE_KEY not set' };
+  creds: { email: string; password: string } | null,
+): Promise<{ status: number; body: RawServiceResponse }> {
+  const payload: Record<string, unknown> = { ticket: ticket.trim(), contentId, engine };
+  if (creds) {
+    payload.email = creds.email;
+    payload.password = creds.password;
   }
 
-  const payload = { ticket: ticket.trim(), contentId, engine };
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 150_000);
-
   try {
     const res = await fetch(`${serviceBase()}/ea/token`, {
       method: 'POST',
@@ -71,7 +80,6 @@ export async function mintEaToken(
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
-
     const text = await res.text();
     let body: RawServiceResponse = {};
     try {
@@ -80,32 +88,199 @@ export async function mintEaToken(
       body = { error: text.slice(0, 300) };
     }
     body = unwrapBody(body);
-
-    if (res.ok && body.token) {
-      return { ok: true, token: body.token, usedContentId: contentId, usedEngine: engine };
-    }
-
-    return {
-      ok: false,
-      code: body.code || (res.status === 504 ? 'Timeout' : res.status === 503 ? 'ServiceUnavailable' : 'Failure'),
-      error: body.error || `service returned HTTP ${res.status}`,
-      logs: body.logs,
-      usedContentId: contentId,
-      usedEngine: engine,
-    };
-  } catch (e) {
-    return { ok: false, code: 'ServiceUnavailable', error: (e as Error).message, usedContentId: contentId, usedEngine: engine };
+    return { status: res.status, body };
   } finally {
     clearTimeout(timer);
   }
 }
 
-export async function checkEaServiceHealth(): Promise<{ ok: boolean; tool?: boolean; configured?: boolean; error?: string }> {
+async function getAvailableEaAccounts(guildId: string): Promise<Array<{ id: number; email: string; password: string }>> {
+  const cap = CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
+  const today = utcDateKey();
+
+  let accounts: any[] = [];
+  try {
+    const where: Record<string, unknown> = { active: true };
+    if (guildId) {
+      where.OR = [{ guildId: '' }, { guildId }];
+    } else {
+      where.guildId = '';
+    }
+    accounts = await (prisma as any).eaAccount.findMany({
+      where,
+      orderBy: [{ priority: 'asc' }, { id: 'asc' }],
+    });
+  } catch {
+    return [];
+  }
+
+  const out: Array<{ id: number; email: string; password: string }> = [];
+  for (const a of accounts) {
+    let used = 0;
+    try {
+      const u = await (prisma as any).eaUsage.findUnique({
+        where: { accountId_usageDate: { accountId: a.id, usageDate: today } },
+      });
+      used = u?.count ?? 0;
+    } catch {
+      used = 0;
+    }
+    if (used < cap) out.push({ id: a.id, email: a.email, password: a.password });
+  }
+  return out;
+}
+
+async function recordEaUsage(accountId: number): Promise<void> {
+  const today = utcDateKey();
+  try {
+    await (prisma as any).eaUsage.upsert({
+      where: { accountId_usageDate: { accountId, usageDate: today } },
+      update: { count: { increment: 1 } },
+      create: { accountId, usageDate: today, count: 1 },
+    });
+    await (prisma as any).eaAccount.update({
+      where: { id: accountId },
+      data: { lastUsedAt: new Date(), failureCount: 0 },
+    });
+  } catch {
+    /* non-fatal */
+  }
+}
+
+async function recordEaFailure(accountId: number): Promise<void> {
+  try {
+    await (prisma as any).eaAccount.update({
+      where: { id: accountId },
+      data: { failureCount: { increment: 1 }, lastFailureAt: new Date() },
+    });
+  } catch {
+    /* non-fatal */
+  }
+}
+
+async function markEaAccountExhaustedToday(accountId: number): Promise<void> {
+  const today = utcDateKey();
+  const cap = CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
+  try {
+    await (prisma as any).eaUsage.upsert({
+      where: { accountId_usageDate: { accountId, usageDate: today } },
+      update: { count: cap },
+      create: { accountId, usageDate: today, count: cap },
+    });
+  } catch {
+    /* non-fatal */
+  }
+}
+
+function mapResult(
+  status: number,
+  body: RawServiceResponse,
+  accountId: number | null,
+  contentId: number,
+  engine: string,
+): EaMintResult {
+  if (status === 200 && body.token) {
+    return { ok: true, token: body.token, usedContentId: contentId, usedEngine: engine, accountId };
+  }
+  return {
+    ok: false,
+    code: body.code || (status === 504 ? 'Timeout' : status === 503 ? 'ServiceUnavailable' : 'Failure'),
+    error: body.error || `service returned HTTP ${status}`,
+    logs: body.logs,
+    usedContentId: contentId,
+    usedEngine: engine,
+    accountId,
+  };
+}
+
+export async function mintEaToken(
+  ticket: string,
+  contentId: number,
+  engine: string,
+  guildId: string = '',
+): Promise<EaMintResult> {
+  if (!eaServiceConfigured()) {
+    return { ok: false, code: 'NotConfigured', error: 'EA_SERVICE_URL / EA_SERVICE_KEY not set', usedContentId: contentId, usedEngine: engine };
+  }
+
+  const ownerGuildKey = !guildId || guildId === CONFIG.OWNER_GUILD_ID ? '' : guildId;
+  const accounts = await getAvailableEaAccounts(ownerGuildKey);
+  const poolQuotaAtStart = accounts.length;
+
+  const attempts: Array<{ id: number | null; creds: { email: string; password: string } | null }> = [
+    ...accounts.map((a) => ({ id: a.id as number | null, creds: { email: a.email, password: a.password } })),
+    { id: null, creds: null },
+  ];
+
+  let anyAccountSeen = accounts.length > 0;
+  let allExceeded = anyAccountSeen;
+  let lastFailure: EaMintFailure | null = null;
+
+  for (const attempt of attempts) {
+    let sawLimit = false;
+    let resp;
+    try {
+      resp = await callService(ticket, contentId, engine, attempt.creds);
+    } catch (e) {
+      lastFailure = { ok: false, code: 'ServiceUnavailable', error: (e as Error).message, usedContentId: contentId, usedEngine: engine };
+      continue;
+    }
+
+    const result = mapResult(resp.status, resp.body, attempt.id, contentId, engine);
+    if (result.ok) {
+      if (attempt.id) await recordEaUsage(attempt.id);
+      return result;
+    }
+
+    lastFailure = { ...result, poolQuotaAtStart };
+
+    if (result.code === 'LimitExceeded') {
+      sawLimit = true;
+      if (attempt.id) await markEaAccountExhaustedToday(attempt.id);
+      continue;
+    }
+
+    if (attempt.id) await recordEaFailure(attempt.id);
+    if (result.code === 'NotEntitled') break;
+    if (result.code === 'EmailVerificationRequired') break;
+    break;
+  }
+
+  if (allExceeded && anyAccountSeen) {
+    return {
+      ok: false,
+      code: 'LimitExceeded',
+      error: 'All EA accounts have hit their daily activation cap.',
+      exhausted: true,
+      poolQuotaAtStart,
+      usedContentId: contentId,
+      usedEngine: engine,
+    };
+  }
+
+  if (lastFailure) return { ...lastFailure, poolQuotaAtStart };
+  return { ok: false, code: 'Failure', error: 'no attempt produced a result', poolQuotaAtStart, usedContentId: contentId, usedEngine: engine };
+}
+
+export async function checkEaServiceHealth(): Promise<{
+  ok: boolean;
+  tool?: boolean;
+  configured?: boolean;
+  hasEmailPassword?: boolean;
+  sessionEmail?: string | null;
+  error?: string;
+}> {
   if (!eaServiceConfigured()) return { ok: false, error: 'not configured' };
   try {
     const res = await fetch(`${serviceBase()}/health`, { headers: { Accept: 'application/json' } });
     const body: any = await res.json().catch(() => ({}));
-    return { ok: res.ok && body?.ok === true, tool: body?.tool, configured: body?.configured };
+    return {
+      ok: res.ok && body?.ok === true,
+      tool: body?.tool,
+      configured: body?.configured,
+      hasEmailPassword: body?.has_email_password,
+      sessionEmail: body?.session_email ?? null,
+    };
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }

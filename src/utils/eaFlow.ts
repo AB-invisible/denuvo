@@ -358,7 +358,7 @@ export async function handleEaTicket(message: Message, ticket: any): Promise<boo
     ],
   });
 
-  const result = await mintEaToken(parsed.ticket, parsed.contentId, parsed.engine);
+  const result = await mintEaToken(parsed.ticket, parsed.contentId, parsed.engine, guildId);
 
   if (!result.ok) {
     if (result.code === 'LimitExceeded') {

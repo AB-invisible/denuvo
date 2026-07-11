@@ -18,7 +18,7 @@ export async function execute(interaction: any): Promise<void> {
   const svcLine = !configured
     ? '🔴 Not configured — set `EA_SERVICE_URL` + `EA_SERVICE_KEY`.'
     : health.ok
-    ? `🟢 Reachable · python minter ${health.tool ? 'ready ✅' : 'MISSING ⚠️'}${health.configured === false ? ' · env incomplete (remid/signature/machine hash)' : ''}`
+    ? `🟢 Reachable · python minter ${health.tool ? 'ready ✅' : 'MISSING ⚠️'}${health.configured === false ? ' · not configured (add /eaaccount or EA_EMAIL on service)' : health.sessionEmail ? ` · session \`${health.sessionEmail}\`` : ''}`
     : `🔴 Unreachable — ${health.error ?? 'unknown error'}`;
 
   const magicLine = [

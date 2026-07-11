@@ -24,6 +24,8 @@ from typing import Optional
 
 import requests
 
+from ea_pc_sign import refresh_pc_sign as _refresh_pc_sign_impl
+
 LICENSE_URL = "https://proxy.novafusion.ea.com/licenses"
 AUTH_URL = "https://accounts.ea.com/connect/auth"
 TOKEN_URL = "https://accounts.ea.com/connect/token"
@@ -106,25 +108,8 @@ def _ea_timestamp() -> str:
 
 
 def refresh_pc_sign(stored_signature: str, sv: str = "v2") -> str:
-    """
-    Refresh timestamp + HMAC on a stored pc_sign from Origin Helper / EA app.
-    Falls back to the stored value if it cannot be parsed.
-    """
-    if "." not in stored_signature:
-        return stored_signature
-    payload_b64, _old_sig = stored_signature.split(".", 1)
-    pad = "=" * (-len(payload_b64) % 4)
-    try:
-        payload = json.loads(base64.urlsafe_b64decode(payload_b64 + pad).decode("utf-8"))
-    except Exception:
-        return stored_signature
-
-    payload["ts"] = _ea_timestamp()
-    payload["sv"] = sv
-    new_payload_b64 = url_base64(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
-    key = PC_SIGN_KEYS.get(sv, PC_SIGN_KEYS["v2"])
-    sig = hmac.new(key, new_payload_b64.encode("ascii"), hashlib.sha256).digest()
-    return f"{new_payload_b64}.{url_base64(sig)}"
+    """Refresh timestamp + HMAC on a stored pc_sign."""
+    return _refresh_pc_sign_impl(stored_signature, sv)
 
 
 def _pkce_pair() -> tuple[str, str]:

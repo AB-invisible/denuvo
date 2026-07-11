@@ -9,7 +9,7 @@ RUN apt-get update \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY ea_minter.py app.py ./
+COPY ea_minter.py ea_pc_sign.py ea_session.py ea_login.py ea_auth.py app.py ./
 
 ENV EA_HOST=0.0.0.0 \
     PORT=8081

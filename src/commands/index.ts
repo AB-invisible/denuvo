@@ -34,6 +34,7 @@ import { execute as exportCmd } from './export';
 import { execute as ubisoftaccount } from './ubisoftaccount';
 import { execute as ubisoftgame } from './ubisoftgame';
 import { execute as ubisofthealth } from './ubisofthealth';
+import { execute as eaaccount } from './eaaccount';
 import { execute as eagame } from './eagame';
 import { execute as eahealth } from './eahealth';
 import { execute as eatest } from './eatest';
@@ -76,6 +77,7 @@ export const commandHandlers: Record<string, (interaction: any) => Promise<void>
   ubisoftaccount,
   ubisoftgame,
   ubisofthealth,
+  eaaccount,
   eagame,
   eahealth,
   eatest,

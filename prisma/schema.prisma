@@ -559,3 +559,33 @@ model UbisoftUsage {
 
   @@unique([accountId, usageDate])
 }
+
+// ─── EA accounts (BYO) for token minting ────────────────────────────
+model EaAccount {
+  id            Int      @id @default(autoincrement())
+  guildId       String   @default("")
+  label         String?
+  email         String
+  password      String
+  active        Boolean  @default(true)
+  priority      Int      @default(100)
+  failureCount  Int      @default(0)
+  lastFailureAt DateTime?
+  lastUsedAt    DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @default(now()) @updatedAt
+  usages        EaUsage[]
+
+  @@unique([guildId, email])
+}
+
+model EaUsage {
+  id        Int      @id @default(autoincrement())
+  accountId Int
+  account   EaAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  usageDate String
+  count     Int      @default(0)
+  updatedAt DateTime @default(now()) @updatedAt
+
+  @@unique([accountId, usageDate])
+}
