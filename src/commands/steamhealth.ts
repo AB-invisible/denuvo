@@ -65,11 +65,21 @@ export async function execute(interaction: any): Promise<void> {
   } else {
     const shown = sessions.slice(0, 20).map((s) => {
       const game = uuidToGame.get(s.steampassUuid) || `UUID ${String(s.steampassUuid).slice(0, 8)}…`;
-      const tok = (s.refreshToken || '').trim() ? '✅ token' : '❌ creds-only';
-      const src = s.lastLoginSource || '-';
-      const fails = s.failureCount ? ` • ⚠️${s.failureCount} fail(s)` : '';
+      const hasToken = (s.refreshToken || '').trim().length > 0;
+      const hasCreds = (s.steamLogin || '').trim().length > 0;
+      // Lead with what the NEXT gen will actually do (driven by what's
+      // cached), not how the last one happened to log in — a row with a
+      // refresh_token skips steampass regardless of its last source.
+      const next = hasToken
+        ? '⚡ refresh_token (skips steampass)'
+        : hasCreds
+          ? '🔑 cached creds (1 guard-code call)'
+          : '🐢 steampass (cold start)';
+      // Last source is shown as secondary context only.
+      const last = s.lastLoginSource ? ` · last: ${s.lastLoginSource}` : '';
+      const fails = s.failureCount ? ` · ⚠️${s.failureCount} fail(s)` : '';
       const acct = s.steampassLogin || 'home-env';
-      return `**${game}** · \`${acct}\` — ${tok} (${src})${fails}`;
+      return `**${game}** · \`${acct}\` — ${next}${last}${fails}`;
     }).join('\n');
     embed.addFields({
       name: `📦 Cached sessions${total > 20 ? ` (first 20 of ${total})` : ''}`,
@@ -77,7 +87,7 @@ export async function execute(interaction: any): Promise<void> {
     });
   }
 
-  embed.setFooter({ text: '✅ token = that account+game skips steampass next time · ❌ = it fetches a guard code from steampass' });
+  embed.setFooter({ text: '⚡ = next gen reuses a cached refresh_token (no steampass) · 🔑 = 1 guard-code call · last: = how the previous gen logged in' });
 
   await interaction.editReply({ embeds: [embed] });
 }
