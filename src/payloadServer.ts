@@ -680,7 +680,9 @@ export function startPayloadServer(): void {
             res.end(JSON.stringify({ ok: false, code: 'Expired', message: 'Activation key expired. Re-open your ticket on Discord.' }));
             return;
           }
-          if (row.consumed) {
+          // Persistent rows are staff test installers — re-runnable, never consumed.
+          const isPersistent = (row as any).persistent === true;
+          if (row.consumed && !isPersistent) {
             res.writeHead(410, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ ok: false, code: 'Consumed', message: 'This activation was already completed.' }));
             return;
@@ -689,7 +691,7 @@ export function startPayloadServer(): void {
           const { processInstallerActivation } = await import('./utils/installerActivation');
           const outcome = await processInstallerActivation(row as any, tokenReq);
 
-          if (outcome.consume) {
+          if (outcome.consume && !isPersistent) {
             await prisma.tokenDownload
               .update({ where: { token: row.token }, data: { consumed: true, consumedAt: new Date() } })
               .catch(() => {});

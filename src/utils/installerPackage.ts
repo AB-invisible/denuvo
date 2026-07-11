@@ -35,6 +35,7 @@ export interface CallhomeManifestInput {
   magicUrl: string; // where the installer downloads the setup zip (self-hosted /…/magic or an external mirror)
   baseUrl: string;
   tokenReqNames?: string[];
+  test?: boolean; // staff mechanics test — /activate returns a placeholder token, no mint/consume
 }
 
 /** The payload-manifest.json the installer reads for the call-home flow. */
@@ -53,6 +54,7 @@ export function buildCallhomeManifest(input: CallhomeManifestInput): Record<stri
     activate_url: `${base}/activate/${input.installerKey}`,
     token_req_names: input.tokenReqNames && input.tokenReqNames.length ? input.tokenReqNames : ['token_req.txt'],
     _sig: input.installerKey,
+    ...(input.test ? { test: true } : {}),
   };
 }
 
@@ -89,6 +91,7 @@ export interface CallhomeInstallerInput {
   ubisoftAppId?: number | null;
   ubisoftAltAppId?: number | null;
   tokenReqNames?: string[];
+  test?: boolean;
 }
 
 export type CallhomeInstallerResult =
@@ -113,13 +116,14 @@ export async function createCallhomeInstaller(input: CallhomeInstallerInput): Pr
     magicUrl: input.magicUrl,
     baseUrl: base,
     tokenReqNames: input.tokenReqNames,
+    test: input.test,
   });
 
   const zip = buildInstallerZip(manifest);
   if (!zip) return { ok: false, reason: 'installer_missing' };
 
   const token = crypto.randomBytes(24).toString('hex');
-  const fileName = `GameGen Activate ${sanitizeName(input.gameName)}.zip`;
+  const fileName = `GameGen Activate ${input.test ? '(TEST) ' : ''}${sanitizeName(input.gameName)}.zip`;
   const storedPath = path.join(downloadStorageDir(), `${token}.zip`);
   await fs.promises.writeFile(storedPath, zip);
 
@@ -141,6 +145,8 @@ export async function createCallhomeInstaller(input: CallhomeInstallerInput): Pr
       ubisoftAppId: input.ubisoftAppId ?? null,
       ubisoftAltAppId: input.ubisoftAltAppId ?? null,
       guildId: input.guildId ?? null,
+      // Test installers are re-runnable + never mint a real token.
+      ...(input.test ? { persistent: true } : {}),
     } as any,
   });
 

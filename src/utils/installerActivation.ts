@@ -43,6 +43,7 @@ export interface ActivationRow {
   guildId: string | null;
   ticketId: number | null;
   fileName: string;
+  persistent?: boolean; // staff test installer — placeholder token, no real mint
 }
 
 export interface ActivationOutcome {
@@ -130,7 +131,22 @@ async function handleExhausted(row: ActivationRow, gameName: string, logs?: stri
  */
 export async function processInstallerActivation(row: ActivationRow, tokenReq: string): Promise<ActivationOutcome> {
   const platform = (row.platform || '').toLowerCase() as ActivationPlatform;
-  const gameName = (row.fileName || 'your game').replace(/^GameGen Activate\s*/i, '').replace(/\.(zip|exe)$/i, '').trim() || 'your game';
+  const gameName = (row.fileName || 'your game').replace(/^GameGen Activate\s*(\(TEST\)\s*)?/i, '').replace(/\.(zip|exe)$/i, '').trim() || 'your game';
+
+  // Staff mechanics test: validate the whole pipeline (game find → install →
+  // launch → token_req capture → write) WITHOUT minting a real token or
+  // burning a daily activation. token_req just needs to be present.
+  if (row.persistent) {
+    if (!tokenReq || tokenReq.length < 20) {
+      return { status: 422, code: 'InvalidRequest', message: 'Captured request looks empty — re-run the test.' };
+    }
+    return {
+      status: 200,
+      tokenIni: `[token]\ntoken=GAMEGEN_TEST_PLACEHOLDER\n; This is a staff mechanics test — not a real activation token.\n`,
+      filename: 'token.ini',
+      consume: false,
+    };
+  }
 
   if (platform === 'ea') {
     if (!row.eaContentId || !row.eaEngine) {

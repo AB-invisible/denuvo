@@ -260,6 +260,17 @@ const commands = [
     )
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
+    .setName('installertest')
+    .setDescription('Test-deliver a self-driving EA/Ubisoft installer (no token consumed) — owner only')
+    .addStringOption((o) =>
+      o
+        .setName('game')
+        .setDescription(`EA or Ubisoft game name (default: ${'EA SPORTS FC 26'})`)
+        .setRequired(false)
+        .setAutocomplete(true),
+    )
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+  new SlashCommandBuilder()
     .setName('tokengen')
     .setDescription('Generate a REAL token (staff bypass, posted publicly, no screenshot needed)')
     .addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true))
@@ -408,7 +419,7 @@ async function registerCommands(targetGuildId?: string) {
     const addsupport = ADDSUPPORT_COMMAND.toJSON();
 
     const tenantCommands = [
-      ...commands.filter((c: any) => c.name !== 'test' && c.name !== 'simulate' && c.name !== 'deplet' && c.name !== 'lowstock' && c.name !== 'setsteampass' && c.name !== 'game' && c.name !== 'removegame' && c.name !== 'autogen' && c.name !== 'stock' && c.name !== 'settokens' && c.name !== 'exclude-auto' && c.name !== 'setmode' && c.name !== 'getmode' && c.name !== 'promo' && c.name !== 'requests' && c.name !== 'staffstats' && c.name !== 'restockall' && c.name !== 'steamhealth' && c.name !== 'steamaccount' && c.name !== 'steamauth' && c.name !== 'export' && c.name !== 'ubisoftaccount' && c.name !== 'ubisoftgame' && c.name !== 'ubisofthealth' && c.name !== 'eagame' && c.name !== 'eahealth' && c.name !== 'eatest'),
+      ...commands.filter((c: any) => c.name !== 'test' && c.name !== 'simulate' && c.name !== 'deplet' && c.name !== 'lowstock' && c.name !== 'setsteampass' && c.name !== 'game' && c.name !== 'removegame' && c.name !== 'autogen' && c.name !== 'stock' && c.name !== 'settokens' && c.name !== 'exclude-auto' && c.name !== 'setmode' && c.name !== 'getmode' && c.name !== 'promo' && c.name !== 'requests' && c.name !== 'staffstats' && c.name !== 'restockall' && c.name !== 'steamhealth' && c.name !== 'steamaccount' && c.name !== 'steamauth' && c.name !== 'export' && c.name !== 'ubisoftaccount' && c.name !== 'ubisoftgame' && c.name !== 'ubisofthealth' && c.name !== 'eagame' && c.name !== 'eahealth' && c.name !== 'eatest' && c.name !== 'installertest'),
       setlogs,
       setvouch,
       addsupport,
@@ -801,7 +812,7 @@ if (interaction.guildId) {
 });
 
 async function handleAutocomplete(interaction: any) {
-  if (interaction.commandName === 'stock' || interaction.commandName === 'exclude-auto' || interaction.commandName === 'test' || interaction.commandName === 'tokengen' || interaction.commandName === 'setmode' || interaction.commandName === 'getmode' || interaction.commandName === 'game' || interaction.commandName === 'removegame' || interaction.commandName === 'settokens' || interaction.commandName === 'autogen' || interaction.commandName === 'simulate' || interaction.commandName === 'deplet' || interaction.commandName === 'waitlist' || interaction.commandName === 'queue' || interaction.commandName === 'ubisoftgame' || interaction.commandName === 'eagame' || interaction.commandName === 'eatest' || interaction.commandName === 'steampass') {
+  if (interaction.commandName === 'stock' || interaction.commandName === 'exclude-auto' || interaction.commandName === 'test' || interaction.commandName === 'tokengen' || interaction.commandName === 'setmode' || interaction.commandName === 'getmode' || interaction.commandName === 'game' || interaction.commandName === 'removegame' || interaction.commandName === 'settokens' || interaction.commandName === 'autogen' || interaction.commandName === 'simulate' || interaction.commandName === 'deplet' || interaction.commandName === 'waitlist' || interaction.commandName === 'queue' || interaction.commandName === 'ubisoftgame' || interaction.commandName === 'eagame' || interaction.commandName === 'eatest' || interaction.commandName === 'installertest' || interaction.commandName === 'steampass') {
     const focusedValue = interaction.options.getFocused();
     const games = await prisma.game.findMany({
       where: { name: { contains: focusedValue, mode: 'insensitive' } },
@@ -837,6 +848,12 @@ async function handleChatCommand(interaction: any) {
     }).catch(() => {});
   }
   if (interaction.commandName === 'eatest' && interaction.guildId !== CONFIG.OWNER_GUILD_ID) {
+    return interaction.reply({
+      content: '❌ This command is not available in this server.',
+      flags: [MessageFlags.Ephemeral],
+    }).catch(() => {});
+  }
+  if (interaction.commandName === 'installertest' && interaction.guildId !== CONFIG.OWNER_GUILD_ID) {
     return interaction.reply({
       content: '❌ This command is not available in this server.',
       flags: [MessageFlags.Ephemeral],

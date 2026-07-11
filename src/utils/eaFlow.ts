@@ -429,6 +429,42 @@ export async function handleEaTicket(message: Message, ticket: any): Promise<boo
   return true;
 }
 
+/**
+ * Build a re-runnable staff TEST installer for an EA game (no ticket, no real
+ * mint — /activate returns a placeholder token). Used by /installertest.
+ */
+export async function createEaTestInstaller(
+  game: any,
+): Promise<{ ok: true; url: string; fileName: string } | { ok: false; message: string }> {
+  const resolved = resolveEaForGame(game);
+  if (!resolved) return { ok: false, message: `**${game.name}** is not configured as an EA title (use \`/eagame set\`).` };
+  const delivery = resolveMagicDelivery(resolved.eaContentId, resolved.magicFile, game.appId, resolved.magicUrl);
+  if (!delivery?.url) {
+    return { ok: false, message: `Setup zip for **${game.name}** isn't servable. Add it to \`EA_MAGIC_DIR\` (or a catalog URL) and set \`PUBLIC_URL\`.` };
+  }
+  const r = await createCallhomeInstaller({
+    ticketId: null,
+    guildId: null,
+    gameName: game.name,
+    appId: game.appId ?? null,
+    layout: resolved.layout,
+    platform: 'ea',
+    magicUrl: delivery.url,
+    eaContentId: resolved.eaContentId,
+    eaEngine: resolved.eaEngine,
+    test: true,
+  });
+  if (!r.ok) {
+    return {
+      ok: false,
+      message: r.reason === 'no_base_url'
+        ? '`PUBLIC_URL` / `RAILWAY_PUBLIC_DOMAIN` is not set — cannot host the installer.'
+        : '`_Core/installer.exe` is not built yet.',
+    };
+  }
+  return { ok: true, url: r.url, fileName: r.fileName };
+}
+
 export function eaMagicFileStatus(): { dir: string; present: string[]; external: string[] } {
   const dir = resolveMagicDir();
   const present: string[] = [];

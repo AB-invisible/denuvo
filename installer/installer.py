@@ -2499,6 +2499,7 @@ def run_callhome_flow(manifest: dict, here: Path, self_path: Path) -> None:
     names = manifest.get("token_req_names") or ["token_req.txt"]
     if not isinstance(names, list) or not names:
         names = ["token_req.txt"]
+    is_test = bool(manifest.get("test"))
 
     if not app_id.isdigit() or not magic_url or not activate_url:
         gamegen_msgbox(
@@ -2616,15 +2617,29 @@ def run_callhome_flow(manifest: dict, here: Path, self_path: Path) -> None:
         )
         sys.exit(1)
 
-    # 7. Success — clean up the installer.
-    gamegen_msgbox(
-        f"✅ {game_name} is activated!\n\n"
-        "Launch the game from Steam, then head back to your Discord ticket and confirm it's working.",
-    )
+    # 7. Success.
     try:
         shutil.rmtree(tmp, ignore_errors=True)
     except Exception:
         pass
+
+    if is_test:
+        # Staff mechanics test: everything worked (game found, files installed,
+        # request captured, placeholder token written) but the token is NOT real.
+        # Leave the installer in place so it can be re-run.
+        gamegen_msgbox(
+            f"🧪 TEST PASSED for {game_name}.\n\n"
+            "The installer found the game, installed the setup files, captured the activation "
+            "request, and wrote token.ini — the full pipeline works.\n\n"
+            "NOTE: this was a staff test, so the token is a placeholder and the game will NOT "
+            "activate with it. Delete token.ini afterward.",
+        )
+        sys.exit(0)
+
+    gamegen_msgbox(
+        f"✅ {game_name} is activated!\n\n"
+        "Launch the game from Steam, then head back to your Discord ticket and confirm it's working.",
+    )
     nuclear_self_destruct(here, self_path)
     sys.exit(0)
 

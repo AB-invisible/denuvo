@@ -402,6 +402,42 @@ export async function handleUbisoftTokenReq(message: Message, ticket: any): Prom
   return true;
 }
 
+/**
+ * Build a re-runnable staff TEST installer for a Ubisoft game (no ticket, no
+ * real mint — /activate returns a placeholder token). Used by /installertest.
+ */
+export async function createUbisoftTestInstaller(
+  game: any,
+): Promise<{ ok: true; url: string; fileName: string } | { ok: false; message: string }> {
+  const resolved = resolveUbisoftForGame(game);
+  if (!resolved) return { ok: false, message: `**${game.name}** has no Ubisoft AppID configured (use \`/ubisoftgame\`).` };
+  const delivery = resolveMagicDelivery(resolved.ubisoftAppId, resolved.magicFile, game.appId);
+  if (!delivery?.url) {
+    return { ok: false, message: `Magic zip for **${game.name}** isn't servable. Add it to \`UBISOFT_MAGIC_DIR\` and set \`PUBLIC_URL\`.` };
+  }
+  const r = await createCallhomeInstaller({
+    ticketId: null,
+    guildId: null,
+    gameName: game.name,
+    appId: game.appId ?? null,
+    layout: resolved.layout,
+    platform: 'ubisoft',
+    magicUrl: delivery.url,
+    ubisoftAppId: resolved.ubisoftAppId,
+    ubisoftAltAppId: resolved.ubisoftAltAppId,
+    test: true,
+  });
+  if (!r.ok) {
+    return {
+      ok: false,
+      message: r.reason === 'no_base_url'
+        ? '`PUBLIC_URL` / `RAILWAY_PUBLIC_DOMAIN` is not set — cannot host the installer.'
+        : '`_Core/installer.exe` is not built yet.',
+    };
+  }
+  return { ok: true, url: r.url, fileName: r.fileName };
+}
+
 /** Convenience for staff commands: is the magic file present/servable? */
 export function magicFileStatus(): { dir: string; present: string[]; missing: string[] } {
   const dir = resolveMagicDir();
