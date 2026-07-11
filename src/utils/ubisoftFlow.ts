@@ -187,6 +187,7 @@ export async function startUbisoftDelivery(channel: TextChannel, ticket: any, gu
         magicUrl: delivery.url,
         ubisoftAppId: resolved.ubisoftAppId,
         ubisoftAltAppId: resolved.ubisoftAltAppId,
+        launchExe: resolved.launchExe,
       })
     : ({ ok: false, reason: 'no_base_url' } as const);
 
@@ -425,6 +426,7 @@ export async function createUbisoftTestInstaller(
     magicUrl: delivery.url,
     ubisoftAppId: resolved.ubisoftAppId,
     ubisoftAltAppId: resolved.ubisoftAltAppId,
+    launchExe: resolved.launchExe,
     test: true,
   });
   if (!r.ok) {

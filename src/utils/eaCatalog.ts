@@ -18,6 +18,12 @@ export interface EaCatalogEntry {
   eaMagicFile?: string;
   /** Filenames / globs the game writes after launch (installer watches these). */
   eaTokenReqNames?: string[];
+  /**
+   * Exact game binary to launch (relative to the game folder) so token_req is
+   * generated. Without this the installer auto-detects and can pick the EA
+   * launcher, which bounces to the EA app instead of running the game itself.
+   */
+  launchExe?: string;
   /** Direct download when no local zip is hosted (e.g. Pixeldrain). */
   eaMagicUrl?: string;
   layout?: EaLayout;
@@ -32,6 +38,9 @@ export const EA_CATALOG: EaCatalogEntry[] = [
     eaEngine: '0',
     eaMagicFile: 'EA SPORTS FC 26 magic files.zip',
     eaTokenReqNames: ['token_req.txt', 'Denuvo_ticket*.txt'],
+    // Run the game binary directly so the crack emits token_req instead of
+    // handing off to the EA app. FC26 ships FC26.exe in the game root.
+    launchExe: 'FC26.exe',
     layout: 'flat',
   },
 ];
@@ -60,7 +69,7 @@ export function resolveEaForGame(game: {
   eaContentId?: number | null;
   eaEngine?: string | null;
   eaMagicFile?: string | null;
-}): { eaContentId: number; eaEngine: string; magicFile: string | null; magicUrl: string | null; layout: EaLayout; tokenReqNames: string[] } | null {
+}): { eaContentId: number; eaEngine: string; magicFile: string | null; magicUrl: string | null; layout: EaLayout; tokenReqNames: string[]; launchExe: string | null } | null {
   const catalog = game.appId ? catalogBySteamAppId(game.appId) : undefined;
   const eaContentId = game.eaContentId ?? catalog?.eaContentId ?? null;
   const eaEngine = (game.eaEngine ?? catalog?.eaEngine ?? '').trim() || null;
@@ -70,7 +79,8 @@ export function resolveEaForGame(game: {
   const magicUrl = catalog?.eaMagicUrl ?? null;
   const layout = catalog?.layout ?? 'flat';
   const tokenReqNames = catalog?.eaTokenReqNames ?? ['token_req.txt', 'Denuvo_ticket*.txt'];
-  return { eaContentId, eaEngine, magicFile, magicUrl, layout, tokenReqNames };
+  const launchExe = catalog?.launchExe ?? null;
+  return { eaContentId, eaEngine, magicFile, magicUrl, layout, tokenReqNames, launchExe };
 }
 
 export function isEaGame(game: {

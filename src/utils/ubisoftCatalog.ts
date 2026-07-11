@@ -50,6 +50,12 @@ export interface UbisoftCatalogEntry {
   magicFile: string;
   /** Where the magic files go relative to the game install. */
   layout: 'flat' | 'bin64';
+  /**
+   * Exact game binary to launch (relative to the game folder) so token_req is
+   * generated. Without it the installer auto-detects and can pick the Ubisoft
+   * Connect launcher, which bounces to Ubisoft Connect instead of the game.
+   */
+  launchExe?: string;
 }
 
 export const UBISOFT_CATALOG: UbisoftCatalogEntry[] = [
@@ -188,6 +194,7 @@ export interface ResolvedUbisoft {
   ubisoftAltAppId: number | null;
   magicFile: string | null;
   layout: 'flat' | 'bin64';
+  launchExe: string | null;
 }
 
 export function resolveUbisoftForGame(game: {
@@ -205,8 +212,9 @@ export function resolveUbisoftForGame(game: {
   const magicFile = magicFileRaw ? normalizeMagicFilename(magicFileRaw) : null;
   const ubisoftAltAppId = game.ubisoftAltAppId ?? catalog?.ubisoftAltAppId ?? null;
   const layout = catalog?.layout ?? 'flat';
+  const launchExe = catalog?.launchExe ?? null;
 
-  return { ubisoftAppId, ubisoftAltAppId, magicFile, layout };
+  return { ubisoftAppId, ubisoftAltAppId, magicFile, layout, launchExe };
 }
 
 /** True when the game should use the Ubisoft two-step flow. */

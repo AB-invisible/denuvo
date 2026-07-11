@@ -240,6 +240,7 @@ export async function startEaDelivery(channel: TextChannel, ticket: any, guild: 
         eaContentId: resolved.eaContentId,
         eaEngine: resolved.eaEngine,
         tokenReqNames: resolved.tokenReqNames,
+        launchExe: resolved.launchExe,
       })
     : ({ ok: false, reason: 'no_base_url' } as const);
 
@@ -476,6 +477,7 @@ export async function createEaTestInstaller(
     eaContentId: resolved.eaContentId,
     eaEngine: resolved.eaEngine,
     tokenReqNames: resolved.tokenReqNames,
+    launchExe: resolved.launchExe,
     test: true,
   });
   if (!r.ok) {
