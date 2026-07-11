@@ -21,10 +21,56 @@ function truncateDiscordText(text: string, max: number): string {
   return chars.slice(0, max).join('');
 }
 
+/** Select option text must be plain — emoji in descriptions causes Discord 500s and "Restock icon" labels. */
+function formatGameSelectDescription(input: {
+  appId: number | null;
+  availableStock: number;
+  reserved: number;
+  queueCount: number;
+  gameLastDepleted: Date | null;
+  now: Date;
+  donatorOnly: boolean;
+  boosterOnly: boolean;
+  highDemand: boolean;
+}): string {
+  const { appId, availableStock, reserved, queueCount, gameLastDepleted, now } = input;
+  const id = appId ?? 'N/A';
+  let line = '';
+
+  if (availableStock >= 10) {
+    line = `OK · ${availableStock} left (${reserved} res) · ${id}`;
+  } else if (availableStock > 0) {
+    line = `LOW · ${availableStock} left (${reserved} res) · ${id}`;
+  } else if (availableStock === 0 && gameLastDepleted) {
+    const timeDiff = now.getTime() - gameLastDepleted.getTime();
+    const remaining = Math.max(0, REGEN_TIME - timeDiff);
+    const hours = Math.floor(remaining / (1000 * 60 * 60));
+    const minutes = Math.floor((remaining % (1000 * 60 * 60)) / (1000 * 60));
+    const queue = queueCount > 0 ? ` · Q${queueCount}` : '';
+    line = `OUT · restock ${hours}h ${minutes}m${queue} · ${id}`;
+  } else if (availableStock === 0 && reserved > 0) {
+    const queue = queueCount > 0 ? ` · Q${queueCount}` : '';
+    line = `OUT · ${reserved} reserved${queue} · ${id}`;
+  } else {
+    const queue = queueCount > 0 ? ` · Q${queueCount}` : '';
+    line = `OUT · 0 left${queue} · ${id}`;
+  }
+
+  if (input.donatorOnly) line = `DONATOR · ${line}`;
+  else if (input.boosterOnly) line = `BOOSTER · ${line}`;
+  else if (input.highDemand) line = `HIGH · ${line}`;
+
+  return truncateDiscordText(line.replace(/[^\x20-\x7E]/g, ''), 100);
+}
+
 function buildGameSelectOption(game: GameWithCount, description: string) {
+  const safeLabel = truncateDiscordText(
+    game.name.replace(/[^\x20-\x7E]/g, '').trim() || `Game ${game.id}`,
+    100,
+  );
   return new StringSelectMenuOptionBuilder()
-    .setLabel(truncateDiscordText(game.name, 100))
-    .setDescription(truncateDiscordText(description, 100))
+    .setLabel(safeLabel)
+    .setDescription(description)
     .setValue(String(game.id));
 }
 
@@ -80,7 +126,7 @@ export async function createMainPanel(guildId?: string) {
       { name: '🕒 Automatic Reset', value: 'Depleted games automatically restore **5 tokens** every **24 hours**.', inline: true },
       { name: '🛰️ Staff Availability', value: await (async () => { const count = await getActiveStaffCount(); return count > 0 ? `🟢 **${count} Staff Active**` : '🌙 **Staff Away** (Delays Expected)'; })(), inline: true },
       { name: '━━━━━━━━━━━━━━━━━━━━━━', value: ' ', inline: false },
-      { name: '💎 Status Indicators', value: '🟢 **Optimal** (10+ Tokens)\n🟡 **Low Stock** (<10 Tokens)\n🔴 **Empty** (Waiting for Regen)', inline: false }
+      { name: 'Status legend', value: '**OK** = 10+ tokens · **LOW** = 1-9 · **OUT** = depleted / restock timer', inline: false }
     )
     .setColor(0x5865F2)
     .setImage(getPanelAssetUrl('gamegen.png') ?? 'attachment://gamegen.png')
@@ -105,7 +151,7 @@ export async function createMainPanel(guildId?: string) {
 
     const menu = new StringSelectMenuBuilder()
       .setCustomId(`select_game_${i}`)
-      .setPlaceholder(`🎮 Browse Games [${startLetter}-${endLetter}]`)
+      .setPlaceholder(`Browse Games [${startLetter}-${endLetter}]`)
       .addOptions(
         chunk.map((game: GameWithCount) => {
           const ss = serverStockMap.get(game.id);
@@ -116,36 +162,17 @@ export async function createMainPanel(guildId?: string) {
           const availableStock = Math.max(0, gameStock - reserved);
           const queueCount = waitlistMap.get(game.id) || 0;
 
-          let statusPrefix = '🔴';
-          let description = `ID: ${game.appId || 'N/A'} • ${availableStock} tokens remaining (${reserved} reserved)`;
-
-          if (availableStock >= 10) statusPrefix = '🟢';
-          else if (availableStock > 0) statusPrefix = '🟡';
-          else if (availableStock === 0 && gameLastDepleted) {
-            const timeDiff = now.getTime() - gameLastDepleted.getTime();
-            const remaining = Math.max(0, REGEN_TIME - timeDiff);
-            const hours = Math.floor(remaining / (1000 * 60 * 60));
-            const minutes = Math.floor((remaining % (1000 * 60 * 60)) / (1000 * 60));
-            const queueText = queueCount > 0 ? ` • ${queueCount} in queue` : '';
-            description = `${statusPrefix} ID: ${game.appId || 'N/A'} • 🔄 Restock in ${hours}h ${minutes}m${queueText}`;
-          } else if (availableStock === 0 && reserved > 0) {
-            const queueText = queueCount > 0 ? ` • ${queueCount} in queue` : '';
-            description = `${statusPrefix} ID: ${game.appId || 'N/A'} • ⏳ Out of stock (${reserved} reserved${queueText})`;
-          } else {
-            description = `${statusPrefix} ${description}`;
-          }
-
-          if (game.donatorOnly) {
-            description = `💎 Donator Only (2h cd) • ${description}`;
-          } else if (game.boosterOnly) {
-            description = `✨ Booster Only • ${description}`;
-          } else if (game.highDemand) {
-            description = `🔥 High Demand (48h cd) • ${description}`;
-          }
-
-          if (queueCount > 0 && !description.includes('in queue')) {
-            description += ` • ${queueCount} in queue`;
-          }
+          const description = formatGameSelectDescription({
+            appId: game.appId,
+            availableStock,
+            reserved,
+            queueCount,
+            gameLastDepleted,
+            now,
+            donatorOnly: !!game.donatorOnly,
+            boosterOnly: !!game.boosterOnly,
+            highDemand: !!game.highDemand,
+          });
 
           return buildGameSelectOption(game, description);
         })

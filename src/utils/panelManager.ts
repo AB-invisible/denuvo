@@ -70,7 +70,7 @@ function embedsForPanelRefresh(message: Message, embeds: EmbedBuilder[]): EmbedB
 function buildPanelEditPayload(
   message: Message,
   panelContent: Awaited<ReturnType<typeof createMainPanel>>,
-  opts?: { stripImage?: boolean },
+  opts?: { stripImage?: boolean; dropLegacyAttachment?: boolean },
 ): MessageEditOptions {
   const usesHostedImage = !!getPanelAssetUrl('gamegen.png');
   const hasLegacyAttachment = message.attachments.some((a) => a.name === 'gamegen.png');
@@ -85,10 +85,18 @@ function buildPanelEditPayload(
     components: panelContent.components,
   };
 
-  // Legacy panels uploaded gamegen.png as a file. Strip it once we serve the
-  // banner from a URL — leaving both attached causes Discord edit 500s.
-  if (usesHostedImage && hasLegacyAttachment) {
+  // Legacy file attachment + embed image causes Discord edit 500s — drop the file
+  // when migrating to hosted URL or when explicitly requested.
+  if (hasLegacyAttachment && (usesHostedImage || opts?.dropLegacyAttachment)) {
     payload.attachments = [];
+    if (!usesHostedImage && embeds.length > 0 && !opts?.stripImage) {
+      const embed = EmbedBuilder.from(embeds[0]);
+      if (!embed.data.image?.url || embed.data.image.url.startsWith('attachment://')) {
+        embed.setImage('attachment://gamegen.png');
+        payload.embeds = [embed];
+      }
+      payload.files = [new AttachmentBuilder(panelImageAttachmentPath('gamegen.png'), { name: 'gamegen.png' })];
+    }
   } else if (!usesHostedImage && !hasLegacyAttachment) {
     payload.files = [new AttachmentBuilder(panelImageAttachmentPath('gamegen.png'), { name: 'gamegen.png' })];
   }
@@ -143,12 +151,29 @@ async function editPanelMessage(
   panelRecord: { id: number; messageId: string },
   panelContent: Awaited<ReturnType<typeof createMainPanel>>,
 ): Promise<void> {
+  const hasLegacyAttachment = message.attachments.some((a) => a.name === 'gamegen.png');
+  const embedImageUrl = message.embeds[0]?.image?.url ?? '';
+  const embedUsesAttachment = embedImageUrl.startsWith('attachment://');
   const embeds = embedsForPanelRefresh(message, panelContent.embeds);
 
   const attempts: { label: string; payload: MessageEditOptions }[] = [
-    { label: 'full', payload: buildPanelEditPayload(message, panelContent) },
-    { label: 'embeds+components', payload: { embeds, components: panelContent.components } },
-    { label: 'imageless', payload: buildPanelEditPayload(message, panelContent, { stripImage: true }) },
+    {
+      label: 'embeds+components',
+      payload: {
+        embeds,
+        components: panelContent.components,
+        // Only strip legacy file when embed already uses a CDN/hosted URL.
+        ...(hasLegacyAttachment && !embedUsesAttachment ? { attachments: [] } : {}),
+      },
+    },
+    {
+      label: 'full',
+      payload: buildPanelEditPayload(message, panelContent, { dropLegacyAttachment: !embedUsesAttachment }),
+    },
+    {
+      label: 'imageless',
+      payload: buildPanelEditPayload(message, panelContent, { stripImage: true, dropLegacyAttachment: true }),
+    },
     { label: 'components-only', payload: { components: panelContent.components } },
   ];
 
@@ -170,15 +195,16 @@ async function editPanelMessage(
 export async function sendMessageWithRetry(
   channel: TextChannel,
   payload: Parameters<TextChannel['send']>[0],
-  retries = 3,
+  retries = 4,
 ): Promise<Message> {
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       return await channel.send(payload);
     } catch (err) {
       if (isStaleDiscordResource(err)) throw err;
-      if (isDiscord500(err) && attempt < retries) {
-        await sleep(1000 * (attempt + 1));
+      if (isRetryableDiscordError(err) && attempt < retries) {
+        const delay = isRateLimited(err) ? 2000 * (attempt + 1) : 1000 * (attempt + 1);
+        await sleep(delay);
         continue;
       }
       logDiscordApiError('send', err);
