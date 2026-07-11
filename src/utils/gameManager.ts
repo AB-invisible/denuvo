@@ -46,11 +46,22 @@ export async function processGuildRestocks(guildId: string): Promise<void> {
   if (pendingRestocks.length === 0) return;
 
   const byGame = new Map<number, typeof pendingRestocks>();
+  const excludedRestockIds: number[] = [];
+
   for (const r of pendingRestocks) {
-    if (r.game.excludeRegen) continue;
+    if (r.game.excludeRegen) {
+      excludedRestockIds.push(r.id);
+      continue;
+    }
     if (!byGame.has(r.gameId)) byGame.set(r.gameId, []);
     byGame.get(r.gameId)!.push(r);
   }
+
+  if (excludedRestockIds.length > 0) {
+    await prisma.restock.deleteMany({ where: { id: { in: excludedRestockIds } } });
+  }
+
+  if (byGame.size === 0) return;
 
   for (const [gameId, restocks] of byGame) {
     const amount = restocks.length;

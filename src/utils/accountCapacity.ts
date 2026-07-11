@@ -111,7 +111,7 @@ export async function computeAccountCapacity(
     ownedIds = ownedRows.map((r: { id: number }) => r.id);
   } catch { /* non-fatal */ }
 
-  const poolIds = await getPoolAccountIdsForApp(appId);
+  const poolIds = CONFIG.STEAMPASS_DISABLED ? [] : await getPoolAccountIdsForApp(appId);
 
   const steamAuth = await remainingForUsageRecords(steamAuthIds, cap, today, 'steamauth');
   const owned = await remainingForUsageRecords(ownedIds, cap, today, 'owned');
@@ -162,22 +162,30 @@ export async function syncStockForGame(gameId: number, guildId: string): Promise
   if (isUbisoftGame(game)) return -1;
 
   const remaining = await computeRemainingDailyTokens(game.appId, guildId);
+  const existing = await prisma.serverStock.findUnique({
+    where: { gameId_guildId: { gameId, guildId } },
+  });
+  const current = existing?.stock ?? remaining;
+
+  // When regen is excluded (or staff manually depleted), never raise stock from
+  // account sync — only allow it to drop if quotas are exhausted.
+  const newStock = game.excludeRegen ? Math.min(remaining, current) : remaining;
 
   await prisma.serverStock.upsert({
     where: { gameId_guildId: { gameId, guildId } },
     update: {
-      stock: remaining,
-      lastDepletedAt: remaining === 0 ? new Date() : null,
+      stock: newStock,
+      lastDepletedAt: newStock === 0 ? (existing?.lastDepletedAt ?? new Date()) : null,
     },
     create: {
       gameId,
       guildId,
-      stock: remaining,
-      lastDepletedAt: remaining === 0 ? new Date() : null,
+      stock: newStock,
+      lastDepletedAt: newStock === 0 ? new Date() : null,
     },
   });
 
-  return remaining;
+  return newStock;
 }
 
 export async function syncStockForAppId(appId: number, guildId: string = CONFIG.OWNER_GUILD_ID): Promise<number> {
@@ -195,11 +203,13 @@ export async function syncAllOwnerGameStock(guildId: string = CONFIG.OWNER_GUILD
     select: { id: true },
   });
 
+  let synced = 0;
   for (const game of games) {
     await syncStockForGame(game.id, guildId);
+    synced++;
   }
 
-  return games.length;
+  return synced;
 }
 
 /** How many active accounts can generate for this appId (ignoring usage). */

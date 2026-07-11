@@ -230,3 +230,47 @@ export async function getAllGameQueues(guildId: string, userId?: string): Promis
 
   return summaries;
 }
+
+export interface QueueRosterEntry {
+  position: number;
+  userId: string;
+  joinedAt: Date;
+}
+
+export interface GameQueueRoster {
+  gameId: number;
+  gameName: string;
+  entries: QueueRosterEntry[];
+}
+
+/** Full FIFO roster for one game or all games with active queues. */
+export async function getQueueRoster(gameName?: string | null): Promise<GameQueueRoster[]> {
+  let gameId: number | undefined;
+  if (gameName) {
+    const game = await prisma.game.findUnique({ where: { name: gameName } });
+    if (!game) return [];
+    gameId = game.id;
+  }
+
+  const entries = await prisma.waitlist.findMany({
+    where: gameId !== undefined ? { gameId } : undefined,
+    include: { game: true },
+    orderBy: [{ gameId: 'asc' }, { createdAt: 'asc' }],
+  });
+
+  const byGame = new Map<number, GameQueueRoster>();
+  for (const entry of entries) {
+    let roster = byGame.get(entry.gameId);
+    if (!roster) {
+      roster = { gameId: entry.gameId, gameName: entry.game.name, entries: [] };
+      byGame.set(entry.gameId, roster);
+    }
+    roster.entries.push({
+      position: roster.entries.length + 1,
+      userId: entry.userId,
+      joinedAt: entry.createdAt,
+    });
+  }
+
+  return [...byGame.values()].sort((a, b) => a.gameName.localeCompare(b.gameName));
+}

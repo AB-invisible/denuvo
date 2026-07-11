@@ -23,6 +23,9 @@ export const CONFIG = {
   // Hard ceiling on steampass API calls per UTC day (login + profile + guard).
   // Once hit, only refresh_token gens run until midnight UTC.
   STEAMPASS_DAILY_BUDGET: process.env.STEAMPASS_DAILY_BUDGET !== undefined ? Number(process.env.STEAMPASS_DAILY_BUDGET) : 80,
+  // When true (default), steampass.gg is never called — autogen uses SteamAuth
+  // and BYO owned accounts only. Set STEAMPASS_DISABLED=false to re-enable.
+  STEAMPASS_DISABLED: process.env.STEAMPASS_DISABLED !== 'false',
   STAFF_ROLE_ID: process.env.STAFF_ROLE_ID || '1484195272270811226',
   DONATOR_ROLE_ID: process.env.DONATOR_ROLE_ID || '1485995423633117224',
   BRONZE_ROLE_ID: process.env.BRONZE_ROLE_ID || '1486006821775872222',

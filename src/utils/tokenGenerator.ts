@@ -84,6 +84,14 @@ export interface TokenGenResult {
  * the global env account.
  */
 export async function generateToken(appId: number, gameName: string, guildId?: string, accountOverride?: { login: string; password: string }): Promise<TokenGenResult> {
+  if (CONFIG.STEAMPASS_DISABLED) {
+    return {
+      zipPath: null,
+      logs: 'Steampass is disabled (STEAMPASS_DISABLED). Use SteamAuth (/steamauth) or BYO accounts (/steamaccount).',
+      installerKey: '',
+    };
+  }
+
   // Look up steampass UUID + generation mode from the database
   const game = await prisma.game.findFirst({ where: { appId } });
   const steampassUuid = game?.steampassUuid;
@@ -227,6 +235,18 @@ export async function generateTokenWithRetry(
     }
   } catch (e) {
     console.warn('[TokenGen:Owned] owned-account path errored, falling back to steampass:', (e as Error).message);
+  }
+
+  if (CONFIG.STEAMPASS_DISABLED) {
+    console.log('[TokenGen] Steampass disabled — skipping pool / tenant login paths');
+    return {
+      zipPath: null,
+      logs:
+        'Steampass is disabled. Link SteamAuth accounts (`/steamauth sync`) or register BYO Steam accounts (`/steamaccount add`).',
+      installerKey: '',
+      poolAccountId: null,
+      exhausted: false,
+    };
   }
 
   const { getAllAvailableOwnerAccounts, recordOwnerUsage } = await import('./steampassPool');
@@ -396,9 +416,14 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
     // cached refresh_token path — warm games still succeed, cold games fail
     // cleanly instead of us hammering a blocked endpoint. FAKE (test) gens
     // never touch steampass, so they're never gated.
-    const steampassDisabled = steampassUuid !== 'FAKE' ? await isSteampassBlocked() : false;
+    const steampassDisabled = steampassUuid !== 'FAKE'
+      ? (CONFIG.STEAMPASS_DISABLED || await isSteampassBlocked())
+      : false;
     if (steampassDisabled) {
-      console.warn(`[TokenGen] Steampass circuit breaker OPEN — gen for UUID ${String(steampassUuid).slice(0, 8)}… will use cached refresh_token only (no steampass calls).`);
+      const reason = CONFIG.STEAMPASS_DISABLED
+        ? 'globally disabled'
+        : 'circuit breaker OPEN';
+      console.warn(`[TokenGen] Steampass ${reason} — gen for UUID ${String(steampassUuid).slice(0, 8)}… will use cached refresh_token only (no steampass calls).`);
     }
 
     let cachedSteamLogin = '';

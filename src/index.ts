@@ -352,7 +352,11 @@ const commands = [
   new SlashCommandBuilder()
     .setName('queue')
     .setDescription('View game queues')
-    .addSubcommand(s => s.setName('list').setDescription('List all active game queues and your position')),
+    .addSubcommand(s => s.setName('list').setDescription('List all active game queues and your position'))
+    .addSubcommand(s => s
+      .setName('roster')
+      .setDescription('(Staff) List every user in queue with their position')
+      .addStringOption(o => o.setName('game').setDescription('Game name (leave empty for all games)').setAutocomplete(true))),
 ].map(command => command.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(CONFIG.TOKEN);
@@ -389,6 +393,9 @@ async function registerCommands(targetGuildId?: string) {
 
 client.once(Events.ClientReady, async () => {
   console.log(`${CONFIG.NAME} is online!`);
+  if (CONFIG.STEAMPASS_DISABLED) {
+    console.log('[Steampass] Disabled — autogen uses SteamAuth + BYO owned accounts only.');
+  }
   await registerCommands();
 
   client.user?.setActivity('Denuvo Activations', { type: ActivityType.Watching });
@@ -411,8 +418,7 @@ client.once(Events.ClientReady, async () => {
   await Promise.all([
     getAllowedGuildIds(),
     hydrateActiveTicketChannels(),
-    ensureEnvPoolAccount(),
-    migrateGameLinksFromUsage(),
+    ...(CONFIG.STEAMPASS_DISABLED ? [] : [ensureEnvPoolAccount(), migrateGameLinksFromUsage()]),
     syncAllOwnerGameStock(),
   ]);
 
@@ -738,7 +744,7 @@ if (interaction.guildId) {
 });
 
 async function handleAutocomplete(interaction: any) {
-  if (interaction.commandName === 'stock' || interaction.commandName === 'exclude-auto' || interaction.commandName === 'test' || interaction.commandName === 'tokengen' || interaction.commandName === 'setmode' || interaction.commandName === 'getmode' || interaction.commandName === 'game' || interaction.commandName === 'removegame' || interaction.commandName === 'settokens' || interaction.commandName === 'autogen' || interaction.commandName === 'simulate' || interaction.commandName === 'deplet' || interaction.commandName === 'waitlist' || interaction.commandName === 'ubisoftgame' || interaction.commandName === 'steampass') {
+  if (interaction.commandName === 'stock' || interaction.commandName === 'exclude-auto' || interaction.commandName === 'test' || interaction.commandName === 'tokengen' || interaction.commandName === 'setmode' || interaction.commandName === 'getmode' || interaction.commandName === 'game' || interaction.commandName === 'removegame' || interaction.commandName === 'settokens' || interaction.commandName === 'autogen' || interaction.commandName === 'simulate' || interaction.commandName === 'deplet' || interaction.commandName === 'waitlist' || interaction.commandName === 'queue' || interaction.commandName === 'ubisoftgame' || interaction.commandName === 'steampass') {
     const focusedValue = interaction.options.getFocused();
     const games = await prisma.game.findMany({
       where: { name: { contains: focusedValue, mode: 'insensitive' } },

@@ -445,10 +445,10 @@ export function startPayloadServer(): void {
           // Dynamic imports keep payloadServer.ts loadable even when the
           // generator or upload modules have init issues (same isolation
           // pattern as our Prisma loader).
-          const { generateToken } = await import('./utils/tokenGenerator');
+          const { generateTokenWithRetry } = await import('./utils/tokenGenerator');
           const { uploadFile } = await import('./utils/fileHost');
 
-          const result = await generateToken(appId, gameName);
+          const result = await generateTokenWithRetry(appId, gameName);
           if (!result.zipPath) {
             console.error('[Admin] Token generation failed:', result.logs.slice(-500));
             res.writeHead(500, { 'Content-Type': 'application/json' });

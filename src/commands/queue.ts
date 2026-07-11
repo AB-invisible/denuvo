@@ -1,9 +1,70 @@
-import { EmbedBuilder } from 'discord.js';
-import { getAllGameQueues, canBypassQueue, QUEUE_RESERVE_RATIO, computeSlotSplit } from '../utils/queueManager';
+import { EmbedBuilder, GuildMember } from 'discord.js';
+import {
+  getAllGameQueues,
+  getQueueRoster,
+  canBypassQueue,
+  QUEUE_RESERVE_RATIO,
+  computeSlotSplit,
+} from '../utils/queueManager';
+import { isStaffForGuild } from '../utils/permissions';
 import { CONFIG } from '../config';
+
+const ROSTER_MAX_PER_GAME = 40;
+
+function formatRosterLines(entries: { position: number; userId: string; joinedAt: Date }[]): string {
+  const shown = entries.slice(0, ROSTER_MAX_PER_GAME);
+  const lines = shown.map(
+    (e) => `#${e.position} — <@${e.userId}> • joined <t:${Math.floor(e.joinedAt.getTime() / 1000)}:R>`,
+  );
+  if (entries.length > ROSTER_MAX_PER_GAME) {
+    lines.push(`_…and ${entries.length - ROSTER_MAX_PER_GAME} more_`);
+  }
+  return lines.join('\n');
+}
 
 export async function execute(interaction: any): Promise<void> {
   const sub = interaction.options.getSubcommand();
+
+  if (sub === 'roster') {
+    const guildId = interaction.guildId || '';
+    const member = interaction.member as GuildMember | null;
+    const isStaff = member ? await isStaffForGuild(member, guildId) : false;
+    if (!isStaff) {
+      return interaction.editReply({
+        content: '❌ **Staff only:** `/queue roster` requires staff permissions.',
+      });
+    }
+
+    const gameName = interaction.options.getString('game');
+    const rosters = await getQueueRoster(gameName);
+
+    if (gameName && rosters.length === 0) {
+      return interaction.editReply({
+        content: `ℹ️ No one is queued for **${gameName}** (or the game was not found).`,
+      });
+    }
+
+    if (rosters.length === 0) {
+      return interaction.editReply({ content: 'ℹ️ No active queues — no users are waiting on any game.' });
+    }
+
+    const sections = rosters.map((r) => `**${r.gameName}** (${r.entries.length} waiting)\n${formatRosterLines(r.entries)}`);
+    let description = sections.join('\n\n');
+
+    if (description.length > 4000) {
+      description = description.slice(0, 3990) + '\n…';
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle(gameName ? `📋 Queue Roster — ${gameName}` : '📋 Queue Roster — All Games')
+      .setDescription(description)
+      .setColor(0x5865F2)
+      .setFooter({ text: 'FIFO order • Positions #1 first' })
+      .setTimestamp();
+
+    await interaction.editReply({ embeds: [embed] });
+    return;
+  }
 
   if (sub === 'list') {
     const guildId = interaction.guildId || '';
@@ -44,7 +105,7 @@ export async function execute(interaction: any): Promise<void> {
           : `\n💎 Upgrade to **Gold** to bypass: ${CONFIG.PATREON_URL}`),
       )
       .setColor(0x5865F2)
-      .setFooter({ text: 'Use /waitlist to view or leave your queues' })
+      .setFooter({ text: 'Staff: /queue roster • Users: /waitlist' })
       .setTimestamp();
 
     await interaction.editReply({ embeds: [embed] });
