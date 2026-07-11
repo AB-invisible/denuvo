@@ -32,4 +32,12 @@ export const CONFIG = {
   DUTY_RESET_HOURS: process.env.DUTY_RESET_HOURS !== undefined ? Number(process.env.DUTY_RESET_HOURS) : 8,
   STEAMAUTH_API_URL: process.env.STEAMAUTH_API_URL || 'https://steamauth.gamegen.lol',
   STEAMAUTH_API_KEY: process.env.STEAMAUTH_API_KEY || '',
+  // ── Ubisoft token-minting service (ubisoft-service/) ──
+  // The bot POSTs {ubisoftAppId, ticket} to UBISOFT_SERVICE_URL/ubisoft/token
+  // with X-Api-Key: UBISOFT_SERVICE_KEY and gets back {token, ownership}.
+  UBISOFT_SERVICE_URL: process.env.UBISOFT_SERVICE_URL || '',
+  UBISOFT_SERVICE_KEY: process.env.UBISOFT_SERVICE_KEY || '',
+  // Directory the payload server streams magic-files zips from. Populate it
+  // with the "* Not A Crack Files.zip" files (e.g. a Railway volume).
+  UBISOFT_MAGIC_DIR: process.env.UBISOFT_MAGIC_DIR || '',
 };

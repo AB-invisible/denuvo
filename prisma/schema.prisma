@@ -21,6 +21,15 @@ model Game {
   steampassUuid   String?
   generationMode  String   @default("gbe")
   manuallyAdded   Boolean  @default(false)
+  // ─── Ubisoft / Uplay Denuvo games ───────────────────────────────
+  // A game is treated as a UBISOFT game (two-step magic-files + token_req
+  // flow via ubisoft-service) when ubisoftAppId is set. ubisoftAltAppId is
+  // the tool's known fallback appid (it tries the primary first, then this).
+  // ubisoftMagicFile names the crack/"magic files" zip served to the user
+  // (resolved by payloadServer /ubisoft/magic/<appId> from UBISOFT_MAGIC_DIR).
+  ubisoftAppId    Int?
+  ubisoftAltAppId Int?
+  ubisoftMagicFile String?
   updatedAt       DateTime @default(now()) @updatedAt
   tickets         Ticket[]
   restocks        Restock[]
@@ -51,6 +60,14 @@ model Ticket {
   createdAt             DateTime @default(now())
   updatedAt             DateTime @default(now()) @updatedAt
   verification          PendingVerification?
+  // ─── Ubisoft two-step flow state ────────────────────────────────
+  // null       → not a Ubisoft ticket (or not started)
+  // AWAITING_TOKEN_REQ → magic files delivered; bot is waiting for the
+  //              user to paste/upload the NEW token_req from the game
+  // DONE       → token.ini delivered
+  // Mirrors how screenshotVerified gates the Steam flow, but the Ubisoft
+  // flow has an extra round-trip (user must run the game first).
+  ubisoftStage          String?
 }
 
 model PendingVerification {
@@ -448,4 +465,48 @@ model Waitlist {
   createdAt DateTime @default(now())
 
   @@unique([userId, gameId])
+}
+
+// ─── Ubisoft accounts (BYO) for token minting ───────────────────────
+// A real Ubisoft account the owner OWNS the games on. The bot passes its
+// credentials to ubisoft-service (POST /ubisoft/token), up to the Denuvo
+// per-account daily cap (OWNER_TOKENS_PER_ACCOUNT_PER_DAY, default 5).
+// When the day's quota is spent, gen rotates to the next active account,
+// then falls back to the service's default UBISOFT_EMAIL/PASSWORD env.
+// Added via /ubisoftaccount. Credentials are stored plaintext — same trust
+// boundary as SteampassAccount / OwnedSteamAccount.
+//
+// NOTE: unlike Steam, Ubisoft accounts are NOT tied to a single appId —
+// one account can own many Ubisoft games — so there's no appId column and
+// the daily counter is per-account/day (not per-account/appId/day).
+model UbisoftAccount {
+  id            Int      @id @default(autoincrement())
+  guildId       String   @default("")
+  label         String?
+  email         String
+  password      String
+  active        Boolean  @default(true)
+  priority      Int      @default(100) // lower = tried first
+  failureCount  Int      @default(0)
+  lastFailureAt DateTime?
+  lastUsedAt    DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @default(now()) @updatedAt
+  usages        UbisoftUsage[]
+
+  @@unique([guildId, email])
+}
+
+// Per-account, per-day token counter for Ubisoft accounts. usageDate is a
+// "YYYY-MM-DD" UTC string; count is capped in code at the Denuvo daily
+// limit (OWNER_TOKENS_PER_ACCOUNT_PER_DAY).
+model UbisoftUsage {
+  id        Int      @id @default(autoincrement())
+  accountId Int
+  account   UbisoftAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  usageDate String   // "YYYY-MM-DD" UTC
+  count     Int      @default(0)
+  updatedAt DateTime @default(now()) @updatedAt
+
+  @@unique([accountId, usageDate])
 }

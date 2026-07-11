@@ -15,6 +15,8 @@ import { verifyScreenshot, VERIFY_BYPASS_REASON, VERIFY_ERROR_REASON } from './u
 import { initFileWatcher, syncGamesFromFile } from './utils/syncManager';
 import { generateToken, generateTokenWithRetry } from './utils/tokenGenerator';
 import { uploadFile } from './utils/fileHost';
+import { isUbisoftGame } from './utils/ubisoftCatalog';
+import { startUbisoftDelivery, handleUbisoftTokenReq, UBISOFT_STAGE_AWAITING } from './utils/ubisoftFlow';
 import { updateTicketWaitTimes, checkWeeklyStaffStats, checkDutyStatusReset, checkStaleTickets, cleanupExpiredCooldowns } from './utils/scheduler';
 import { addSubscription } from './utils/subscriptionManager';
 import { logTenant } from './utils/logging';
@@ -35,6 +37,10 @@ import { OWNER_COMMANDS, SETLOGS_COMMAND, SETVOUCH_COMMAND, ADDSUPPORT_COMMAND, 
     console.error('[PayloadServer] failed to start, continuing without it:', e);
   }
 })();
+
+// Channels currently minting a Ubisoft token — prevents a second token_req
+// message from starting a concurrent mint while the first is in flight.
+const ubisoftMintingChannels = new Set<string>();
 
 const commands = [
   new SlashCommandBuilder()
@@ -173,6 +179,45 @@ const commands = [
       .setName('remove')
       .setDescription('Remove a SteamAuth link by its ID')
       .addIntegerOption(o => o.setName('id').setDescription('Link ID (from /steamauth list)').setRequired(true)))
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+  new SlashCommandBuilder()
+    .setName('ubisoftaccount')
+    .setDescription('Manage Ubisoft accounts used to mint Denuvo tokens — owner only')
+    .addSubcommand(sub => sub
+      .setName('add')
+      .setDescription('Register a Ubisoft account you own the games on (rotated, 5/day each)')
+      .addStringOption(o => o.setName('email').setDescription('Ubisoft account email').setRequired(true))
+      .addStringOption(o => o.setName('password').setDescription('Ubisoft account password').setRequired(true))
+      .addStringOption(o => o.setName('label').setDescription('Optional label/note').setRequired(false)))
+    .addSubcommand(sub => sub
+      .setName('list')
+      .setDescription('List registered Ubisoft accounts + today\'s usage'))
+    .addSubcommand(sub => sub
+      .setName('remove')
+      .setDescription('Remove a registered Ubisoft account by its ID')
+      .addIntegerOption(o => o.setName('id').setDescription('Account ID (from /ubisoftaccount list)').setRequired(true)))
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+  new SlashCommandBuilder()
+    .setName('ubisoftgame')
+    .setDescription('Configure a game as a Ubisoft/Denuvo title (AppID + magic files) — owner only')
+    .addSubcommand(sub => sub
+      .setName('set')
+      .setDescription('Mark a game as Ubisoft and set its Ubisoft AppID(s)')
+      .addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true))
+      .addIntegerOption(o => o.setName('appid').setDescription('Ubisoft AppID').setRequired(true))
+      .addIntegerOption(o => o.setName('alt_appid').setDescription('Fallback Ubisoft AppID (optional)').setRequired(false))
+      .addStringOption(o => o.setName('magic_file').setDescription('Magic-files zip filename (optional, defaults from catalog)').setRequired(false)))
+    .addSubcommand(sub => sub
+      .setName('clear')
+      .setDescription('Revert a game back to the normal (non-Ubisoft) flow')
+      .addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true)))
+    .addSubcommand(sub => sub
+      .setName('list')
+      .setDescription('List games configured as Ubisoft titles'))
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+  new SlashCommandBuilder()
+    .setName('ubisofthealth')
+    .setDescription('Check the Ubisoft token service + magic-files availability — owner only')
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
     .setName('tokengen')
@@ -315,7 +360,7 @@ async function registerCommands(targetGuildId?: string) {
     const addsupport = ADDSUPPORT_COMMAND.toJSON();
 
     const tenantCommands = [
-      ...commands.filter((c: any) => c.name !== 'test' && c.name !== 'simulate' && c.name !== 'deplet' && c.name !== 'lowstock' && c.name !== 'setsteampass' && c.name !== 'game' && c.name !== 'removegame' && c.name !== 'autogen' && c.name !== 'stock' && c.name !== 'settokens' && c.name !== 'exclude-auto' && c.name !== 'setmode' && c.name !== 'getmode' && c.name !== 'promo' && c.name !== 'requests' && c.name !== 'staffstats' && c.name !== 'restockall' && c.name !== 'steamhealth' && c.name !== 'steamaccount' && c.name !== 'steamauth' && c.name !== 'export'),
+      ...commands.filter((c: any) => c.name !== 'test' && c.name !== 'simulate' && c.name !== 'deplet' && c.name !== 'lowstock' && c.name !== 'setsteampass' && c.name !== 'game' && c.name !== 'removegame' && c.name !== 'autogen' && c.name !== 'stock' && c.name !== 'settokens' && c.name !== 'exclude-auto' && c.name !== 'setmode' && c.name !== 'getmode' && c.name !== 'promo' && c.name !== 'requests' && c.name !== 'staffstats' && c.name !== 'restockall' && c.name !== 'steamhealth' && c.name !== 'steamaccount' && c.name !== 'steamauth' && c.name !== 'export' && c.name !== 'ubisoftaccount' && c.name !== 'ubisoftgame' && c.name !== 'ubisofthealth'),
       setlogs,
       setvouch,
       addsupport,
@@ -675,7 +720,7 @@ if (interaction.guildId) {
 });
 
 async function handleAutocomplete(interaction: any) {
-  if (interaction.commandName === 'stock' || interaction.commandName === 'exclude-auto' || interaction.commandName === 'test' || interaction.commandName === 'tokengen' || interaction.commandName === 'setmode' || interaction.commandName === 'getmode' || interaction.commandName === 'game' || interaction.commandName === 'removegame' || interaction.commandName === 'settokens' || interaction.commandName === 'autogen' || interaction.commandName === 'simulate' || interaction.commandName === 'deplet' || interaction.commandName === 'waitlist') {
+  if (interaction.commandName === 'stock' || interaction.commandName === 'exclude-auto' || interaction.commandName === 'test' || interaction.commandName === 'tokengen' || interaction.commandName === 'setmode' || interaction.commandName === 'getmode' || interaction.commandName === 'game' || interaction.commandName === 'removegame' || interaction.commandName === 'settokens' || interaction.commandName === 'autogen' || interaction.commandName === 'simulate' || interaction.commandName === 'deplet' || interaction.commandName === 'waitlist' || interaction.commandName === 'ubisoftgame') {
     const focusedValue = interaction.options.getFocused();
     const games = await prisma.game.findMany({
       where: { name: { contains: focusedValue, mode: 'insensitive' } },
@@ -1126,6 +1171,11 @@ async function handleVerifyApprove(interaction: any) {
     await logAction(homeGuild, '✅ Screenshot Approved (Staff)', `${interaction.user} approved the screenshot for **${ticket.game.name}** in <#${ticket.channelId}>. Auto-delivering.`, 0x57F287);
   }
 
+  if (isUbisoftGame(ticket.game)) {
+    await startUbisoftDelivery(interaction.channel as TextChannel, ticket, interaction.guild);
+    return;
+  }
+
   await autoGenerateAndDeliver(interaction.channel as TextChannel, ticket, interaction.guild);
 }
 
@@ -1327,6 +1377,29 @@ client.on(Events.MessageCreate, async (message) => {
     });
   }
 
+  // ─── UBISOFT: user posted their token_req ───
+  // After magic files are delivered (ubisoftStage = AWAITING_TOKEN_REQ) the
+  // next thing we expect from the user is the token request produced by the
+  // game. Consume it here — mint + deliver token.ini. A per-channel guard
+  // stops a second message from kicking off a concurrent mint.
+  if (
+    ticket &&
+    message.author.id === ticket.userId &&
+    (ticket as any).ubisoftStage === UBISOFT_STAGE_AWAITING &&
+    (ticket.status === 'OPEN' || ticket.status === 'CLAIMED')
+  ) {
+    if (ubisoftMintingChannels.has(message.channelId)) return;
+    ubisoftMintingChannels.add(message.channelId);
+    try {
+      await handleUbisoftTokenReq(message, ticket);
+    } catch (err) {
+      console.error('[UbisoftFlow] token_req handling error:', err);
+    } finally {
+      ubisoftMintingChannels.delete(message.channelId);
+    }
+    return;
+  }
+
   if (ticket && ticket.verification && message.author.id === ticket.userId) {
     if (ticket.verification.isProcessing) return;
 
@@ -1391,6 +1464,14 @@ client.on(Events.MessageCreate, async (message) => {
             const logReason = isAiError ? 'transient Groq API failure' : 'GROQ_API_KEY missing';
             await logAction(homeGuild, '🔎 Awaiting Staff Confirmation', `Screenshot for **${ticket.game.name}** in <#${message.channelId}> couldn't be AI-verified (${logReason}). Staff approval requested.`, 0xFEE75C);
           }
+          return;
+        }
+
+        // ─── UBISOFT: two-step magic-files + token_req flow ───
+        // Ubisoft/Denuvo titles don't get a one-shot token zip. Deliver the
+        // magic files + instructions and wait for the user's token_req.
+        if (isUbisoftGame(ticket.game)) {
+          await startUbisoftDelivery(message.channel as TextChannel, ticket, message.guild);
           return;
         }
 

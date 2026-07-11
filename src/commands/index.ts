@@ -30,6 +30,9 @@ import { execute as steamhealth } from './steamhealth';
 import { execute as steamaccount } from './steamaccount';
 import { execute as steamauth } from './steamauth';
 import { execute as exportCmd } from './export';
+import { execute as ubisoftaccount } from './ubisoftaccount';
+import { execute as ubisoftgame } from './ubisoftgame';
+import { execute as ubisofthealth } from './ubisofthealth';
 
 export const commandHandlers: Record<string, (interaction: any) => Promise<void>> = {
   postpanel,
@@ -64,4 +67,7 @@ export const commandHandlers: Record<string, (interaction: any) => Promise<void>
   steamaccount,
   steamauth,
   export: exportCmd,
+  ubisoftaccount,
+  ubisoftgame,
+  ubisofthealth,
 };

@@ -27,6 +27,7 @@ import http from 'http';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import { UBISOFT_CATALOG } from './utils/ubisoftCatalog';
 
 const CORE_DIR = path.join(__dirname, '..', '_Core');
 const PANEL_ASSET_DIR = path.join(__dirname, 'public');
@@ -126,6 +127,33 @@ function resolveOverrideFile(appid: string, filename: string): string | null {
   return fs.existsSync(resolved) && fs.statSync(resolved).isFile() ? resolved : null;
 }
 
+// Resolve the magic-files zip for a Ubisoft appid inside UBISOFT_MAGIC_DIR.
+// The catalog maps the appid → the exact zip filename; we also accept a
+// literal "<appid>.zip" so operators can name files by appid if they prefer.
+// Path stays inside magicDir (no traversal); the zip filename itself comes
+// from the catalog constant, not from user input.
+function resolveMagicFile(magicDir: string, appId: string): { filePath: string; downloadName: string } | null {
+  if (!/^[0-9]+$/.test(appId)) return null;
+  const root = path.resolve(magicDir);
+  const numericAppId = Number.parseInt(appId, 10);
+
+  const candidates: string[] = [];
+  const entry = UBISOFT_CATALOG.find(
+    (e) => e.ubisoftAppId === numericAppId || e.ubisoftAltAppId === numericAppId,
+  );
+  if (entry) candidates.push(entry.magicFile);
+  candidates.push(`${appId}.zip`);
+
+  for (const name of candidates) {
+    const resolved = path.resolve(path.join(root, name));
+    if (resolved !== root && !resolved.startsWith(root + path.sep)) continue;
+    if (fs.existsSync(resolved) && fs.statSync(resolved).isFile()) {
+      return { filePath: resolved, downloadName: path.basename(resolved) };
+    }
+  }
+  return null;
+}
+
 export function startPayloadServer(): void {
   const portRaw = process.env.PORT || '3000';
   const port = Number.parseInt(portRaw, 10);
@@ -168,6 +196,39 @@ export function startPayloadServer(): void {
           'Cache-Control': 'public, max-age=86400',
         });
         fs.createReadStream(filePath).pipe(res);
+        return;
+      }
+
+      // ── Ubisoft magic-files zip ──────────────────────────────────────
+      // GET /ubisoft/magic/<ubisoftAppId>
+      //   → streams the "* Not A Crack Files.zip" for that game from
+      //     UBISOFT_MAGIC_DIR. The bot links here in the two-step Ubisoft
+      //     flow so users grab the Uplay/Denuvo crack files before running
+      //     the game to produce a token_req. Numeric appid guard only; the
+      //     bot maps game→file and the resolver picks the file by appid.
+      const magicMatch = url.pathname.match(/^\/ubisoft\/magic\/([0-9]+)$/);
+      if (req.method === 'GET' && magicMatch) {
+        const appId = magicMatch[1];
+        const magicDir = (process.env.UBISOFT_MAGIC_DIR || '').trim();
+        if (!magicDir) {
+          res.writeHead(503, { 'Content-Type': 'text/plain' });
+          res.end('ubisoft magic hosting not configured');
+          return;
+        }
+        const resolved = resolveMagicFile(magicDir, appId);
+        if (!resolved) {
+          res.writeHead(404, { 'Content-Type': 'text/plain' });
+          res.end('magic files not found for this appid');
+          return;
+        }
+        const stat = fs.statSync(resolved.filePath);
+        res.writeHead(200, {
+          'Content-Type': 'application/zip',
+          'Content-Length': stat.size,
+          'Content-Disposition': `attachment; filename="${resolved.downloadName}"`,
+          'Cache-Control': 'public, max-age=3600',
+        });
+        fs.createReadStream(resolved.filePath).pipe(res);
         return;
       }
 
