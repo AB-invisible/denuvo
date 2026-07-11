@@ -63,21 +63,28 @@ export const UBISOFT_CATALOG: UbisoftCatalogEntry[] = [
     layout: 'flat',
   },
   {
-    // Ubisoft AppID unknown — set via /ubisoftgame once known.
+    // 6245 is the only numeric Uplay ID published for Anno 117 (registry
+    // labels it "Steam Demo"); the retail full-game ID isn't documented and
+    // the crack's upc_r2.ini identifies the game by GUID, not a numeric ID.
+    // DenuvoTicket normally reads the AppID embedded in the user's token_req,
+    // so this is a best-effort hint — override via /ubisoftgame if a real
+    // ticket reveals a different ID. Steam AppID: 3274580.
     name: 'ANNO 117',
-    steamAppId: 0,
-    ubisoftAppId: null,
+    steamAppId: 3274580,
+    ubisoftAppId: 6245,
     ubisoftAltAppId: null,
     magicFile: 'ANNO 117 Not A Crack Files.zip',
     layout: 'bin64',
   },
   {
-    // Ubisoft AppID unknown — set via /ubisoftgame once known. Steam AppID
-    // per handoff; owner already registered an owned Steam account for it.
+    // Uplay registry: 65043 = "Assassin's Creed Black Flag Resynced"
+    // (Ubisoft Connect / Epic build). 66088 is the Steam build's Uplay
+    // product ID (from its savegame-folder ID) — used as the alt so the tool
+    // tries both, mirroring the AC Shadows 8006/1081 (Ubisoft/Steam) pattern.
     name: "Assassin's Creed Black Flag Resynced",
     steamAppId: 3751950,
-    ubisoftAppId: null,
-    ubisoftAltAppId: null,
+    ubisoftAppId: 65043,
+    ubisoftAltAppId: 66088,
     magicFile: "Assassin's Creed Black Flag Resynced Not A Crack Files.zip",
     layout: 'flat',
   },
