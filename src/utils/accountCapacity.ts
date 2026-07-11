@@ -16,6 +16,7 @@
 import prisma from '../lib/prisma';
 import { CONFIG } from '../config';
 import { utcDateKey, getPoolAccountIdsForApp } from './steampassPool';
+import { isUbisoftGame } from './ubisoftCatalog';
 
 export function usesAccountSyncedStock(guildId: string): boolean {
   return !guildId || guildId === CONFIG.OWNER_GUILD_ID;
@@ -153,6 +154,12 @@ export async function syncStockForGame(gameId: number, guildId: string): Promise
 
   const game = await prisma.game.findUnique({ where: { id: gameId } });
   if (!game?.appId) return -1;
+
+  // Ubisoft games are delivered via the magic-files pipeline and consume ZERO
+  // Steam-account capacity — computeAccountCapacity() would always report 0 for
+  // them and force ServerStock to 0, permanently blocking sales. Skip them so
+  // their stock stays owner-managed (set via /stock), just like a Steam game.
+  if (isUbisoftGame(game)) return -1;
 
   const remaining = await computeRemainingDailyTokens(game.appId, guildId);
 

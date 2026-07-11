@@ -28,6 +28,7 @@ import { isStaff, getTier, getTierForGuild } from './permissions';
 import { computeCooldownHours } from './cooldown';
 import { resolveServerConfig } from './tenant';
 import { usesAccountSyncedStock, syncStockForGame } from './accountCapacity';
+import { isUbisoftGame } from './ubisoftCatalog';
 
 // Note: The Maps below now only store active timers to handle timeouts.
 // All stateful metadata (retries, processing, vouches) is persisted in Prisma for durability across reboots.
@@ -176,11 +177,18 @@ export async function createTicket(interaction: StringSelectMenuInteraction, gam
 
       if (!game) return { error: '❌ **Target Invalid:** The selected game is currently offline or does not exist.' };
 
-      // Per-server stock check
+      // Per-server stock check. For the owner server, ServerStock was just
+      // refreshed from real account capacity (syncStockForGame above) — so for
+      // account-synced Steam games a missing/zero row means genuinely 0 tokens.
+      // Default those to 0 and block HERE, instead of optimistically assuming 5
+      // and letting the user open a ticket that only dead-ends at "Out of Tokens
+      // Today" during generation. Ubisoft + tenant/manual servers are
+      // owner-managed, so they keep the 5 default.
       const serverStock = await tx.serverStock.findUnique({
         where: { gameId_guildId: { gameId: game.id, guildId: ticketGuildId } },
       });
-      const currentStock = serverStock?.stock ?? 5;
+      const authoritative = usesAccountSyncedStock(ticketGuildId) && !!game.appId && !isUbisoftGame(game);
+      const currentStock = serverStock?.stock ?? (authoritative ? 0 : 5);
       const serverReservations = await tx.ticket.count({
         where: { gameId: game.id, guildId: ticketGuildId, status: { in: ['OPEN', 'CLAIMED'] } },
       });
