@@ -87,6 +87,138 @@ export async function getPoolAccountIdsForApp(appId: number): Promise<number[]> 
   return accounts.map((a: { id: number }) => a.id);
 }
 
+export interface CachedRefreshTokenCandidate {
+  poolAccountId: number | null;
+  login: string;
+  password: string;
+}
+
+/**
+ * When steampass API is disabled, find pool/env accounts that still have a
+ * saved Steam refresh_token for this game's steampass UUID (SteamSession row).
+ */
+export async function listCachedRefreshTokenCandidates(
+  appId: number,
+  guildKey: string = '',
+): Promise<CachedRefreshTokenCandidate[]> {
+  const game = await prisma.game.findFirst({ where: { appId, disabled: false } });
+  if (!game?.steampassUuid) return [];
+
+  let sessions: { steampassLogin: string; refreshToken: string | null }[] = [];
+  try {
+    sessions = await (prisma as any).steamSession.findMany({
+      where: { guildId: guildKey, steampassUuid: game.steampassUuid, refreshToken: { not: null } },
+      select: { steampassLogin: true, refreshToken: true },
+      orderBy: [{ failureCount: 'asc' }, { lastLoginAt: 'desc' }],
+    });
+  } catch {
+    return [];
+  }
+
+  const logins = [
+    ...new Set(
+      sessions
+        .filter((s) => (s.refreshToken || '').trim())
+        .map((s) => (s.steampassLogin || '').trim())
+        .filter(Boolean),
+    ),
+  ];
+  if (logins.length === 0) return [];
+
+  const candidates: CachedRefreshTokenCandidate[] = [];
+  const envLogin = (process.env.STEAMPASS_LOGIN || '').trim();
+  const envPassword = process.env.STEAMPASS_PASSWORD || '';
+
+  let tenantLogin = '';
+  let tenantPassword = '';
+  if (guildKey) {
+    try {
+      const { resolveServerConfig } = await import('./tenant');
+      const sc = await resolveServerConfig(guildKey);
+      tenantLogin = (sc.steampassLogin || '').trim();
+      tenantPassword = sc.steampassPassword || '';
+    } catch {
+      /* non-fatal */
+    }
+  }
+
+  for (const login of logins) {
+    let poolAccountId: number | null = null;
+    let password = '';
+    try {
+      const acct = await (prisma as any).steampassAccount.findUnique({ where: { login } });
+      if (acct) {
+        poolAccountId = acct.id as number;
+        password = acct.password || '';
+      } else if (!guildKey && login === envLogin) {
+        password = envPassword;
+      } else if (guildKey && login === tenantLogin) {
+        password = tenantPassword;
+      } else {
+        continue;
+      }
+    } catch {
+      continue;
+    }
+    candidates.push({ poolAccountId, login, password });
+  }
+
+  return candidates;
+}
+
+/** Pool account IDs that can still gen via cached refresh_token when steampass is off. */
+export async function getCachedRefreshTokenPoolAccountIds(
+  appId: number,
+  guildKey: string = '',
+): Promise<number[]> {
+  const candidates = await listCachedRefreshTokenCandidates(appId, guildKey);
+  return candidates.map((c) => c.poolAccountId).filter((id): id is number => id != null);
+}
+
+/** Pool accounts with cached refresh_token and remaining daily quota for this game. */
+export async function getAvailableCachedRefreshTokenAccounts(
+  appId: number,
+  guildKey: string = '',
+): Promise<{ accounts: PooledAccount[]; exhausted: boolean }> {
+  const cap = CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
+  const today = utcDateKey();
+  const candidates = await listCachedRefreshTokenCandidates(appId, guildKey);
+  if (candidates.length === 0) return { accounts: [], exhausted: false };
+
+  const available: PooledAccount[] = [];
+  for (const cand of candidates) {
+    if (!cand.poolAccountId) {
+      available.push({ id: -1, login: cand.login, password: cand.password, token: '' });
+      continue;
+    }
+    let used = 0;
+    try {
+      const usage = await (prisma as any).steampassUsage.findUnique({
+        where: { accountId_appId_usageDate: { accountId: cand.poolAccountId, appId, usageDate: today } },
+      });
+      used = usage?.count ?? 0;
+    } catch {
+      used = 0;
+    }
+    if (used < cap) {
+      try {
+        const acct = await (prisma as any).steampassAccount.findUnique({ where: { id: cand.poolAccountId } });
+        available.push({
+          id: cand.poolAccountId,
+          login: cand.login,
+          password: cand.password,
+          token: (acct?.token || '').trim(),
+        });
+      } catch {
+        /* skip */
+      }
+    }
+  }
+
+  if (available.length === 0) return { accounts: [], exhausted: true };
+  return { accounts: available, exhausted: false };
+}
+
 /** Backfill game links from historical successful usage rows. */
 export async function migrateGameLinksFromUsage(): Promise<number> {
   let linked = 0;

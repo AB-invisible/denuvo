@@ -461,7 +461,8 @@ client.once(Events.ClientReady, async () => {
   await Promise.all([
     getAllowedGuildIds(),
     hydrateActiveTicketChannels(),
-    ...(CONFIG.STEAMPASS_DISABLED ? [] : [ensureEnvPoolAccount(), migrateGameLinksFromUsage()]),
+    ensureEnvPoolAccount(),
+    ...(CONFIG.STEAMPASS_DISABLED ? [] : [migrateGameLinksFromUsage()]),
     syncAllOwnerGameStock(),
   ]);
 

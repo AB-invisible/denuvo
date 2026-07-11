@@ -84,18 +84,20 @@ export interface TokenGenResult {
  * the global env account.
  */
 export async function generateToken(appId: number, gameName: string, guildId?: string, accountOverride?: { login: string; password: string }): Promise<TokenGenResult> {
-  if (CONFIG.STEAMPASS_DISABLED) {
-    return {
-      zipPath: null,
-      logs: 'Steampass is disabled (STEAMPASS_DISABLED). Use SteamAuth (/steamauth) or BYO accounts (/steamaccount).',
-      installerKey: '',
-    };
-  }
-
-  // Look up steampass UUID + generation mode from the database
   const game = await prisma.game.findFirst({ where: { appId } });
   const steampassUuid = game?.steampassUuid;
   const generationMode = (game as any)?.generationMode || 'gbe';
+
+  if (CONFIG.STEAMPASS_DISABLED) {
+    if (!steampassUuid) {
+      return {
+        zipPath: null,
+        logs: 'Steampass is disabled and this game has no steampass UUID — cannot use cached Steam sessions.',
+        installerKey: '',
+      };
+    }
+    return generateHeadless(appId, gameName, steampassUuid, generationMode, guildId, accountOverride);
+  }
 
   if (steampassUuid) {
     return generateHeadless(appId, gameName, steampassUuid, generationMode, guildId, accountOverride);
@@ -130,6 +132,12 @@ async function steampassDisabledFailureMessage(
   lastSteamAuthError = '',
 ): Promise<string> {
   const { hasLinkedSteamAuthAccounts, steamAuthEnabled } = await import('./steamAuthAccounts');
+  const { listCachedRefreshTokenCandidates } = await import('./steampassPool');
+
+  const cachedCandidates = await listCachedRefreshTokenCandidates(appId, guildKey);
+  const cachedNote = cachedCandidates.length > 0
+    ? ' Saved refresh_token session(s) exist but failed to login — token may be expired; re-enable steampass briefly or use SteamAuth.'
+    : ' No saved refresh_token session for this game — link SteamAuth or add BYO accounts.';
 
   const linkedAuth = await hasLinkedSteamAuthAccounts(appId, guildKey);
   if (linkedAuth) {
@@ -140,6 +148,7 @@ async function steampassDisabledFailureMessage(
       `Linked SteamAuth account(s) failed for **${gameName}** (AppID \`${appId}\`). ` +
       'Check `/steamauth list` (failure counts), `/steamauth status`, and fix broken accounts on the SteamAuth dashboard ' +
       '(missing password, guard revoked, or no maFile).' +
+      cachedNote +
       detail
     );
   }
@@ -155,22 +164,73 @@ async function steampassDisabledFailureMessage(
   if (ownedCount > 0) {
     return (
       `Steampass is disabled and BYO account(s) failed for **${gameName}** (AppID \`${appId}\`). ` +
-      'Check `/steamaccount list` — credentials, guard secret, or daily quota may be the issue.'
+      'Check `/steamaccount list` — credentials, guard secret, or daily quota may be the issue.' +
+      cachedNote
     );
   }
 
   if (!steamAuthEnabled()) {
     return (
       'Steampass is disabled and `STEAMAUTH_API_KEY` is not set. ' +
-      'Create a key at https://steamauth.gamegen.lol/dashboard, add it to the bot env, redeploy, then run `/steamauth sync` in the owner server.'
+      'Create a key at https://steamauth.gamegen.lol/dashboard, add it to the bot env, redeploy, then run `/steamauth sync` in the owner server.' +
+      cachedNote
     );
   }
 
   return (
     `Steampass is disabled and no SteamAuth accounts are linked for **${gameName}** (AppID \`${appId}\`). ` +
     'In the owner server: `/steamauth discover` → `/steamauth sync` (or `/steamauth link account_id:<uuid> appid:<id>`). ' +
-    'Alternatively register BYO Steam accounts with `/steamaccount add`.'
+    'Alternatively register BYO Steam accounts with `/steamaccount add`. ' +
+    'Check `/steamhealth` for saved refresh_token sessions.' +
+    cachedNote
   );
+}
+
+/**
+ * When STEAMPASS_DISABLED, reuse saved SteamSession refresh_tokens (no steampass API).
+ * Tried after SteamAuth and BYO accounts, before giving up.
+ */
+async function tryCachedSteamSessionGen(
+  appId: number,
+  gameName: string,
+  guildId?: string,
+): Promise<RetryResult | null> {
+  if (!CONFIG.STEAMPASS_DISABLED) return null;
+
+  const game = await prisma.game.findFirst({ where: { appId } });
+  if (!game?.steampassUuid) return null;
+
+  const mode = (game as any)?.generationMode || 'gbe';
+  const sessionGuildKey = guildId && guildId !== CONFIG.OWNER_GUILD_ID ? guildId : '';
+  const { listCachedRefreshTokenCandidates, recordOwnerUsage } = await import('./steampassPool');
+  const candidates = await listCachedRefreshTokenCandidates(appId, sessionGuildKey);
+
+  if (candidates.length === 0) {
+    console.log(`[TokenGen:CachedSession] No saved refresh_token for AppID ${appId} (UUID ${game.steampassUuid.slice(0, 8)}…)`);
+    return null;
+  }
+
+  for (const cand of candidates) {
+    console.log(`[TokenGen:CachedSession] Trying saved refresh_token via ${cand.login} for AppID ${appId}`);
+    const result = await generateHeadless(
+      appId,
+      gameName,
+      game.steampassUuid,
+      mode,
+      guildId,
+      { login: cand.login, password: cand.password },
+    );
+    if (result.zipPath) {
+      if (cand.poolAccountId && cand.poolAccountId > 0) {
+        await recordOwnerUsage(cand.poolAccountId, appId);
+      }
+      console.log(`[TokenGen:CachedSession] Success via cached refresh_token (${cand.login})`);
+      return { ...result, poolAccountId: cand.poolAccountId, exhausted: false };
+    }
+    console.warn(`[TokenGen:CachedSession] Cached refresh_token gen failed for ${cand.login}`);
+  }
+
+  return null;
 }
 
 export async function generateTokenWithRetry(
@@ -313,7 +373,12 @@ export async function generateTokenWithRetry(
   }
 
   if (CONFIG.STEAMPASS_DISABLED) {
-    console.log('[TokenGen] Steampass disabled — skipping pool / tenant login paths');
+    const cachedResult = await tryCachedSteamSessionGen(appId, gameName, guildId);
+    if (cachedResult?.zipPath) {
+      return cachedResult;
+    }
+
+    console.log('[TokenGen] Steampass disabled — no cached refresh_token path succeeded');
     return {
       zipPath: null,
       logs: await steampassDisabledFailureMessage(appId, gameName, ownedGuildKey, lastSteamAuthError),

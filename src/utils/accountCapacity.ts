@@ -15,7 +15,7 @@
 
 import prisma from '../lib/prisma';
 import { CONFIG } from '../config';
-import { utcDateKey, getPoolAccountIdsForApp } from './steampassPool';
+import { utcDateKey, getPoolAccountIdsForApp, getCachedRefreshTokenPoolAccountIds } from './steampassPool';
 import { isUbisoftGame } from './ubisoftCatalog';
 
 export function usesAccountSyncedStock(guildId: string): boolean {
@@ -111,7 +111,9 @@ export async function computeAccountCapacity(
     ownedIds = ownedRows.map((r: { id: number }) => r.id);
   } catch { /* non-fatal */ }
 
-  const poolIds = CONFIG.STEAMPASS_DISABLED ? [] : await getPoolAccountIdsForApp(appId);
+  const poolIds = CONFIG.STEAMPASS_DISABLED
+    ? await getCachedRefreshTokenPoolAccountIds(appId, guildKey)
+    : await getPoolAccountIdsForApp(appId);
 
   const steamAuth = await remainingForUsageRecords(steamAuthIds, cap, today, 'steamauth');
   const owned = await remainingForUsageRecords(ownedIds, cap, today, 'owned');
