@@ -41,7 +41,7 @@ GET /health → { "ok": true, "configured": true, "session_email": "..." }
 
 ### Auto-login (recommended)
 
-1. Mount a Railway volume on `ea-service` at `/data`.
+1. Mount a Railway volume on `ea-service` at `/data` (session persistence).
 2. Set `EA_EMAIL` + `EA_PASSWORD` **or** use `/eaaccount add` on the bot (bot passes creds per request).
 3. On first mint, the service logs into signin.ea.com, saves `remid` + trust cookies to `/data/ea_session.json`.
 4. Later mints reuse the session (no manual remid/signature copy).
