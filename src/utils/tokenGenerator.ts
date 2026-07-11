@@ -127,14 +127,20 @@ async function steampassDisabledFailureMessage(
   appId: number,
   gameName: string,
   guildKey: string,
+  lastSteamAuthError = '',
 ): Promise<string> {
   const { hasLinkedSteamAuthAccounts, steamAuthEnabled } = await import('./steamAuthAccounts');
 
   const linkedAuth = await hasLinkedSteamAuthAccounts(appId, guildKey);
   if (linkedAuth) {
+    const detail = lastSteamAuthError
+      ? `\n\nLast error: ${lastSteamAuthError}`
+      : '';
     return (
-      `Linked SteamAuth account(s) failed to generate a token for **${gameName}** (AppID \`${appId}\`). ` +
-      'Check `/steamauth list`, `/steamauth status`, and SteamAuth dashboard guard health.'
+      `Linked SteamAuth account(s) failed for **${gameName}** (AppID \`${appId}\`). ` +
+      'Check `/steamauth list` (failure counts), `/steamauth status`, and fix broken accounts on the SteamAuth dashboard ' +
+      '(missing password, guard revoked, or no maFile).' +
+      detail
     );
   }
 
@@ -173,6 +179,7 @@ export async function generateTokenWithRetry(
   guildId?: string,
 ): Promise<RetryResult> {
   const ownedGuildKey = (!guildId || guildId === CONFIG.OWNER_GUILD_ID) ? '' : guildId;
+  let lastSteamAuthError = '';
 
   // ── Priority 1: GameGen Auth Service (steamauth.gamegen.lol) ──
   // Credentials/guard codes fetched via API key only (GET /accounts/:id/credentials
@@ -245,7 +252,8 @@ export async function generateTokenWithRetry(
             steamPassword = material.steamPassword;
             guardCode = material.guardCode;
           } catch (e) {
-            console.warn(`[TokenGen:SteamAuth] Credentials fetch failed for #${authAcct.id}:`, (e as Error).message);
+            lastSteamAuthError = (e as Error).message;
+            console.warn(`[TokenGen:SteamAuth] Credentials fetch failed for #${authAcct.id}:`, lastSteamAuthError);
             await recordSteamAuthFailure(authAcct.id);
             continue;
           }
@@ -257,6 +265,7 @@ export async function generateTokenWithRetry(
             console.log(`[TokenGen:SteamAuth] Success with auth-service account #${authAcct.id} — no steampass used`);
             return { ...result, poolAccountId: null, exhausted: false };
           }
+          lastSteamAuthError = (result.logs || 'headless generator returned no zip').slice(-400);
           await recordSteamAuthFailure(authAcct.id);
           console.warn(`[TokenGen:SteamAuth] Account #${authAcct.id} failed — trying next / falling back`);
         }
@@ -307,7 +316,7 @@ export async function generateTokenWithRetry(
     console.log('[TokenGen] Steampass disabled — skipping pool / tenant login paths');
     return {
       zipPath: null,
-      logs: await steampassDisabledFailureMessage(appId, gameName, ownedGuildKey),
+      logs: await steampassDisabledFailureMessage(appId, gameName, ownedGuildKey, lastSteamAuthError),
       installerKey: '',
       poolAccountId: null,
       exhausted: false,

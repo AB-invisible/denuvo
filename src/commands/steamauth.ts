@@ -8,6 +8,7 @@ import {
   checkSteamAuthHealth,
   getSteamAuthAccount,
   isSteamAuthConfigured,
+  validateSteamAuthAccountForGen,
 } from '../utils/steamAuthClient';
 import {
   discoverSteamAuthMatches,
@@ -59,14 +60,16 @@ export async function execute(interaction: any): Promise<void> {
       return interaction.editReply({ content: '❌ Set `STEAMAUTH_API_KEY` first, then retry.' });
     }
     try {
-      const { linked, skipped } = await syncSteamAuthLinks('');
+      const { linked, skipped, invalid } = await syncSteamAuthLinks('');
       const { syncAllOwnerGameStock } = await import('../utils/accountCapacity');
       await syncAllOwnerGameStock(CONFIG.OWNER_GUILD_ID, { forceRaise: true });
       const { refreshAllPanels } = await import('../utils/panelManager');
       refreshAllPanels();
       await interaction.editReply({
         content:
-          `✅ **SteamAuth sync complete** — ${linked} new link(s) created, ${skipped} already linked.\n` +
+          `✅ **SteamAuth sync complete** — ${linked} new link(s) created, ${skipped} already linked` +
+          (invalid > 0 ? `, ${invalid} skipped (missing password/guard on service)` : '') +
+          '.\n' +
           (linked === 0 && skipped === 0
             ? 'No API accounts match your catalog. Run `/steamauth discover` or sync games on the dashboard.'
             : 'Linked accounts are tried **first** for autogen.'),
@@ -141,6 +144,13 @@ export async function execute(interaction: any): Promise<void> {
           ? 'Guard revoked on the service'
           : 'No shared secret (has_steam_guard: false)';
         return interaction.editReply({ content: `❌ That SteamAuth account cannot provide guard codes — ${reason}.` });
+      }
+
+      const probe = await validateSteamAuthAccountForGen(accountId);
+      if (!probe.ok) {
+        return interaction.editReply({
+          content: `❌ SteamAuth account failed credential probe — ${probe.reason}`,
+        });
       }
 
       const acct = await upsertSteamAuthLink({
@@ -251,6 +261,9 @@ export async function execute(interaction: any): Promise<void> {
     const fails = a.failureCount ? ` • ⚠️${a.failureCount} fail(s)` : '';
     const shortSvc = String(a.accountId).slice(0, 8) + '…';
     lines += `**#${a.id}** \`${a.steamLogin}\` → **${gname}**\n╰─ svc \`${shortSvc}\` · ${used}/${cap} today · ${tokenState} · 🔐 API credentials${fails}\n`;
+    if (a.failureCount >= 2) {
+      lines += '   ↳ repeated failures — check password/guard on SteamAuth dashboard\n';
+    }
   }
 
   const apiState = isSteamAuthConfigured() ? '✅ API key set' : '⚠️ STEAMAUTH_API_KEY missing';

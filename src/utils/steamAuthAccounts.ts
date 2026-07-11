@@ -15,6 +15,7 @@ import {
   fetchSteamAuthGuardCode,
   getSteamAuthAccount,
   isSteamAuthConfigured,
+  validateSteamAuthAccountForGen,
   type SteamAuthApiAccount,
 } from './steamAuthClient';
 
@@ -253,11 +254,20 @@ export async function upsertSteamAuthLink(input: {
 }
 
 /** Auto-link every discovered API account ↔ catalog game match. */
-export async function syncSteamAuthLinks(guildId: string = ''): Promise<{ linked: number; skipped: number }> {
+export async function syncSteamAuthLinks(guildId: string = ''): Promise<{ linked: number; skipped: number; invalid: number }> {
   const matches = await discoverSteamAuthMatches();
   let linked = 0;
   let skipped = 0;
+  let invalid = 0;
   for (const m of matches) {
+    const probe = await validateSteamAuthAccountForGen(m.apiAccount.account_id);
+    if (!probe.ok) {
+      console.warn(
+        `[steamAuthAccounts] Skipping ${m.apiAccount.steam_username} (${m.apiAccount.account_id.slice(0, 8)}…): ${probe.reason}`,
+      );
+      invalid++;
+      continue;
+    }
     for (let i = 0; i < m.appIds.length; i++) {
       const appId = m.appIds[i];
       const existing = await (prisma as any).steamAuthAccount.findUnique({
@@ -282,7 +292,7 @@ export async function syncSteamAuthLinks(guildId: string = ''): Promise<{ linked
       linked++;
     }
   }
-  return { linked, skipped };
+  return { linked, skipped, invalid };
 }
 
 export async function resolveApiAccountLogin(accountId: string): Promise<string> {

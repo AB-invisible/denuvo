@@ -142,6 +142,39 @@ function guardUnavailableReason(data: Pick<SteamAuthGuardCode, 'has_steam_guard'
   return 'SteamAuth guard-code response missing code';
 }
 
+function normalizeCredentialsPayload(data: any, accountId: string): SteamAuthCredentials {
+  if (!data || typeof data !== 'object') {
+    throw new Error(`SteamAuth credentials response was not JSON (account ${accountId})`);
+  }
+
+  const steam_username = String(data.steam_username ?? data.steamUsername ?? '').trim();
+  const password = String(data.password ?? '').trim();
+
+  return {
+    account_id: String(data.account_id ?? data.accountId ?? accountId),
+    steam_username,
+    password,
+    has_steam_guard: data.has_steam_guard !== false,
+    guard_revoked: data.guard_revoked === true,
+    code: typeof data.code === 'string' ? data.code : null,
+    expires_in: typeof data.expires_in === 'number' ? data.expires_in : null,
+  };
+}
+
+function credentialsValidationError(data: SteamAuthCredentials): string {
+  const missing: string[] = [];
+  if (!data.steam_username) missing.push('steam_username');
+  if (!data.password) missing.push('password');
+  if (missing.length > 0) {
+    return (
+      `SteamAuth credentials missing ${missing.join(' and ')} for \`${data.steam_username || data.account_id}\` — ` +
+      're-save the Steam password on https://steamauth.gamegen.lol/dashboard (PATCH account or re-import maFile).'
+    );
+  }
+  if (!data.code) return guardUnavailableReason(data);
+  return '';
+}
+
 export function isSteamAuthConfigured(): boolean {
   return Boolean(apiKey());
 }
@@ -170,16 +203,28 @@ export async function fetchSteamAuthGuardCode(accountId: string): Promise<SteamA
 
 /** Full login material in one call — username, password, and current guard code. */
 export async function fetchSteamAuthCredentials(accountId: string): Promise<SteamAuthCredentials> {
-  const data = await apiRequest<SteamAuthCredentials>(
+  const raw = await apiRequest<any>(
     `/api/v1/accounts/${encodeURIComponent(accountId)}/credentials`,
   );
-  if (!data.password || !data.steam_username) {
-    throw new Error('SteamAuth credentials response missing required fields');
-  }
-  if (!data.code) {
-    throw new Error(guardUnavailableReason(data));
-  }
+  const data = normalizeCredentialsPayload(raw, accountId);
+  const err = credentialsValidationError(data);
+  if (err) throw new Error(err);
   return data;
+}
+
+/** Quick probe before linking — ensures guard + password are available via API. */
+export async function validateSteamAuthAccountForGen(accountId: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+  try {
+    const api = await getSteamAuthAccount(accountId);
+    if (!accountCanProvideGuardCode(api)) {
+      if (api.guard_revoked) return { ok: false, reason: 'Guard revoked on the service' };
+      return { ok: false, reason: 'No Steam Guard shared secret (has_steam_guard: false)' };
+    }
+    await fetchSteamAuthCredentials(accountId);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, reason: (e as Error).message };
+  }
 }
 
 /** Trigger async Steam library sync for an account (POST /api/v1/accounts/:id/sync-games). */

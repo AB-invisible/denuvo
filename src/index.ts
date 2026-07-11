@@ -425,9 +425,13 @@ client.once(Events.ClientReady, async () => {
       if (!steamAuthEnabled()) {
         console.warn('[SteamAuth] STEAMAUTH_API_KEY missing — link/sync unavailable until env is set.');
       } else {
-        const { linked, skipped } = await syncSteamAuthLinks('');
-        if (linked > 0) {
-          console.log(`[SteamAuth] Startup sync linked ${linked} account(s) (${skipped} already linked).`);
+        const { linked, skipped, invalid } = await syncSteamAuthLinks('');
+        if (linked > 0 || invalid > 0) {
+          console.log(
+            `[SteamAuth] Startup sync: ${linked} linked, ${skipped} already linked` +
+            (invalid > 0 ? `, ${invalid} skipped (invalid credentials/guard)` : '') +
+            '.',
+          );
           await syncAllOwnerGameStock(CONFIG.OWNER_GUILD_ID, { forceRaise: true });
         }
       }
