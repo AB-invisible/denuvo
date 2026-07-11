@@ -20,6 +20,6 @@
     }
   },
   "deploy": {
-    "startCommand": "sh scripts/seed-ea-magic.sh; timeout 90 npx prisma db push --accept-data-loss; npm run start"
+    "startCommand": "node scripts/seed-ea-magic.mjs; timeout 90 npx prisma db push --accept-data-loss; npm run start"
   }
 }
