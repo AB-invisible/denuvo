@@ -265,19 +265,15 @@ export async function handleUbisoftTokenReq(message: Message, ticket: any): Prom
             .setTimestamp(),
         ],
       });
-      const appHint = result.usedAppId ? ` (last AppID \`${result.usedAppId}\`)` : '';
-      const logTail = (result.logs || '').slice(-400);
+      const appHint = result.usedAppId ? ` (AppID \`${result.usedAppId}\`)` : '';
       await channel.send({
-        content:
-          `${staffPing} Ubisoft mint hit **ExceededActivations** for **${ticket.game.name}**${appHint}` +
-          `${hadLocalQuota ? ' — **local quota still shows availability**' : ''}. ` +
-          `${logTail ? `\`\`\`\n${logTail}\n\`\`\`` : ''}`,
+        content: `${staffPing} Ubisoft daily activation limit reached for **${ticket.game.name}**${appHint}.`,
       }).catch(() => {});
       if (hg) {
         await logAction(
           hg,
           '⚠️ Ubisoft Activation Limit',
-          `**${ticket.game.name}**${appHint} — ExceededActivations${hadLocalQuota ? ' (local quota remaining)' : ''} in <#${channel.id}>.\n${(result.logs || '').slice(-600)}`,
+          `**${ticket.game.name}**${appHint} — ExceededActivations${hadLocalQuota ? ' (local quota remaining)' : ''} in <#${channel.id}>.\n\`\`\`\n${(result.logs || '').slice(-600)}\n\`\`\``,
           0xed4245,
         );
       }
