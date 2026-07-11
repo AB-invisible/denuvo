@@ -46,7 +46,7 @@ export async function execute(interaction: any): Promise<void> {
     .setTitle('📋 Your Waitlists')
     .setDescription(lines.join('\n'))
     .setColor(0x5865F2)
-    .setFooter({ text: 'Use /waitlist leave:<game> to leave a queue' })
+    .setFooter({ text: 'Use /waitlist leave:<game> to leave • /queue list for all queues' })
     .setTimestamp();
 
   await interaction.editReply({ embeds: [embed] });

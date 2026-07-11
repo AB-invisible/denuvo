@@ -55,11 +55,12 @@ export async function processGuildRestocks(guildId: string): Promise<void> {
   for (const [gameId, restocks] of byGame) {
     const amount = restocks.length;
     const serverStock = await getOrCreateServerStock(gameId, guildId);
+    const previousStock = serverStock.stock;
 
     await prisma.$transaction([
       prisma.serverStock.update({
         where: { gameId_guildId: { gameId, guildId } },
-        data: { stock: serverStock.stock + amount, lastDepletedAt: null },
+        data: { stock: previousStock + amount, lastDepletedAt: null },
       }),
       prisma.restock.deleteMany({
         where: { id: { in: restocks.map(r => r.id) } },
@@ -67,9 +68,10 @@ export async function processGuildRestocks(guildId: string): Promise<void> {
     ]);
 
     const gameName = restocks[0].game.name;
+    const newStock = previousStock + amount;
     await logGlobal('✅ Auto-Restock', `**${amount} token(s)** auto-restocked for **${gameName}**.`, 0x57F287);
     await notifySubscribers(gameId, gameName, amount);
-    await notifyWaitlist(gameId, gameName, amount);
+    await notifyWaitlist(gameId, gameName, previousStock, newStock);
   }
 }
 
@@ -106,6 +108,7 @@ export async function updateStock(gameName: string, sub: 'add' | 'remove' | 'set
   if (!game) throw new Error(`Game "${gameName}" not found.`);
 
   const serverStock = await getOrCreateServerStock(game.id, guildId);
+  const previousStock = serverStock.stock;
 
   let newStock: number;
   if (sub === 'add') {
@@ -128,7 +131,7 @@ export async function updateStock(gameName: string, sub: 'add' | 'remove' | 'set
 
   if (sub === 'add' || (sub === 'set' && amount > 0)) {
     await notifySubscribers(game.id, game.name, amount);
-    await notifyWaitlist(game.id, game.name, amount);
+    await notifyWaitlist(game.id, game.name, previousStock, newStock);
   }
 
   if (newStock === 0) {
@@ -166,7 +169,7 @@ export async function updateStockForAllGames(amount: number, guildId: string = '
   return { count: games.length, restocksCleared };
 }
 
-export async function consumeStock(gameId: number, guildId: string) {
+export async function consumeStock(gameId: number, guildId: string, _fromQueue = false) {
   const game = await prisma.game.findUnique({ where: { id: gameId } });
   if (!game) throw new Error('Game not found.');
 

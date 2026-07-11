@@ -57,6 +57,7 @@ model Ticket {
   claimedAt             DateTime?
   closedAt              DateTime?
   lastUserActivityAt    DateTime @default(now())
+  fromQueue             Boolean  @default(false)
   createdAt             DateTime @default(now())
   updatedAt             DateTime @default(now()) @updatedAt
   verification          PendingVerification?
@@ -482,13 +483,15 @@ model PromoRedemption {
 }
 
 model Waitlist {
-  id        Int      @id @default(autoincrement())
-  userId    String
-  gameId    Int
-  game      Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
-  createdAt DateTime @default(now())
+  id         Int       @id @default(autoincrement())
+  userId     String
+  gameId     Int
+  game       Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  createdAt  DateTime  @default(now())
+  notifiedAt DateTime?
 
   @@unique([userId, gameId])
+  @@index([gameId, createdAt])
 }
 
 // ─── Ubisoft accounts (BYO) for token minting ───────────────────────

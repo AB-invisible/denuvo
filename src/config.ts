@@ -45,6 +45,8 @@ export const CONFIG = {
     DEFAULT: process.env.COOLDOWN_DEFAULT !== undefined ? Number(process.env.COOLDOWN_DEFAULT) : 8760 * 10
   },
   DUTY_RESET_HOURS: process.env.DUTY_RESET_HOURS !== undefined ? Number(process.env.DUTY_RESET_HOURS) : 8,
+  /** Fraction of a game's stock reserved for FIFO queue slots (rest is open to everyone). */
+  QUEUE_RESERVE_RATIO: process.env.QUEUE_RESERVE_RATIO !== undefined ? Number(process.env.QUEUE_RESERVE_RATIO) : 0.30,
   STEAMAUTH_API_URL: process.env.STEAMAUTH_API_URL || 'https://steamauth.gamegen.lol',
   STEAMAUTH_API_KEY: process.env.STEAMAUTH_API_KEY || '',
   // ── Ubisoft token-minting service (ubisoft-service/) ──

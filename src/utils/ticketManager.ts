@@ -25,6 +25,7 @@ import { trackTicketChannel, untrackTicketChannel } from './ticketChannelCache';
 import { createVerificationPromptEmbed, createTicketSuccessEmbed } from './embeds';
 import { getEstimatedWaitTime } from './stats';
 import { isStaff, getTier, getTierForGuild } from './permissions';
+import { canBypassQueue, checkQueueAccess, removeFromQueue } from './queueManager';
 import { computeCooldownHours } from './cooldown';
 import { resolveServerConfig } from './tenant';
 import { usesAccountSyncedStock, syncStockForGame } from './accountCapacity';
@@ -143,6 +144,9 @@ export async function createTicket(interaction: StringSelectMenuInteraction, gam
       await syncStockForGame(gamePreview.id, ticketGuildId);
     }
 
+    const member = interaction.member as GuildMember;
+    const queueBypass = await canBypassQueue(member, ticketGuildId);
+
     // --- ATOMIC TRANSACTION START ---
     const result = await prisma.$transaction(async (tx) => {
       const now = new Date();
@@ -202,11 +206,24 @@ export async function createTicket(interaction: StringSelectMenuInteraction, gam
           const position = await tx.waitlist.count({
             where: { gameId: game.id, createdAt: { lte: existing.createdAt } },
           });
-          return { error: `⏳ **Out of Stock:** You're already on the waitlist for **${gameName}** at position **#${position}**. You'll be DM'd when it restocks.` };
+          return { error: `⏳ **Out of Stock:** You're already on the waitlist for **${gameName}** at position **#${position}**. You'll be DM'd when your slot is ready.` };
         }
         await tx.waitlist.create({ data: { userId: interaction.user.id, gameId: game.id } });
         const position = await tx.waitlist.count({ where: { gameId: game.id } });
-        return { error: `⏳ **Out of Stock:** You've been added to the waitlist for **${gameName}** at position **#${position}**. You'll receive a DM when it restocks!` };
+        return { error: `⏳ **Out of Stock:** You've been added to the waitlist for **${gameName}** at position **#${position}**. You'll receive a DM when your slot is ready!` };
+      }
+
+      const queueCheck = await checkQueueAccess(
+        interaction.user.id,
+        game.id,
+        gameName,
+        currentStock,
+        availableResources,
+        ticketGuildId,
+        queueBypass,
+      );
+      if (!queueCheck.allowed) {
+        return { error: queueCheck.error };
       }
 
       if (game.donatorOnly) {
@@ -223,7 +240,7 @@ export async function createTicket(interaction: StringSelectMenuInteraction, gam
         }
       }
 
-      return { game };
+      return { game, fromQueue: queueCheck.fromQueue };
     });
 
     if ('error' in result) {
@@ -234,7 +251,7 @@ export async function createTicket(interaction: StringSelectMenuInteraction, gam
       return;
     }
 
-    const { game } = result;
+    const { game, fromQueue } = result;
     const channelName = `${gameName.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${interaction.user.username.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
 
      // Resolve per-server config — buyer servers use their own category /
@@ -282,8 +299,16 @@ export async function createTicket(interaction: StringSelectMenuInteraction, gam
     });
 
     const ticket = await prisma.ticket.create({
-      data: { channelId: channel.id, userId: interaction.user.id, gameId: game.id, status: 'OPEN', guildId: interaction.guildId },
+      data: {
+        channelId: channel.id,
+        userId: interaction.user.id,
+        gameId: game.id,
+        status: 'OPEN',
+        guildId: interaction.guildId,
+        fromQueue,
+      },
     });
+    await removeFromQueue(interaction.user.id, game.id);
     trackTicketChannel(channel.id);
 
     const userTier = await getTierForGuild(interaction.member as GuildMember, guild.id);
@@ -518,7 +543,7 @@ export async function handleDeductionChoice(interaction: ButtonInteraction, choi
   const deduct = choice === 'yes';
 
   if (deduct) {
-    await consumeStock(ticket.gameId, effectiveGuildId).catch(console.error);
+    await consumeStock(ticket.gameId, effectiveGuildId, ticket.fromQueue).catch(console.error);
   }
 
   const until = new Date();
@@ -569,7 +594,7 @@ export async function handleCooldownSelection(interaction: StringSelectMenuInter
   const csGuildId = ticket.guildId || interaction.guildId || '';
 
   if (deduct) {
-    await consumeStock(ticket.gameId, csGuildId).catch(console.error);
+    await consumeStock(ticket.gameId, csGuildId, ticket.fromQueue).catch(console.error);
   }
 
   const until = new Date();

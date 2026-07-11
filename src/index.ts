@@ -349,6 +349,10 @@ const commands = [
     .setName('waitlist')
     .setDescription('View or leave your game waitlists')
     .addStringOption(o => o.setName('leave').setDescription('Game name to leave the waitlist for').setAutocomplete(true)),
+  new SlashCommandBuilder()
+    .setName('queue')
+    .setDescription('View game queues')
+    .addSubcommand(s => s.setName('list').setDescription('List all active game queues and your position')),
 ].map(command => command.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(CONFIG.TOKEN);
@@ -765,7 +769,7 @@ async function handleChatCommand(interaction: any) {
     }).catch(() => {});
   }
 
-  const USER_FACING_COMMANDS = new Set(['mycooldown', 'profile', 'onduty', 'request', 'redeem', 'waitlist']);
+  const USER_FACING_COMMANDS = new Set(['mycooldown', 'profile', 'onduty', 'request', 'redeem', 'waitlist', 'queue']);
   if (!USER_FACING_COMMANDS.has(interaction.commandName)) {
     const m = interaction.member as GuildMember | null;
     const hasAdmin = m?.permissions?.has?.(PermissionsBitField.Flags.Administrator);
@@ -1748,7 +1752,7 @@ client.on(Events.MessageCreate, async (message) => {
           });
 
           // Deduct one token from stock
-          await consumeStock(vouchTicket.gameId, vouchTicket.guildId || message.guildId || '').catch((e) => console.error('[VouchAuto] consumeStock failed:', e));
+          await consumeStock(vouchTicket.gameId, vouchTicket.guildId || message.guildId || '', vouchTicket.fromQueue).catch((e) => console.error('[VouchAuto] consumeStock failed:', e));
 
           // Close ticket
           await prisma.ticket.update({
