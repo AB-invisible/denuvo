@@ -7,6 +7,8 @@ import { consumeStock } from '../utils/gameManager';
 import { createTokenDeliveryEmbed } from '../utils/embeds';
 import { logAction, logTenant } from '../utils/logging';
 import { pendingVerificationTimers } from '../utils/ticketManager';
+import { isUbisoftGame } from '../utils/ubisoftCatalog';
+import { startUbisoftDelivery } from '../utils/ubisoftFlow';
 
 export async function execute(interaction: any): Promise<void> {
   const gameName = interaction.options.getString('game')!;
@@ -18,6 +20,37 @@ export async function execute(interaction: any): Promise<void> {
 
   const game = await prisma.game.findUnique({ where: { name: gameName } });
   if (!game) return interaction.editReply({ content: `❌ **Not Found:** Game **${gameName}** does not exist.` });
+
+  // Ubisoft/Denuvo titles use a stateful two-step flow (deliver magic files →
+  // collect the user's token request → mint via ubisoft-service), not the
+  // Steam generator. /tokengen therefore kicks off that same delivery instead
+  // of calling generateTokenWithRetry. It has to run inside the ticket channel
+  // because the token-request listener keys off the ticket's ubisoftStage.
+  if (isUbisoftGame(game)) {
+    const ubiTicket = await prisma.ticket.findFirst({
+      where: { channelId: interaction.channelId, status: { in: ['OPEN', 'CLAIMED'] } },
+    });
+    if (!ubiTicket) {
+      return interaction.editReply({
+        content:
+          `🎮 **${game.name}** is a **Ubisoft/Denuvo** title — it uses the interactive two-step flow, ` +
+          `not the Steam generator. Run \`/tokengen\` **inside the user's ticket channel** so I can track ` +
+          `their token request and deliver \`token.ini\` back to them.`,
+      });
+    }
+    const channel = interaction.channel;
+    if (!channel?.isTextBased()) {
+      return interaction.editReply({ content: '❌ This channel is not text-based.' });
+    }
+    await startUbisoftDelivery(channel, { ...ubiTicket, game }, interaction.guild);
+    return interaction.editReply({
+      content:
+        `🎮 **Ubisoft two-step delivery started** for **${game.name}** in <#${interaction.channelId}>.\n` +
+        `Magic files + instructions posted — waiting for the user's token request to mint \`token.ini\`.\n` +
+        `*(Stock deduction isn't applied here; the token is delivered once their request comes back.)*`,
+    });
+  }
+
   if (!game.appId) return interaction.editReply({ content: `❌ **No AppID:** Game **${gameName}** has no AppID configured.` });
 
   const startEmbed = new EmbedBuilder()
