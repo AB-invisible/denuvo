@@ -30,6 +30,7 @@ import { computeCooldownHours } from './cooldown';
 import { resolveServerConfig } from './tenant';
 import { usesAccountSyncedStock, syncStockForGame } from './accountCapacity';
 import { isUbisoftGame } from './ubisoftCatalog';
+import { isEaGame } from './eaCatalog';
 
 // Note: The Maps below now only store active timers to handle timeouts.
 // All stateful metadata (retries, processing, vouches) is persisted in Prisma for durability across reboots.
@@ -207,7 +208,7 @@ export async function createTicket(interaction: StringSelectMenuInteraction, sel
       const serverStock = await tx.serverStock.findUnique({
         where: { gameId_guildId: { gameId: game.id, guildId: ticketGuildId } },
       });
-      const authoritative = usesAccountSyncedStock(ticketGuildId) && !!game.appId && !isUbisoftGame(game);
+      const authoritative = usesAccountSyncedStock(ticketGuildId) && !!game.appId && !isUbisoftGame(game) && !isEaGame(game);
       const currentStock = serverStock?.stock ?? (authoritative ? 0 : 5);
       const serverReservations = await tx.ticket.count({
         where: { gameId: game.id, guildId: ticketGuildId, status: { in: ['OPEN', 'CLAIMED'] } },

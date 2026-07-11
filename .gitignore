@@ -32,3 +32,6 @@ update-dlls.bat
 config.ini
 scripts/extract_pyinstaller.py
 scripts/extract_pyz.py
+
+# EA magic zips (too large for GitHub; host on disk / Railway volume)
+/ea-magic/*.zip
