@@ -4,7 +4,7 @@
  * At step 1 of the two-step flow we hand the user a small zip containing
  * installer.exe + a payload-manifest.json (flow: "denuvo-callhome"). The
  * installer reads the manifest, downloads the magic files from the existing
- * /ea|ubisoft/magic route, installs them, launches the game to capture
+ * /ea|ubisoft/magic route, installs them, launches the game's .exe to capture
  * token_req, then POSTs it to /activate/<installerKey> to get token.ini.
  *
  * The zip is streamed through the SAME /download/<token> endpoint that Steam
@@ -29,7 +29,8 @@ export type InstallerPlatform = 'ea' | 'ubisoft';
 export interface CallhomeManifestInput {
   installerKey: string;
   platform: InstallerPlatform;
-  appId: number | null; // Steam appId — used to locate the game folder + launch via steam://rungameid
+  appId: number | null; // Steam appId — used to locate the game folder via Steam manifests
+  launchExe?: string | null; // optional relative path to the game binary (else auto-detected)
   gameName: string;
   layout: 'flat' | 'bin64';
   magicUrl: string; // where the installer downloads the setup zip (self-hosted /…/magic or an external mirror)
@@ -53,6 +54,7 @@ export function buildCallhomeManifest(input: CallhomeManifestInput): Record<stri
     magic_url: input.magicUrl,
     activate_url: `${base}/activate/${input.installerKey}`,
     token_req_names: input.tokenReqNames && input.tokenReqNames.length ? input.tokenReqNames : ['token_req.txt'],
+    ...(input.launchExe ? { launch_exe: input.launchExe } : {}),
     _sig: input.installerKey,
     ...(input.test ? { test: true } : {}),
   };
@@ -83,6 +85,7 @@ export interface CallhomeInstallerInput {
   guildId: string | null;
   gameName: string;
   appId: number | null;
+  launchExe?: string | null;
   layout: 'flat' | 'bin64';
   platform: InstallerPlatform;
   magicUrl: string;
@@ -111,6 +114,7 @@ export async function createCallhomeInstaller(input: CallhomeInstallerInput): Pr
     installerKey,
     platform: input.platform,
     appId: input.appId,
+    launchExe: input.launchExe,
     gameName: input.gameName,
     layout: input.layout,
     magicUrl: input.magicUrl,

@@ -85,6 +85,9 @@ Compile to a single Windows .exe with PyInstaller:
 #        right fix needs a stubbed/experimental Goldberg variant we
 #        don't have in _Core/ yet).
 # Rev 14: per-game steamclient64.dll placement override
+# Rev 15: denuvo-callhome (EA/Ubisoft) launches the game's own .exe from
+#        its install folder instead of steam://rungameid (Steam bypasses
+#        magic files and won't emit token_req).
 #        (_STEAMCLIENT_EXTRA_DIRS). GBE Pass 3 drops steamclient64.dll at a
 #        known-good relative subpath for AppIDs whose real exe folder the
 #        exe-detection heuristic doesn't reliably pick. Seeded with The Bus
@@ -2376,8 +2379,8 @@ def _derive_game_name(self_name: str, game_dir: Path) -> str:
 # A different kind of zip: installer.exe + payload-manifest.json with
 # flow="denuvo-callhome". No steam_appid.txt, no Goldberg payload. Instead the
 # installer downloads the magic files from the bot, drops them into the Steam
-# game folder, launches the game once so it emits a token_req, kills it, POSTs
-# token_req to /activate/<key> to mint the token, and writes token.ini back into
+# game folder, launches the game's own .exe once so it emits a token_req, kills
+# it, POSTs token_req to /activate/<key> to mint the token, and writes token.ini
 # the game folder. Hands-off — the user only confirms it works afterward.
 
 def _callhome_target_dir(game_dir: Path, layout: str) -> Path:
@@ -2437,18 +2440,56 @@ def _wait_for_token_req(dirs: list[Path], names: list[str], timeout_s: int) -> "
     return None
 
 
-def _launch_steam_game(app_id: str) -> None:
-    try:
-        os.startfile(f"steam://rungameid/{app_id}")  # type: ignore[attr-defined]
-    except Exception:
+def _resolve_game_exe(game_dir: Path, manifest: dict | None = None) -> Path | None:
+    """
+    Pick the real game binary to launch for denuvo-callhome. Uses an optional
+    manifest `launch_exe` (relative to game_dir), then UE *-Shipping.exe,
+    then largest non-junk .exe under the install folder.
+    """
+    manifest = manifest or {}
+    rel = str(manifest.get("launch_exe") or manifest.get("game_exe") or "").strip()
+    if rel:
+        rel_posix = rel.replace("\\", "/").lstrip("/")
+        candidate = (game_dir / rel_posix).resolve()
         try:
-            subprocess.Popen(["cmd", "/c", "start", "", f"steam://rungameid/{app_id}"])
-        except Exception:
+            game_res = game_dir.resolve()
+            if candidate.is_file() and str(candidate).startswith(str(game_res)):
+                return candidate
+        except OSError:
             pass
+    return _scan_shipping_exe(game_dir) or _find_launchable_exe(game_dir)
 
 
-def _kill_game_processes(game_dir: Path, target_dir: Path) -> None:
+def _launch_game_exe(game_dir: Path, manifest: dict | None = None) -> Path | None:
+    """Launch the game binary directly from its install folder (not via Steam)."""
+    exe = _resolve_game_exe(game_dir, manifest)
+    if not exe or not exe.is_file():
+        return None
+    DETACHED_PROCESS = 0x00000008
+    CREATE_NEW_PROCESS_GROUP = 0x00000200
+    try:
+        subprocess.Popen(
+            [str(exe)],
+            cwd=str(exe.parent),
+            creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+        return exe
+    except (OSError, ValueError):
+        try:
+            os.startfile(str(exe))  # type: ignore[attr-defined]
+            return exe
+        except Exception:
+            return None
+
+
+def _kill_game_processes(game_dir: Path, target_dir: Path, launched: Path | None = None) -> None:
     names: set[str] = set()
+    if launched:
+        names.add(launched.name)
     for d in {game_dir, target_dir, game_dir / "Bin" / "Win64", game_dir / "Binaries" / "Win64"}:
         try:
             if d and d.exists():
@@ -2584,7 +2625,15 @@ def run_callhome_flow(manifest: dict, here: Path, self_path: Path) -> None:
         "The game will now start briefly to generate your activation request, then close automatically.\n\n"
         "Click OK to continue — this only takes a moment.",
     )
-    _launch_steam_game(app_id)
+    launched_exe = _launch_game_exe(game_dir, manifest)
+    if not launched_exe:
+        gamegen_msgbox(
+            f"Couldn't find {game_name}'s game executable in:\n\n{game_dir}\n\n"
+            "The setup files were installed, but the installer needs the game's .exe to run locally "
+            "(not through Steam). Contact staff on Discord if this keeps happening.",
+            icon=MB_ICON_ERROR,
+        )
+        sys.exit(1)
 
     found = _wait_for_token_req(dirs, names, timeout_s=180)
     if not found:
@@ -2595,7 +2644,7 @@ def run_callhome_flow(manifest: dict, here: Path, self_path: Path) -> None:
         )
         found = _wait_for_token_req(dirs, names, timeout_s=180)
 
-    _kill_game_processes(game_dir, target_dir)
+    _kill_game_processes(game_dir, target_dir, launched_exe)
 
     if not found:
         gamegen_msgbox(
