@@ -89,16 +89,16 @@ function resolveMagicDelivery(
 function magicInstructions(gameName: string, layout: 'flat' | 'bin64'): string {
   const dropTarget =
     layout === 'bin64'
-      ? 'the game install folder (the zip already contains the `Bin/Win64/` structure — extract it at the game root and let it merge)'
-      : 'the game install folder, next to the main game `.exe`';
+      ? 'the `Bin/Win64/` directory (extract the archive at your game root)'
+      : 'your game directory, alongside the main executable';
 
   return (
-    `**Step 1 — Install the files**\n` +
-    `1. Download the file above and extract it.\n` +
-    `2. Copy everything (\`dbdata.dll\`, \`steam_api64.dll\`, \`steamclient64.dll\`, \`upc_r2*\`, and the \`steam_settings\` folder) into ${dropTarget}. Overwrite if asked.\n\n` +
-    `**Step 2 — Get your token request**\n` +
-    `3. Launch **${gameName}** once. It will fail to start and generate a **token request** (a long text string / a \`token_req\` file).\n` +
-    `4. Copy that entire token request and **paste it here** (or attach the \`.txt\` file). I'll turn it into your \`token.ini\` automatically.`
+    `**Install setup files**\n` +
+    `Download the package above, extract it, and copy the contents into ${dropTarget}. Overwrite existing files if prompted.\n\n` +
+    `**Generate request file**\n` +
+    `Launch **${gameName}** once. The game will not load fully at this stage — this is expected. A file named **\`token_req.txt\`** will be created in your game directory.\n\n` +
+    `**Submit for activation**\n` +
+    `Attach **\`token_req.txt\`** to this ticket. Your activation file, **\`token.ini\`**, will be delivered here once processing is complete.`
   );
 }
 
@@ -132,17 +132,17 @@ export async function startUbisoftDelivery(channel: TextChannel, ticket: any, gu
   }
 
   const embed = new EmbedBuilder()
-    .setTitle(`🎮 ${ticket.game.name} — Ubisoft Setup`)
+    .setTitle(`🎮 ${ticket.game.name} — Activation Setup`)
     .setDescription(
-      `Your screenshot is verified. **${ticket.game.name}** is a Ubisoft/Denuvo title, so this is a **two-step** process.\n\n` +
+      `Your screenshot has been verified. Please complete the steps below to proceed with activation.\n\n` +
         magicInstructions(ticket.game.name, resolved.layout),
     )
     .setColor(0x5865f2)
-    .setFooter({ text: 'Waiting for your token request…' })
+    .setFooter({ text: 'Awaiting token_req.txt' })
     .setTimestamp();
 
   if (delivery.url) {
-    embed.addFields({ name: '📦 Magic Files', value: `[Download here](${delivery.url})` });
+    embed.addFields({ name: '📦 Setup Package', value: `[Download here](${delivery.url})` });
   }
 
   const files: AttachmentBuilder[] = [];
@@ -169,9 +169,10 @@ export async function startUbisoftDelivery(channel: TextChannel, ticket: any, gu
 
 /** Pull the token_req out of a message body or attached .txt file. */
 async function extractTokenReq(message: Message): Promise<string | null> {
-  const attach = message.attachments.find((a) =>
-    (a.name || '').toLowerCase().endsWith('.txt') || (a.name || '').toLowerCase().endsWith('.ini') || (a.contentType || '').startsWith('text/'),
-  );
+  const attach = message.attachments.find((a) => {
+    const name = (a.name || '').toLowerCase();
+    return name === 'token_req.txt' || name.endsWith('.txt') || name.endsWith('.ini') || (a.contentType || '').startsWith('text/');
+  });
   if (attach) {
     try {
       const res = await fetch(attach.url);
@@ -211,10 +212,10 @@ export async function handleUbisoftTokenReq(message: Message, ticket: any): Prom
     await message.reply({
       embeds: [
         new EmbedBuilder()
-          .setTitle('❓ That doesn’t look like a token request')
+          .setTitle('📎 Activation file required')
           .setDescription(
-            `I’m waiting for the **token request** produced by **${ticket.game.name}** after you launch it.\n\n` +
-              `Paste the full request string here, or attach the \`.txt\` file it created.`,
+            `Please attach **\`token_req.txt\`** to this ticket to continue.\n\n` +
+              `This file is generated in your game directory after installing the setup files and launching **${ticket.game.name}** once.`,
           )
           .setColor(0xfee75c),
       ],
@@ -236,8 +237,8 @@ export async function handleUbisoftTokenReq(message: Message, ticket: any): Prom
   const genMsg = await channel.send({
     embeds: [
       new EmbedBuilder()
-        .setTitle('⚙️ Generating Ubisoft Token…')
-        .setDescription(`Minting your token for **${ticket.game.name}** (AppID \`${resolved.ubisoftAppId}\`). This can take up to a minute.`)
+        .setTitle('⚙️ Processing activation request')
+        .setDescription(`Generating your activation file for **${ticket.game.name}**. This may take up to one minute.`)
         .setColor(0x5865f2)
         .setTimestamp(),
     ],
@@ -263,7 +264,7 @@ export async function handleUbisoftTokenReq(message: Message, ticket: any): Prom
       result.code === 'NotOwned'
         ? `Our Ubisoft account doesn’t own **${ticket.game.name}** on the configured AppID. Staff has been notified.`
         : result.code === 'InvalidRequest'
-        ? `That token request looks malformed. Re-launch **${ticket.game.name}** and paste the **full** new request.`
+        ? `The submitted file could not be processed. Please launch **${ticket.game.name}** again and attach the updated **\`token_req.txt\`** to this ticket.`
         : result.code === 'LoginFailed'
         ? `Ubisoft login failed on our side. Staff has been notified.`
         : `Token generation failed. Staff has been notified.`;
@@ -294,10 +295,10 @@ export async function handleUbisoftTokenReq(message: Message, ticket: any): Prom
   );
 
   const deliveryEmbed = new EmbedBuilder()
-    .setTitle(`✅ ${ticket.game.name} — Token Ready`)
+    .setTitle(`✅ ${ticket.game.name} — Activation Complete`)
     .setDescription(
-      `Here’s your \`token.ini\` for **${ticket.game.name}**.\n\n` +
-        `**Last step:** drop \`token.ini\` into the same game folder where you put the magic files, then launch the game. Enjoy!`,
+      `Your **\`token.ini\`** for **${ticket.game.name}** is ready.\n\n` +
+        `**Final step:** place **\`token.ini\`** in the same game directory where you installed the setup files, then launch the game.`,
     )
     .setColor(0x57f287)
     .setTimestamp();

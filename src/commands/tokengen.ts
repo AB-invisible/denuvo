@@ -33,9 +33,8 @@ export async function execute(interaction: any): Promise<void> {
     if (!ubiTicket) {
       return interaction.editReply({
         content:
-          `🎮 **${game.name}** is a **Ubisoft/Denuvo** title — it uses the interactive two-step flow, ` +
-          `not the Steam generator. Run \`/tokengen\` **inside the user's ticket channel** so I can track ` +
-          `their token request and deliver \`token.ini\` back to them.`,
+          `🎮 **${game.name}** is a **Ubisoft/Denuvo** title. Run \`/tokengen\` in the user's ticket channel ` +
+          `to deliver the setup package and await their **\`token_req.txt\`** before minting \`token.ini\`.`,
       });
     }
     const channel = interaction.channel;
@@ -45,8 +44,8 @@ export async function execute(interaction: any): Promise<void> {
     await startUbisoftDelivery(channel, { ...ubiTicket, game }, interaction.guild);
     return interaction.editReply({
       content:
-        `🎮 **Ubisoft two-step delivery started** for **${game.name}** in <#${interaction.channelId}>.\n` +
-        `Magic files + instructions posted — waiting for the user's token request to mint \`token.ini\`.\n` +
+        `🎮 **Ubisoft activation started** for **${game.name}** in <#${interaction.channelId}>.\n` +
+        `Setup package delivered — awaiting **\`token_req.txt\`** from the user.\n` +
         `*(Stock deduction isn't applied here; the token is delivered once their request comes back.)*`,
     });
   }
