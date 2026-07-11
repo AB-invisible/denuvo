@@ -21,9 +21,8 @@ function truncateDiscordText(text: string, max: number): string {
   return chars.slice(0, max).join('');
 }
 
-/** Select option text must be plain — emoji in descriptions causes Discord 500s and "Restock icon" labels. */
-function formatGameSelectDescription(input: {
-  appId: number | null;
+/** Select option text must be plain — emoji in descriptions caused Discord 500s. */
+type GameSelectStatusInput = {
   availableStock: number;
   reserved: number;
   queueCount: number;
@@ -32,45 +31,48 @@ function formatGameSelectDescription(input: {
   donatorOnly: boolean;
   boosterOnly: boolean;
   highDemand: boolean;
-}): string {
-  const { availableStock, reserved, queueCount, gameLastDepleted, now } = input;
-  let line = '';
+};
 
-  // Plain, human phrasing. Separators are ASCII " - " on purpose: descriptions
-  // are run through an emoji strip below, which would also eat characters like
-  // the "·" middle dot and leave a mushy space-separated blob.
+export type GameSelectStatusTone = 'ok' | 'low' | 'out';
+
+function gameSelectStatusTone(input: GameSelectStatusInput): GameSelectStatusTone {
+  if (input.availableStock >= 10) return 'ok';
+  if (input.availableStock > 0) return 'low';
+  return 'out';
+}
+
+function formatGameSelectDescription(input: GameSelectStatusInput): string {
+  const { availableStock, reserved, queueCount, gameLastDepleted, now } = input;
+  const parts: string[] = [];
+
   if (availableStock >= 10) {
-    line = `In stock - ${availableStock} available`;
+    parts.push(`${availableStock} available`);
   } else if (availableStock > 0) {
-    line = `Low stock - only ${availableStock} left`;
+    parts.push(`Only ${availableStock} left`);
   } else if (gameLastDepleted) {
     const timeDiff = now.getTime() - gameLastDepleted.getTime();
     const remaining = Math.max(0, REGEN_TIME - timeDiff);
     const hours = Math.floor(remaining / (1000 * 60 * 60));
     const minutes = Math.floor((remaining % (1000 * 60 * 60)) / (1000 * 60));
-    line = hours > 0
-      ? `Out of stock - restocks in ${hours}h ${minutes}m`
-      : `Out of stock - restocks in ${minutes}m`;
+    parts.push(hours > 0 ? `Restocks ${hours}h ${minutes}m` : `Restocks ${minutes}m`);
   } else if (reserved > 0) {
-    line = `Out of stock - ${reserved} in progress`;
+    parts.push(`${reserved} in progress`);
   } else {
-    line = 'Out of stock';
+    parts.push('Out of stock');
   }
 
-  if (queueCount > 0) line += ` (${queueCount} waiting)`;
+  if (queueCount > 0) parts.push(`${queueCount} waiting`);
+  if (input.donatorOnly) parts.push('Supporters only');
+  else if (input.boosterOnly) parts.push('Boosters only');
+  else if (input.highDemand) parts.push('High demand');
 
-  if (input.donatorOnly) line = `Supporter only - ${line}`;
-  else if (input.boosterOnly) line = `Booster only - ${line}`;
-  else if (input.highDemand) line = `High demand - ${line}`;
-
-  return truncateDiscordText(line.replace(/[^\x20-\x7E]/g, ''), 100);
+  return truncateDiscordText(parts.join(' | '), 100);
 }
 
-function buildGameSelectOption(game: GameWithCount, description: string) {
-  const safeLabel = truncateDiscordText(
-    game.name.replace(/[^\x20-\x7E]/g, '').trim() || `Game ${game.id}`,
-    100,
-  );
+function buildGameSelectOption(game: GameWithCount, description: string, tone: GameSelectStatusTone) {
+  const statusEmoji = tone === 'ok' ? '🟢' : tone === 'low' ? '🟡' : '🔴';
+  const cleanName = game.name.replace(/[^\x20-\x7E]/g, '').trim() || `Game ${game.id}`;
+  const safeLabel = truncateDiscordText(`${statusEmoji} ${cleanName}`, 100);
   return new StringSelectMenuOptionBuilder()
     .setLabel(safeLabel)
     .setDescription(description)
@@ -120,21 +122,33 @@ export async function createMainPanel(guildId?: string) {
   const totalGames = allGames.length;
 
   const waitTime = await getEstimatedWaitTime(guildId);
-  const mainEmbed = new EmbedBuilder()
-    .setTitle(`👑 ${CONFIG.NAME} • Gateway Selection 👑`)
-    .setDescription(`Welcome to the **${CONFIG.NAME} Activation Lounge**.\nChoose your desired game below to initiate the secure token request process.\n\n💎 **Membership Perks:** [Get Better Perks Here](<${CONFIG.PATREON_URL}>)`)
+  const staffCount = await getActiveStaffCount();
+  const staffLine = staffCount > 0 ? `🟢 **${staffCount}** staff on duty` : '🌙 Staff away — delays likely';
+  const cleanWait = waitTime.replace(/[^\x20-\x7E]/g, '');
 
+  const mainEmbed = new EmbedBuilder()
+    .setTitle(`${CONFIG.NAME} — Game Selection`)
+    .setDescription(
+      `Choose a game from the menu below to open an activation ticket.\n` +
+        `[Unlock membership perks](<${CONFIG.PATREON_URL}>)`,
+    )
     .addFields(
-      { name: '📊 Statistics', value: `\`\`\`yaml\nTokens:    ${totalStock}\nReserved:  ${totalReserved}\nGames:     ${totalGames}\nWait Time: ${waitTime.replace(/[^\x20-\x7E]/g, '')}\n\`\`\``, inline: true },
-      { name: '🕒 Automatic Reset', value: 'Depleted games automatically restore **5 tokens** every **24 hours**.', inline: true },
-      { name: '🛰️ Staff Availability', value: await (async () => { const count = await getActiveStaffCount(); return count > 0 ? `🟢 **${count} Staff Active**` : '🌙 **Staff Away** (Delays Expected)'; })(), inline: true },
-      { name: '━━━━━━━━━━━━━━━━━━━━━━', value: ' ', inline: false },
-      { name: 'Status legend', value: '**In stock** = 10+ available · **Low stock** = under 10 · **Out of stock** = restocking', inline: false }
+      {
+        name: 'Live stats',
+        value: `**Tokens** ${totalStock}\n**Reserved** ${totalReserved}\n**Games** ${totalGames}\n**Est. wait** ${cleanWait}`,
+        inline: true,
+      },
+      {
+        name: 'Restock cycle',
+        value: 'Depleted games refill **5 tokens** every **24 hours**.',
+        inline: true,
+      },
+      { name: 'Staff', value: staffLine, inline: true },
     )
     .setColor(0x5865F2)
     .setImage(getPanelAssetUrl('gamegen.png') ?? 'attachment://gamegen.png')
     .setTimestamp()
-    .setFooter({ text: `${CONFIG.NAME} Management • Premium Experience • ${new Date().toLocaleDateString()}` });
+    .setFooter({ text: '🟢 In stock   🟡 Low stock   🔴 Out of stock   ·   Pick a game from the dropdown' });
 
   if (allGames.length === 0) {
     mainEmbed.setDescription(`Welcome to the **${CONFIG.NAME} Activation Lounge**.\n\n⚠️ **No games are currently available in the system.**\nIf you are an administrator, please run the seed script to populate the database.`);
@@ -165,8 +179,7 @@ export async function createMainPanel(guildId?: string) {
           const availableStock = Math.max(0, gameStock - reserved);
           const queueCount = waitlistMap.get(game.id) || 0;
 
-          const description = formatGameSelectDescription({
-            appId: game.appId,
+          const statusInput: GameSelectStatusInput = {
             availableStock,
             reserved,
             queueCount,
@@ -175,9 +188,12 @@ export async function createMainPanel(guildId?: string) {
             donatorOnly: !!game.donatorOnly,
             boosterOnly: !!game.boosterOnly,
             highDemand: !!game.highDemand,
-          });
+          };
 
-          return buildGameSelectOption(game, description);
+          const description = formatGameSelectDescription(statusInput);
+          const tone = gameSelectStatusTone(statusInput);
+
+          return buildGameSelectOption(game, description, tone);
         })
       );
 
