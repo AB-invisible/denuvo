@@ -1,10 +1,10 @@
-# Upload EA magic zip to Railway volume in base64 chunks (binary-safe over SSH).
+# Upload EA magic zip to Railway volume using 32MB tar streams (binary-safe).
 param(
   [string]$ZipPath = (Join-Path $PSScriptRoot '..\ea-magic\EA SPORTS FC 26 magic files.zip'),
   [string]$Service = 'denuvo',
   [string]$RemoteDir = '/data/ea-magic',
   [string]$RemoteName = 'EA SPORTS FC 26 magic files.zip',
-  [int]$ChunkBytes = 4194304
+  [int]$ChunkBytes = 33554432
 )
 
 $ErrorActionPreference = 'Stop'
@@ -15,7 +15,7 @@ $chunkDir = Join-Path $env:TEMP "ea-magic-chunks"
 if (Test-Path $chunkDir) { Remove-Item $chunkDir -Recurse -Force }
 New-Item -ItemType Directory -Path $chunkDir | Out-Null
 
-Write-Host "Splitting $ZipPath ($expected bytes) into $ChunkBytes-byte chunks..."
+Write-Host "Splitting $ZipPath ($expected bytes)..."
 $fs = [System.IO.File]::OpenRead($ZipPath)
 $buf = New-Object byte[] $ChunkBytes
 $idx = 0
@@ -30,44 +30,26 @@ try {
   }
 } finally { $fs.Close() }
 
-function Send-Chunk([string]$B64, [string]$RemotePath) {
-  $railway = (Get-Command railway -ErrorAction Stop).Source
-  $psi = New-Object System.Diagnostics.ProcessStartInfo
-  $psi.FileName = $railway
-  $psi.Arguments = "ssh -s $Service -- base64 -d >> '$RemotePath'"
-  $psi.RedirectStandardInput = $true
-  $psi.RedirectStandardOutput = $true
-  $psi.RedirectStandardError = $true
-  $psi.UseShellExecute = $false
-  $p = [Diagnostics.Process]::Start($psi)
-  $p.StandardInput.Write($B64)
-  $p.StandardInput.Close()
-  $err = $p.StandardError.ReadToEnd()
-  $p.WaitForExit()
-  if ($p.ExitCode -ne 0) { throw "ssh failed: $err" }
-}
-
 Push-Location (Join-Path $PSScriptRoot '..')
 try {
   railway service link $Service | Out-Null
   railway ssh -s $Service -- "mkdir -p '$RemoteDir' && rm -f '$RemoteDir/$RemoteName'" | Out-Null
   $remotePath = "$RemoteDir/$RemoteName"
+  $staging = '/tmp/ea-chunk'
 
   $n = 0
   foreach ($part in $parts) {
     $n++
-    $name = Split-Path $part -Leaf
-    Write-Host "[$n/$($parts.Count)] $name ..."
-    $chunk = [IO.File]::ReadAllBytes($part)
-    $b64 = [Convert]::ToBase64String($chunk)
-    Send-Chunk $b64 $remotePath
+    $leaf = Split-Path $part -Leaf
+    Write-Host "[$n/$($parts.Count)] $leaf ..."
+    $cmd = "mkdir -p '$staging' && tar -xf - -C '$staging' && cat '$staging/$leaf' >> '$remotePath' && rm -rf '$staging'"
+    cmd /c "tar -cf - -C `"$chunkDir`" $leaf | railway ssh -s $Service -- `"$cmd`""
+    if ($LASTEXITCODE -ne 0) { throw "chunk $leaf failed" }
   }
 
   $remoteSize = (railway ssh -s $Service -- "wc -c < '$remotePath'").Trim()
   Write-Host "Remote size: $remoteSize (expected $expected)"
-  if ([int64]$remoteSize -ne [int64]$expected) {
-    throw "Size mismatch"
-  }
+  if ([int64]$remoteSize -ne [int64]$expected) { throw "Size mismatch" }
   Write-Host "Done."
 } finally {
   Pop-Location
