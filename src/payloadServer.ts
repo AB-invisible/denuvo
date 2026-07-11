@@ -213,7 +213,7 @@ export function startPayloadServer(): void {
       //     the game to produce a token_req. Numeric appid guard only; the
       //     bot maps game→file and the resolver picks the file by appid.
       const magicMatch = url.pathname.match(/^\/ubisoft\/magic\/([0-9]+)$/);
-      if (req.method === 'GET' && magicMatch) {
+      if ((req.method === 'GET' || req.method === 'HEAD') && magicMatch) {
         const appId = magicMatch[1];
         const magicDir = resolveMagicDir();
         const resolved = resolveMagicFile(magicDir, appId);
@@ -229,6 +229,10 @@ export function startPayloadServer(): void {
           'Content-Disposition': `attachment; filename="${resolved.downloadName}"`,
           'Cache-Control': 'public, max-age=3600',
         });
+        if (req.method === 'HEAD') {
+          res.end();
+          return;
+        }
         fs.createReadStream(resolved.filePath).pipe(res);
         return;
       }
@@ -236,7 +240,7 @@ export function startPayloadServer(): void {
       // ── EA setup zip ───────────────────────────────────────────────
       // GET /ea/magic/<contentId>
       const eaMagicMatch = url.pathname.match(/^\/ea\/magic\/([0-9]+)$/);
-      if (req.method === 'GET' && eaMagicMatch) {
+      if ((req.method === 'GET' || req.method === 'HEAD') && eaMagicMatch) {
         const contentId = eaMagicMatch[1];
         const magicDir = resolveEaMagicDir();
         const resolved = resolveEaMagicFile(magicDir, contentId);
@@ -252,6 +256,10 @@ export function startPayloadServer(): void {
           'Content-Disposition': `attachment; filename="${resolved.downloadName}"`,
           'Cache-Control': 'public, max-age=3600',
         });
+        if (req.method === 'HEAD') {
+          res.end();
+          return;
+        }
         fs.createReadStream(resolved.filePath).pipe(res);
         return;
       }

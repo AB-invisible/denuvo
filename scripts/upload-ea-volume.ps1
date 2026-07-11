@@ -48,6 +48,7 @@ try {
   }
 
   $remoteSize = (railway ssh -s $Service -- "wc -c < '$remotePath'").Trim()
+  railway ssh -s $Service -- "chmod 644 '$remotePath'" | Out-Null
   Write-Host "Remote size: $remoteSize (expected $expected)"
   if ([int64]$remoteSize -ne [int64]$expected) { throw "Size mismatch" }
   Write-Host "Done."
