@@ -1,0 +1,5 @@
+tool/EAtoken_generator.exe
+tool/
+__pycache__/
+*.pyc
+.venv/

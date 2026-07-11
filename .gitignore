@@ -25,3 +25,10 @@ __pycache__/
 # Local dev helper scripts
 sync-dlls.bat
 update-dlls.bat
+
+# EA token tool analysis / local secrets (never commit)
+/EAtoken_generator.exe_extracted/
+/ea-service-test/
+config.ini
+scripts/extract_pyinstaller.py
+scripts/extract_pyz.py

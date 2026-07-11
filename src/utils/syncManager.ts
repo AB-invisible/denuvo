@@ -6,6 +6,7 @@ import { refreshAllPanels } from './panelManager';
 import { client } from '../client';
 import { CONFIG } from '../config';
 import { initServerStocksForGame } from './gameManager';
+import { catalogBySteamAppId } from './eaCatalog';
 
 const JSON_PATH = path.join(__dirname, '../../denuvo.json');
 
@@ -42,20 +43,31 @@ export async function syncGamesFromFile() {
         ? { generationMode: gameData.generationMode }
         : {};
 
+      const steamAppId = gameData.appId || gameData.appid;
+      const catalogEa = steamAppId ? catalogBySteamAppId(Number(steamAppId)) : undefined;
+      const eaContentId = gameData.eaContentId ?? catalogEa?.eaContentId ?? undefined;
+      const eaEngine = gameData.eaEngine ?? catalogEa?.eaEngine ?? undefined;
+      const eaMagicFile = gameData.eaMagicFile ?? catalogEa?.eaMagicFile ?? undefined;
+      const eaUpdate =
+        eaContentId && eaEngine
+          ? { eaContentId, eaEngine, eaMagicFile: eaMagicFile ?? null }
+          : {};
+
       await prisma.game.upsert({
         where: { name: gameData.name },
         update: {
-          appId: gameData.appId || gameData.appid,
+          appId: steamAppId,
           disabled: isDisabled,
           highDemand: gameData.highDemand || false,
           donatorOnly: gameData.donatoronly || gameData.donatorOnly || false,
           boosterOnly: gameData.boosterOnly || false,
           steampassUuid: gameData.steampassUuid || undefined,
           ...modeUpdate,
+          ...eaUpdate,
         },
         create: {
           name: gameData.name,
-          appId: gameData.appId || gameData.appid,
+          appId: steamAppId,
           disabled: isDisabled,
           highDemand: gameData.highDemand || false,
           donatorOnly: gameData.donatoronly || gameData.donatorOnly || false,
@@ -63,6 +75,7 @@ export async function syncGamesFromFile() {
           steampassUuid: gameData.steampassUuid || null,
           generationMode: gameData.generationMode || 'gbe',
           stock: 5,
+          ...eaUpdate,
         },
       });
 

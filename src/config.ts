@@ -60,4 +60,9 @@ export const CONFIG = {
   // Directory the payload server streams magic-files zips from. Populate it
   // with the "* Magic Files.zip" files (e.g. a Railway volume).
   UBISOFT_MAGIC_DIR: process.env.UBISOFT_MAGIC_DIR || '',
+  // ── EA token-minting service (ea-service/, Railway/Linux) ──
+  // POST {ticket, contentId, engine} to EA_SERVICE_URL/ea/token
+  EA_SERVICE_URL: process.env.EA_SERVICE_URL || '',
+  EA_SERVICE_KEY: process.env.EA_SERVICE_KEY || '',
+  EA_MAGIC_DIR: process.env.EA_MAGIC_DIR || '',
 };

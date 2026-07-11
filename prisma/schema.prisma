@@ -30,6 +30,11 @@ model Game {
   ubisoftAppId    Int?
   ubisoftAltAppId Int?
   ubisoftMagicFile String?
+  // ─── EA / Origin Denuvo games ───────────────────────────────────
+  // Two-step flow via ea-service when eaContentId + eaEngine are set.
+  eaContentId     Int?
+  eaEngine        String?
+  eaMagicFile     String?
   updatedAt       DateTime @default(now()) @updatedAt
   tickets         Ticket[]
   restocks        Restock[]
@@ -69,6 +74,11 @@ model Ticket {
   // Mirrors how screenshotVerified gates the Steam flow, but the Ubisoft
   // flow has an extra round-trip (user must run the game first).
   ubisoftStage          String?
+  // ─── EA two-step flow state ─────────────────────────────────────
+  // null → not EA / not started
+  // AWAITING_TICKET → setup files delivered; waiting for Denuvo ticket
+  // DONE → token.ini delivered
+  eaStage               String?
 
   @@index([status])
   @@index([guildId, status])

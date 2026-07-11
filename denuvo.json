@@ -111,6 +111,14 @@
       "steampassUuid": "5394e95b-9f41-4594-a55f-749f3af73ae1"
     },
     {
+      "name": "EA SPORTS FC 26",
+      "appId": 3405690,
+      "disabled": false,
+      "eaContentId": 16425677,
+      "eaEngine": "0",
+      "eaMagicFile": "FC26 Magic Files.zip"
+    },
+    {
       "name": "F1 Manager 2024",
       "appId": 2591280,
       "disabled": false,

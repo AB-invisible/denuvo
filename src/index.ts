@@ -17,6 +17,8 @@ import { generateToken, generateTokenWithRetry } from './utils/tokenGenerator';
 import { uploadFile } from './utils/fileHost';
 import { isUbisoftGame } from './utils/ubisoftCatalog';
 import { startUbisoftDelivery, handleUbisoftTokenReq, UBISOFT_STAGE_AWAITING } from './utils/ubisoftFlow';
+import { isEaGame } from './utils/eaCatalog';
+import { startEaDelivery, handleEaTicket, EA_STAGE_AWAITING } from './utils/eaFlow';
 import { enqueueTokenGen } from './utils/tokenQueue';
 import { updateTicketWaitTimes, checkWeeklyStaffStats, checkDutyStatusReset, checkStaleTickets, cleanupExpiredCooldowns, syncOwnerStockForNewUtcDay } from './utils/scheduler';
 import { addSubscription } from './utils/subscriptionManager';
@@ -45,6 +47,7 @@ import { OWNER_COMMANDS, SETLOGS_COMMAND, SETVOUCH_COMMAND, ADDSUPPORT_COMMAND, 
 // Channels currently minting a Ubisoft token — prevents a second token_req
 // message from starting a concurrent mint while the first is in flight.
 const ubisoftMintingChannels = new Set<string>();
+const eaMintingChannels = new Set<string>();
 
 const commands = [
   new SlashCommandBuilder()
@@ -224,6 +227,28 @@ const commands = [
     .setDescription('Check the Ubisoft token service + magic-files availability — owner only')
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
+    .setName('eagame')
+    .setDescription('Configure a game as an EA/Origin Denuvo title — owner only')
+    .addSubcommand(sub => sub
+      .setName('set')
+      .setDescription('Mark a game as EA and set content ID + engine')
+      .addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true))
+      .addIntegerOption(o => o.setName('content_id').setDescription('EA content ID').setRequired(true))
+      .addStringOption(o => o.setName('engine').setDescription('Denuvo engine string (e.g. 2_1_0)').setRequired(true))
+      .addStringOption(o => o.setName('magic_file').setDescription('Setup zip filename (optional)').setRequired(false)))
+    .addSubcommand(sub => sub
+      .setName('clear')
+      .setDescription('Revert a game back to the normal (non-EA) flow')
+      .addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true)))
+    .addSubcommand(sub => sub
+      .setName('list')
+      .setDescription('List games configured as EA titles'))
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+  new SlashCommandBuilder()
+    .setName('eahealth')
+    .setDescription('Check the EA token service + setup zip availability — owner only')
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+  new SlashCommandBuilder()
     .setName('tokengen')
     .setDescription('Generate a REAL token (staff bypass, posted publicly, no screenshot needed)')
     .addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true))
@@ -372,7 +397,7 @@ async function registerCommands(targetGuildId?: string) {
     const addsupport = ADDSUPPORT_COMMAND.toJSON();
 
     const tenantCommands = [
-      ...commands.filter((c: any) => c.name !== 'test' && c.name !== 'simulate' && c.name !== 'deplet' && c.name !== 'lowstock' && c.name !== 'setsteampass' && c.name !== 'game' && c.name !== 'removegame' && c.name !== 'autogen' && c.name !== 'stock' && c.name !== 'settokens' && c.name !== 'exclude-auto' && c.name !== 'setmode' && c.name !== 'getmode' && c.name !== 'promo' && c.name !== 'requests' && c.name !== 'staffstats' && c.name !== 'restockall' && c.name !== 'steamhealth' && c.name !== 'steamaccount' && c.name !== 'steamauth' && c.name !== 'export' && c.name !== 'ubisoftaccount' && c.name !== 'ubisoftgame' && c.name !== 'ubisofthealth'),
+      ...commands.filter((c: any) => c.name !== 'test' && c.name !== 'simulate' && c.name !== 'deplet' && c.name !== 'lowstock' && c.name !== 'setsteampass' && c.name !== 'game' && c.name !== 'removegame' && c.name !== 'autogen' && c.name !== 'stock' && c.name !== 'settokens' && c.name !== 'exclude-auto' && c.name !== 'setmode' && c.name !== 'getmode' && c.name !== 'promo' && c.name !== 'requests' && c.name !== 'staffstats' && c.name !== 'restockall' && c.name !== 'steamhealth' && c.name !== 'steamaccount' && c.name !== 'steamauth' && c.name !== 'export' && c.name !== 'ubisoftaccount' && c.name !== 'ubisoftgame' && c.name !== 'ubisofthealth' && c.name !== 'eagame' && c.name !== 'eahealth'),
       setlogs,
       setvouch,
       addsupport,
@@ -1199,6 +1224,11 @@ async function handleVerifyApprove(interaction: any) {
     await logAction(homeGuild, '✅ Screenshot Approved (Staff)', `${interaction.user} approved the screenshot for **${ticket.game.name}** in <#${ticket.channelId}>. Auto-delivering.`, 0x57F287);
   }
 
+  if (isEaGame(ticket.game)) {
+    await startEaDelivery(interaction.channel as TextChannel, ticket, interaction.guild);
+    return;
+  }
+
   if (isUbisoftGame(ticket.game)) {
     await startUbisoftDelivery(interaction.channel as TextChannel, ticket, interaction.guild);
     return;
@@ -1414,6 +1444,25 @@ client.on(Events.MessageCreate, async (message) => {
     });
   }
 
+  // ─── EA: user posted their Denuvo ticket ───
+  if (
+    ticket &&
+    message.author.id === ticket.userId &&
+    (ticket as any).eaStage === EA_STAGE_AWAITING &&
+    (ticket.status === 'OPEN' || ticket.status === 'CLAIMED')
+  ) {
+    if (eaMintingChannels.has(message.channelId)) return;
+    eaMintingChannels.add(message.channelId);
+    try {
+      await handleEaTicket(message, ticket);
+    } catch (err) {
+      console.error('[EaFlow] ticket handling error:', err);
+    } finally {
+      eaMintingChannels.delete(message.channelId);
+    }
+    return;
+  }
+
   // ─── UBISOFT: user posted their token_req ───
   // After magic files are delivered (ubisoftStage = AWAITING_TOKEN_REQ) the
   // next thing we expect from the user is the token request produced by the
@@ -1501,6 +1550,12 @@ client.on(Events.MessageCreate, async (message) => {
             const logReason = isAiError ? 'transient Groq API failure' : 'GROQ_API_KEY missing';
             await logAction(homeGuild, '🔎 Awaiting Staff Confirmation', `Screenshot for **${ticket.game.name}** in <#${message.channelId}> couldn't be AI-verified (${logReason}). Staff approval requested.`, 0xFEE75C);
           }
+          return;
+        }
+
+        // ─── EA: two-step setup + ticket flow ───
+        if (isEaGame(ticket.game)) {
+          await startEaDelivery(message.channel as TextChannel, ticket, message.guild);
           return;
         }
 

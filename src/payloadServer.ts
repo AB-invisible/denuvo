@@ -28,6 +28,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { UBISOFT_CATALOG, resolveMagicDir, locateMagicZip } from './utils/ubisoftCatalog';
+import { resolveMagicFile as resolveEaMagicFile, resolveMagicDir as resolveEaMagicDir } from './utils/eaCatalog';
 
 const CORE_DIR = path.join(__dirname, '..', '_Core');
 const PANEL_ASSET_DIR = path.join(__dirname, 'public');
@@ -219,6 +220,29 @@ export function startPayloadServer(): void {
         if (!resolved) {
           res.writeHead(404, { 'Content-Type': 'text/plain' });
           res.end('magic files not found for this appid');
+          return;
+        }
+        const stat = fs.statSync(resolved.filePath);
+        res.writeHead(200, {
+          'Content-Type': 'application/zip',
+          'Content-Length': stat.size,
+          'Content-Disposition': `attachment; filename="${resolved.downloadName}"`,
+          'Cache-Control': 'public, max-age=3600',
+        });
+        fs.createReadStream(resolved.filePath).pipe(res);
+        return;
+      }
+
+      // ── EA setup zip ───────────────────────────────────────────────
+      // GET /ea/magic/<contentId>
+      const eaMagicMatch = url.pathname.match(/^\/ea\/magic\/([0-9]+)$/);
+      if (req.method === 'GET' && eaMagicMatch) {
+        const contentId = eaMagicMatch[1];
+        const magicDir = resolveEaMagicDir();
+        const resolved = resolveEaMagicFile(magicDir, contentId);
+        if (!resolved) {
+          res.writeHead(404, { 'Content-Type': 'text/plain' });
+          res.end('ea setup zip not found for this content id');
           return;
         }
         const stat = fs.statSync(resolved.filePath);

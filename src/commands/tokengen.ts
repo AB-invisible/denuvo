@@ -9,6 +9,8 @@ import { logAction, logTenant } from '../utils/logging';
 import { pendingVerificationTimers } from '../utils/ticketManager';
 import { isUbisoftGame } from '../utils/ubisoftCatalog';
 import { startUbisoftDelivery } from '../utils/ubisoftFlow';
+import { isEaGame } from '../utils/eaCatalog';
+import { startEaDelivery } from '../utils/eaFlow';
 
 export async function execute(interaction: any): Promise<void> {
   const gameName = interaction.options.getString('game')!;
@@ -20,6 +22,31 @@ export async function execute(interaction: any): Promise<void> {
 
   const game = await prisma.game.findUnique({ where: { name: gameName } });
   if (!game) return interaction.editReply({ content: `❌ **Not Found:** Game **${gameName}** does not exist.` });
+
+  // EA / Origin Denuvo titles use the two-step setup + ticket flow.
+  if (isEaGame(game)) {
+    const eaTicket = await prisma.ticket.findFirst({
+      where: { channelId: interaction.channelId, status: { in: ['OPEN', 'CLAIMED'] } },
+    });
+    if (!eaTicket) {
+      return interaction.editReply({
+        content:
+          `🎮 **${game.name}** is an **EA/Origin Denuvo** title. Run \`/tokengen\` in the user's ticket channel ` +
+          `to deliver the setup package and await their **\`token_req.txt\`** before minting \`token.ini\`.`,
+      });
+    }
+    const channel = interaction.channel;
+    if (!channel?.isTextBased()) {
+      return interaction.editReply({ content: '❌ This channel is not text-based.' });
+    }
+    await startEaDelivery(channel, { ...eaTicket, game }, interaction.guild);
+    return interaction.editReply({
+      content:
+        `🎮 **EA activation started** for **${game.name}** in <#${interaction.channelId}>.\n` +
+        `Setup package delivered — awaiting **\`token_req.txt\`** from the user.\n` +
+        `*(Stock deduction isn't applied here; the token is delivered once their ticket comes back.)*`,
+    });
+  }
 
   // Ubisoft/Denuvo titles use a stateful two-step flow (deliver magic files →
   // collect the user's token request → mint via ubisoft-service), not the
