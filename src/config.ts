@@ -53,6 +53,6 @@ export const CONFIG = {
   UBISOFT_SERVICE_URL: process.env.UBISOFT_SERVICE_URL || '',
   UBISOFT_SERVICE_KEY: process.env.UBISOFT_SERVICE_KEY || '',
   // Directory the payload server streams magic-files zips from. Populate it
-  // with the "* Not A Crack Files.zip" files (e.g. a Railway volume).
+  // with the "* Magic Files.zip" files (e.g. a Railway volume).
   UBISOFT_MAGIC_DIR: process.env.UBISOFT_MAGIC_DIR || '',
 };

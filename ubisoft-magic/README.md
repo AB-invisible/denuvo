@@ -11,3 +11,6 @@ in `src/utils/ubisoftCatalog.ts`), so hosting works with zero config on
 deploy. Set `UBISOFT_MAGIC_DIR` only to override with a volume/other path.
 
 Filenames must match `magicFile` in the catalog (`ubisoftCatalog.ts`).
+
+Rebuild **Anno 1800** with `python scripts/build_anno1800_magic.py` (fetches Steam
+DLC/depot metadata and repackages shared Goldberg/Uplay DLLs into `Bin/Win64/`).

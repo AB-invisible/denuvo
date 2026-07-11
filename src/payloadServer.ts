@@ -201,7 +201,7 @@ export function startPayloadServer(): void {
 
       // ── Ubisoft magic-files zip ──────────────────────────────────────
       // GET /ubisoft/magic/<ubisoftAppId>
-      //   → streams the "* Not A Crack Files.zip" for that game from
+      //   → streams the "* Magic Files.zip" for that game from
       //     UBISOFT_MAGIC_DIR. The bot links here in the two-step Ubisoft
       //     flow so users grab the Uplay/Denuvo crack files before running
       //     the game to produce a token_req. Numeric appid guard only; the

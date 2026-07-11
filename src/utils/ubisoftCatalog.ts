@@ -57,7 +57,7 @@ export const UBISOFT_CATALOG: UbisoftCatalogEntry[] = [
     steamAppId: 3159330,
     ubisoftAppId: 8006,
     ubisoftAltAppId: 1081,
-    magicFile: "Assassin's Creed Shadows Not A Crack Files.zip",
+    magicFile: "Assassin's Creed Shadows Magic Files.zip",
     layout: 'flat',
   },
   {
@@ -65,7 +65,7 @@ export const UBISOFT_CATALOG: UbisoftCatalogEntry[] = [
     steamAppId: 2842040,
     ubisoftAppId: 17903,
     ubisoftAltAppId: 64181,
-    magicFile: 'Star Wars Outlaws Not A Crack Files.zip',
+    magicFile: 'Star Wars Outlaws Magic Files.zip',
     layout: 'flat',
   },
   {
@@ -73,7 +73,7 @@ export const UBISOFT_CATALOG: UbisoftCatalogEntry[] = [
     steamAppId: 2751000,
     ubisoftAppId: 6145,
     ubisoftAltAppId: 7021,
-    magicFile: 'Prince Of Persia The Lost Crown Not A Crack Files.zip',
+    magicFile: 'Prince Of Persia The Lost Crown Magic Files.zip',
     layout: 'flat',
   },
   {
@@ -87,7 +87,18 @@ export const UBISOFT_CATALOG: UbisoftCatalogEntry[] = [
     steamAppId: 3274580,
     ubisoftAppId: 6245,
     ubisoftAltAppId: null,
-    magicFile: 'ANNO 117 Not A Crack Files.zip',
+    magicFile: 'ANNO 117 Magic Files.zip',
+    layout: 'bin64',
+  },
+  {
+    // Uplay registry: 4553 = native Ubisoft Connect build, 4554 = Steam-integrated
+    // build (mirrors AC Shadows 8006/1081). GameId GUID from public Uplay
+    // configuration fixtures. Steam AppID: 916440. Files go under Bin/Win64/.
+    name: 'Anno 1800',
+    steamAppId: 916440,
+    ubisoftAppId: 4554,
+    ubisoftAltAppId: 4553,
+    magicFile: 'Anno 1800 Magic Files.zip',
     layout: 'bin64',
   },
   {
@@ -99,7 +110,7 @@ export const UBISOFT_CATALOG: UbisoftCatalogEntry[] = [
     steamAppId: 3751950,
     ubisoftAppId: 65043,
     ubisoftAltAppId: 66088,
-    magicFile: "Assassin's Creed Black Flag Resynced Not A Crack Files.zip",
+    magicFile: "Assassin's Creed Black Flag Resynced Magic Files.zip",
     layout: 'flat',
   },
 ];
