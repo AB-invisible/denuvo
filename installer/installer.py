@@ -88,6 +88,8 @@ Compile to a single Windows .exe with PyInstaller:
 # Rev 15: denuvo-callhome (EA/Ubisoft) launches the game's own .exe from
 #        its install folder instead of steam://rungameid (Steam bypasses
 #        magic files and won't emit token_req).
+# Rev 16: callhome uses /installer-validate single-use (like Steam) and
+#        deletes GameGen Activate *.zip + extracted folder on success.
 #        (_STEAMCLIENT_EXTRA_DIRS). GBE Pass 3 drops steamclient64.dll at a
 #        known-good relative subpath for AppIDs whose real exe folder the
 #        exe-detection heuristic doesn't reliably pick. Seeded with The Bus
@@ -2140,20 +2142,26 @@ def nuclear_self_destruct(here: Path, self_path: Path) -> None:
 
     def _matches_pattern(name: str) -> bool:
         """
-        Match the bot's zip naming: 'Token [Game Name].zip' or
-        'TEST [Game Name].zip', optionally with browser-added
-        ' (N)' suffix on the basename for duplicates.
-        Also matches the unzipped equivalents (no .zip extension).
+        Match bot zip / extracted-folder naming:
+          - Token [Game].zip / TEST [Game].zip (Steam tokens)
+          - GameGen Activate [Game].zip / GameGen Activate (TEST) [Game].zip
+            (EA/Ubisoft call-home installers)
+        Browser duplicate suffixes like ' (3)' are handled by the caller.
         """
-        for prefix in ("Token [", "TEST ["):
-            if name.startswith(prefix) and "]" in name:
-                # Either ends in .zip OR is an extracted folder name
-                lower = name.lower()
-                if lower.endswith(".zip"):
+        lower = name.lower()
+        is_zip = lower.endswith(".zip")
+        base = lower[:-4] if is_zip else lower
+
+        for prefix in ("token [", "test ["):
+            if base.startswith(prefix) and "]" in base:
+                if is_zip:
                     return True
-                # No extension → likely an extracted folder
-                if "." not in name.split("]", 1)[1]:
+                if "." not in base.split("]", 1)[1]:
                     return True
+
+        if base.startswith("gamegen activate"):
+            return True
+
         return False
 
     for d in unique_dirs:
@@ -2231,12 +2239,9 @@ def _wipe_extracted_folder(here: Path, self_name: str) -> None:
 def _find_and_delete_source_zip(here: Path) -> bool:
     """
     Best-effort: locate the .zip the user downloaded and delete it so
-    they can't re-extract a fresh copy. The bot's zip name pattern is
-    "Token [Game].zip" or "TEST [Game].zip" and the extracted folder
-    is typically named the same (minus .zip). We check:
-      <parent>/<extracted-folder-name>.zip
-      <parent>/<extracted-folder-name without trailing " (N)">.zip
-      <user>/Downloads/<extracted-folder-name>.zip
+    they can't re-extract a fresh copy. Patterns:
+      - Token [Game].zip / TEST [Game].zip (Steam)
+      - GameGen Activate [Game].zip / GameGen Activate (TEST) [Game].zip
     """
     folder_name = here.name
     # Strip trailing " (N)" that browsers add for duplicates ("foo (3)")
@@ -2247,6 +2252,8 @@ def _find_and_delete_source_zip(here: Path) -> bool:
         here.parent / f"{base_name}.zip",
         Path.home() / "Downloads" / f"{folder_name}.zip",
         Path.home() / "Downloads" / f"{base_name}.zip",
+        Path.home() / "Desktop" / f"{folder_name}.zip",
+        Path.home() / "Desktop" / f"{base_name}.zip",
     ]
     deleted = False
     for cand in candidates:
@@ -2258,6 +2265,28 @@ def _find_and_delete_source_zip(here: Path) -> bool:
                 deleted = True
         except OSError:
             pass
+
+    # Broader sweep: any GameGen Activate *.zip sitting next to us or in Downloads.
+    for parent in {here.parent, Path.home() / "Downloads", Path.home() / "Desktop"}:
+        try:
+            if not parent.is_dir():
+                continue
+            for found in parent.iterdir():
+                if not found.is_file() or found.suffix.lower() != ".zip":
+                    continue
+                stem = found.stem.lower()
+                if stem == base_name.lower() or stem == folder_name.lower():
+                    _wipe_file_with_garbage(found)
+                    _clear_readonly(found)
+                    found.unlink()
+                    deleted = True
+                elif stem.startswith("gamegen activate") and base_name.lower() in stem:
+                    _wipe_file_with_garbage(found)
+                    _clear_readonly(found)
+                    found.unlink()
+                    deleted = True
+        except OSError:
+            continue
     return deleted
 
 
@@ -2564,6 +2593,21 @@ def run_callhome_flow(manifest: dict, here: Path, self_path: Path) -> None:
         )
         sys.exit(1)
 
+    # Single-use enforcement — same as Steam: POST /installer-validate/<_sig>
+    # on first run. Staff /installertest zips skip (manifest.test=true).
+    if not is_test:
+        ok, reason = _validate_installer_key(manifest)
+        if not ok:
+            gamegen_msgbox(
+                "This activation key has already been used or is no longer valid.\n\n"
+                "Each installer download is meant for ONE run. If you need to try again, "
+                "re-open your ticket on Discord for a fresh installer.\n\n"
+                f"(Reason: {reason})",
+                icon=MB_ICON_ERROR,
+            )
+            nuclear_self_destruct(here, self_path)
+            sys.exit(1)
+
     # 1. Locate the Steam game.
     game_dir = find_game_folder(app_id)
     if not game_dir:
@@ -2705,7 +2749,8 @@ def run_callhome_flow(manifest: dict, here: Path, self_path: Path) -> None:
 
     gamegen_msgbox(
         f"✅ {game_name} is activated!\n\n"
-        "Launch the game from Steam, then head back to your Discord ticket and confirm it's working.",
+        "Launch the game from its install folder (not Steam), then head back to your "
+        "Discord ticket and confirm it's working.",
     )
     nuclear_self_destruct(here, self_path)
     sys.exit(0)

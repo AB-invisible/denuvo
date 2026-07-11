@@ -557,7 +557,15 @@ export function startPayloadServer(): void {
           // to be re-runnable indefinitely. row.consumed only matters
           // for normal ticket-scoped tokens.
           const isPersistent = (row as any).persistent === true;
+          const isCallhome = Boolean((row as any).platform);
           if (row.consumed && !isPersistent) {
+            res.writeHead(410, { 'Content-Type': 'text/plain' });
+            res.end('Activation key already used.');
+            return;
+          }
+          // EA/Ubisoft call-home: consumedAt marks "installer already started"
+          // (single run) while consumed stays false until /activate succeeds.
+          if (isCallhome && row.consumedAt && !isPersistent) {
             res.writeHead(410, { 'Content-Type': 'text/plain' });
             res.end('Activation key already used.');
             return;
@@ -602,14 +610,16 @@ export function startPayloadServer(): void {
             }
           }
 
-          // For persistent rows: bump consumedAt for audit but DON'T
-          // flip `consumed` — staff /tokengen tokens stay re-runnable.
-          // For normal rows: flip both so any further validation 410s.
+          // For persistent rows: bump consumedAt for audit but DON'T flip consumed.
+          // Call-home rows: mark consumedAt only so /activate can still mint once.
+          // Steam rows: flip consumed immediately (no /activate step).
           await prisma.tokenDownload.update({
             where: { token: row.token },
             data: isPersistent
               ? { consumedAt: new Date() }
-              : { consumed: true, consumedAt: new Date() },
+              : isCallhome
+                ? { consumedAt: new Date() }
+                : { consumed: true, consumedAt: new Date() },
           });
           res.writeHead(200, { 'Content-Type': 'text/plain' });
           res.end('ok');
