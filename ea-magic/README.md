@@ -1,21 +1,34 @@
 # ea-magic
 
-Setup zips for the EA / Origin Denuvo two-step flow (magic files → `token_req.txt` → `token.ini`).
+Setup zips for the EA / Origin Denuvo two-step flow.
 
-Served by the bot payload server at `GET /ea/magic/<contentId>` when `PUBLIC_URL` is set,
-and linked in the ticket embed. Large zips (>24 MB) are download-only (not Discord attachments).
+**Hosted at:** `GET https://<bot-domain>/ea/magic/<contentId>` (payload server on the **denuvo** bot).
 
-**Default directory:** this folder is used automatically when `EA_MAGIC_DIR` is not set
-(see `resolveMagicDir()` in `src/utils/eaCatalog.ts`).
+## Railway volume (production)
 
-**Filenames** must match `eaMagicFile` in `eaCatalog.ts` / `denuvo.json`.
+The **denuvo** service has a volume mounted at `/data`. EA zips live in `/data/ea-magic/`.
 
-## Deploying on Railway
+Env on the bot:
+```
+EA_MAGIC_DIR=/data/ea-magic
+```
 
-Zips are **not** committed to git (FC 26 is ~377 MB). After deploy, place the file on the bot service:
+### One-time upload (from your PC, after `railway link`)
 
-1. Mount a Railway **volume** at `/app/ea-magic` (or set `EA_MAGIC_DIR` to your mount path), **or**
-2. Upload `EA SPORTS FC 26 magic files.zip` into that path via Railway shell / one-off copy.
+```powershell
+cd path\to\denuvo
+railway service link denuvo
+tar -cf - -C ea-magic "EA SPORTS FC 26 magic files.zip" | railway ssh -s denuvo -- "mkdir -p /data/ea-magic && tar -xf - -C /data/ea-magic"
+```
 
-Default one-time seed URL (Railway env `EA_MAGIC_SEED_URL`):
-`https://pixeldrain.com/api/filesystem/DaTaPW8a`
+Verify:
+```powershell
+railway ssh -s denuvo -- "ls -la /data/ea-magic"
+```
+
+Filename must match `eaMagicFile` in `eaCatalog.ts` / `denuvo.json`.
+
+## ea-service vs denuvo
+
+- **denuvo** — Discord bot + hosts magic zips on the volume above.
+- **ea-service** — Linux token minter only (`POST /ea/token`). No magic zip volume needed.
