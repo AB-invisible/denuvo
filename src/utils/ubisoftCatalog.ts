@@ -22,6 +22,7 @@
  * before minting can succeed.
  */
 
+import fs from 'fs';
 import path from 'path';
 
 /**
@@ -115,13 +116,64 @@ export const UBISOFT_CATALOG: UbisoftCatalogEntry[] = [
   },
 ];
 
+const LEGACY_MAGIC_SUFFIX = ' Not A Crack Files.zip';
+const CURRENT_MAGIC_SUFFIX = ' Magic Files.zip';
+
+/** Map pre-rename zip filenames stored in DB to the current on-disk names. */
+export function normalizeMagicFilename(name: string): string {
+  if (name.endsWith(LEGACY_MAGIC_SUFFIX)) {
+    return name.slice(0, -LEGACY_MAGIC_SUFFIX.length) + CURRENT_MAGIC_SUFFIX;
+  }
+  return name;
+}
+
+/** Candidate zip names to try on disk (DB override, normalized, catalog, legacy). */
+export function magicFilenameCandidates(
+  magicFile: string | null | undefined,
+  catalog?: UbisoftCatalogEntry,
+): string[] {
+  const out: string[] = [];
+  const add = (n?: string | null) => {
+    if (n && !out.includes(n)) out.push(n);
+  };
+  add(magicFile);
+  if (magicFile) add(normalizeMagicFilename(magicFile));
+  add(catalog?.magicFile);
+  if (catalog?.magicFile) {
+    add(
+      catalog.magicFile.slice(0, -CURRENT_MAGIC_SUFFIX.length) + LEGACY_MAGIC_SUFFIX,
+    );
+  }
+  return out;
+}
+
+/** Find the first magic-files zip that exists under `magicDir`. */
+export function locateMagicZip(
+  magicDir: string,
+  magicFile: string | null | undefined,
+  catalog?: UbisoftCatalogEntry,
+): { path: string; filename: string } | null {
+  if (!magicDir || !fs.existsSync(magicDir)) return null;
+  const root = path.resolve(magicDir);
+  for (const name of magicFilenameCandidates(magicFile, catalog)) {
+    const resolved = path.resolve(path.join(root, name));
+    if (resolved !== root && !resolved.startsWith(root + path.sep)) continue;
+    if (fs.existsSync(resolved) && fs.statSync(resolved).isFile()) {
+      return { path: resolved, filename: name };
+    }
+  }
+  return null;
+}
+
 export function catalogBySteamAppId(steamAppId: number): UbisoftCatalogEntry | undefined {
   if (!steamAppId) return undefined;
   return UBISOFT_CATALOG.find((e) => e.steamAppId === steamAppId);
 }
 
 export function catalogByMagicFile(magicFile: string): UbisoftCatalogEntry | undefined {
-  return UBISOFT_CATALOG.find((e) => e.magicFile === magicFile);
+  return UBISOFT_CATALOG.find(
+    (e) => e.magicFile === magicFile || e.magicFile === normalizeMagicFilename(magicFile),
+  );
 }
 
 /**
@@ -150,7 +202,8 @@ export function resolveUbisoftForGame(game: {
   const ubisoftAppId = game.ubisoftAppId ?? catalog?.ubisoftAppId ?? null;
   if (!ubisoftAppId) return null;
 
-  const magicFile = game.ubisoftMagicFile ?? catalog?.magicFile ?? null;
+  const magicFileRaw = game.ubisoftMagicFile ?? catalog?.magicFile ?? null;
+  const magicFile = magicFileRaw ? normalizeMagicFilename(magicFileRaw) : null;
   const ubisoftAltAppId = game.ubisoftAltAppId ?? catalog?.ubisoftAltAppId ?? null;
   const layout = catalog?.layout ?? 'flat';
 

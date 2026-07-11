@@ -33,7 +33,7 @@ import prisma from '../lib/prisma';
 import { CONFIG } from '../config';
 import { client } from '../client';
 import { logAction, logTenant } from './logging';
-import { resolveUbisoftForGame, catalogByMagicFile, resolveMagicDir } from './ubisoftCatalog';
+import { resolveUbisoftForGame, catalogByMagicFile, resolveMagicDir, catalogBySteamAppId, locateMagicZip, normalizeMagicFilename } from './ubisoftCatalog';
 import { mintUbisoftToken, ubisoftServiceConfigured } from './ubisoftService';
 import { resolvePublicBaseUrl } from './downloadHost';
 
@@ -62,18 +62,20 @@ async function staffPingFor(guildId: string): Promise<string> {
 function resolveMagicDelivery(
   ubisoftAppId: number,
   magicFile: string | null,
-): { url?: string; localPath?: string; sizeMB?: number } | null {
+  steamAppId?: number | null,
+): { url?: string; localPath?: string; sizeMB?: number; resolvedFile?: string } | null {
   const base = resolvePublicBaseUrl();
   const dir = resolveMagicDir();
+  const catalog = steamAppId ? catalogBySteamAppId(steamAppId) : undefined;
 
+  const located = dir ? locateMagicZip(dir, magicFile, catalog) : null;
   let localPath: string | undefined;
   let sizeMB: number | undefined;
-  if (dir && magicFile) {
-    const candidate = path.join(dir, magicFile);
-    if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
-      localPath = candidate;
-      sizeMB = fs.statSync(candidate).size / (1024 * 1024);
-    }
+  let resolvedFile = magicFile ?? undefined;
+  if (located) {
+    localPath = located.path;
+    resolvedFile = located.filename;
+    sizeMB = fs.statSync(located.path).size / (1024 * 1024);
   }
 
   // Link is preferred (no Discord size limits, cacheable). Only valid if the
@@ -81,7 +83,7 @@ function resolveMagicDelivery(
   const url = base && localPath ? `${base}/ubisoft/magic/${ubisoftAppId}` : undefined;
 
   if (!url && !localPath) return null;
-  return { url, localPath, sizeMB };
+  return { url, localPath, sizeMB, resolvedFile };
 }
 
 function magicInstructions(gameName: string, layout: 'flat' | 'bin64'): string {
@@ -116,7 +118,7 @@ export async function startUbisoftDelivery(channel: TextChannel, ticket: any, gu
     return;
   }
 
-  const delivery = resolveMagicDelivery(resolved.ubisoftAppId, resolved.magicFile);
+  const delivery = resolveMagicDelivery(resolved.ubisoftAppId, resolved.magicFile, ticket.game.appId);
   if (!delivery) {
     await channel.send({
       content:
@@ -329,7 +331,7 @@ export function magicFileStatus(): { dir: string; present: string[]; missing: st
   }
   const files = new Set(fs.readdirSync(dir));
   for (const f of files) {
-    if (catalogByMagicFile(f)) present.push(f);
+    if (catalogByMagicFile(f) || catalogByMagicFile(normalizeMagicFilename(f))) present.push(f);
   }
   return { dir, present, missing };
 }

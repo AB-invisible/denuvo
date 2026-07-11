@@ -27,7 +27,7 @@ import http from 'http';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import { UBISOFT_CATALOG, resolveMagicDir } from './utils/ubisoftCatalog';
+import { UBISOFT_CATALOG, resolveMagicDir, locateMagicZip } from './utils/ubisoftCatalog';
 
 const CORE_DIR = path.join(__dirname, '..', '_Core');
 const PANEL_ASSET_DIR = path.join(__dirname, 'public');
@@ -134,23 +134,28 @@ function resolveOverrideFile(appid: string, filename: string): string | null {
 // from the catalog constant, not from user input.
 function resolveMagicFile(magicDir: string, appId: string): { filePath: string; downloadName: string } | null {
   if (!/^[0-9]+$/.test(appId)) return null;
-  const root = path.resolve(magicDir);
   const numericAppId = Number.parseInt(appId, 10);
 
-  const candidates: string[] = [];
   const entry = UBISOFT_CATALOG.find(
     (e) => e.ubisoftAppId === numericAppId || e.ubisoftAltAppId === numericAppId,
   );
-  if (entry) candidates.push(entry.magicFile);
-  candidates.push(`${appId}.zip`);
 
-  for (const name of candidates) {
-    const resolved = path.resolve(path.join(root, name));
-    if (resolved !== root && !resolved.startsWith(root + path.sep)) continue;
-    if (fs.existsSync(resolved) && fs.statSync(resolved).isFile()) {
-      return { filePath: resolved, downloadName: path.basename(resolved) };
-    }
+  const located = locateMagicZip(magicDir, entry?.magicFile ?? `${appId}.zip`, entry);
+  if (located) {
+    return { filePath: located.path, downloadName: located.filename };
   }
+
+  const fallback = path.resolve(path.join(path.resolve(magicDir), `${appId}.zip`));
+  const root = path.resolve(magicDir);
+  if (
+    fallback !== root &&
+    fallback.startsWith(root + path.sep) &&
+    fs.existsSync(fallback) &&
+    fs.statSync(fallback).isFile()
+  ) {
+    return { filePath: fallback, downloadName: `${appId}.zip` };
+  }
+
   return null;
 }
 
