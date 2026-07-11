@@ -28,15 +28,15 @@ export const EA_CATALOG: EaCatalogEntry[] = [
     eaContentId: 16425677,
     // FC 26 tickets use TICKET|0|16425677 — content id is the third segment.
     eaEngine: '0',
-    eaMagicFile: 'EA SPORTS FC 26 Not A Crack Files.zip',
-    eaMagicUrl:
-      'https://pixeldrain.com/d/DaTaPW8a/EA%20SPORTS%20FC%2026%20Not%20A%20Crack%20Files.zip',
+    eaMagicFile: 'EA SPORTS FC 26 magic files.zip',
     layout: 'flat',
   },
 ];
 
 export function resolveMagicDir(): string {
-  return (CONFIG.EA_MAGIC_DIR || '').trim();
+  const env = (CONFIG.EA_MAGIC_DIR || '').trim();
+  if (env) return env;
+  return path.join(__dirname, '..', '..', 'ea-magic');
 }
 
 export function catalogBySteamAppId(steamAppId: number): EaCatalogEntry | undefined {

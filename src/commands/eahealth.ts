@@ -22,13 +22,10 @@ export async function execute(interaction: any): Promise<void> {
     : `🔴 Unreachable — ${health.error ?? 'unknown error'}`;
 
   const magicLine = [
-    magic.present.length ? magic.present.map((f) => `• \`${f}\` (local)`).join('\n') : null,
+    magic.present.length ? magic.present.map((f) => `• \`${f}\` (hosted)`).join('\n') : null,
     magic.external.length ? magic.external.map((f) => `• \`${f}\``).join('\n') : null,
-    !magic.dir && !magic.present.length && !magic.external.length
-      ? '⚠️ `EA_MAGIC_DIR` not set — using catalog external links where configured.'
-      : null,
-    magic.dir && !magic.present.length && !magic.external.length
-      ? `📭 No recognized EA setup zips in \`${magic.dir}\`.`
+    !magic.present.length && !magic.external.length
+      ? `📭 No setup zips found in \`${magic.dir || 'ea-magic/'}\`. Upload zips to that folder (or set \`EA_MAGIC_DIR\`).`
       : null,
   ]
     .filter(Boolean)

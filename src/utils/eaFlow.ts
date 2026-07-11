@@ -362,11 +362,12 @@ export function eaMagicFileStatus(): { dir: string; present: string[]; external:
   const external: string[] = [];
   if (dir && fs.existsSync(dir)) {
     for (const f of fs.readdirSync(dir)) {
+      if (!f.toLowerCase().endsWith('.zip')) continue;
       if (catalogByMagicFile(f) || catalogByMagicFile(normalizeMagicFilename(f))) present.push(f);
     }
   }
   for (const entry of EA_CATALOG) {
-    if (entry.eaMagicUrl && entry.eaMagicFile) external.push(`${entry.eaMagicFile} (external)`);
+    if (entry.eaMagicUrl && entry.eaMagicFile) external.push(`${entry.eaMagicFile} (external URL)`);
   }
   return { dir, present, external };
 }
