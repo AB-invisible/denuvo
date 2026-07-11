@@ -20,6 +20,7 @@ import prisma from '../lib/prisma';
 import { CONFIG } from '../config';
 import { resolveServerConfig } from './tenant';
 import { isSteampassBlocked, tripSteampassBreaker, resetSteampassBreaker } from './steampassCircuit';
+import { acquireSteampassSlot } from './steampassRateLimiter';
 
 // Resolve Python — env override, venv, or system python3.
 function resolvePython(): string {
@@ -262,11 +263,17 @@ export async function generateTokenWithRetry(
     }
   }
 
+  // Cap how many accounts one gen rotates through. Each attempt is a full
+  // steampass login flow, so rotating through every account on a genuinely
+  // failing game is the biggest burst source. Trying a couple is enough to
+  // dodge a single bad account; beyond that we stop and let the user retry.
+  const maxAttempts = Math.min(candidates.length, Math.max(1, CONFIG.STEAMPASS_MAX_ACCOUNTS_PER_GEN));
+
   let lastResult: TokenGenResult | null = null;
-  for (let i = 0; i < candidates.length; i++) {
+  for (let i = 0; i < maxAttempts; i++) {
     const cand = candidates[i];
     const label = cand.id ? `pool #${cand.id}` : 'env-var';
-    console.log(`[TokenGen:Retry] Attempt ${i + 1}/${candidates.length} using account ${label} (${cand.login})`);
+    console.log(`[TokenGen:Retry] Attempt ${i + 1}/${maxAttempts} (of ${candidates.length} available) using account ${label} (${cand.login})`);
 
     const override = { login: cand.login, password: cand.password };
     const result = await generateToken(appId, gameName, guildId, override);
@@ -278,19 +285,19 @@ export async function generateTokenWithRetry(
       return { ...result, poolAccountId: cand.id, exhausted: false };
     }
 
-    console.warn(`[TokenGen:Retry] Account ${label} failed, ${candidates.length - i - 1} remaining`);
+    console.warn(`[TokenGen:Retry] Account ${label} failed, ${maxAttempts - i - 1} attempt(s) left (cap ${maxAttempts})`);
 
     // ── Block-avoidance: bail out early on a steampass throttle/ban ──
     // If steampass answered 429/403, every remaining account would hit the
     // SAME rate-limited IP — retrying just digs the hole deeper (and risks
     // a longer ban). Stop now and let the caller route to manual delivery.
     if (steampassIsThrottling(result.logs)) {
-      console.warn(`[TokenGen:Retry] Steampass is throttling/blocking (HTTP 429/403) — aborting the remaining ${candidates.length - i - 1} account attempt(s) so we don't deepen the block.`);
+      console.warn(`[TokenGen:Retry] Steampass is throttling/blocking (HTTP 429/403) — aborting the remaining ${maxAttempts - i - 1} account attempt(s) so we don't deepen the block.`);
       break;
     }
   }
 
-  console.error(`[TokenGen:Retry] All ${candidates.length} accounts failed for AppID ${appId}`);
+  console.error(`[TokenGen:Retry] ${maxAttempts} account attempt(s) failed for AppID ${appId} (of ${candidates.length} available)`);
   return { ...(lastResult ?? { zipPath: null, logs: 'All accounts failed.', installerKey: '' }), poolAccountId: null, exhausted: false };
 }
 
@@ -478,6 +485,14 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
       RAILWAY_PUBLIC_DOMAIN: railwayDomainEnv,
     });
 
+    // Pace steampass access: a gen that will actually call steampass (no
+    // cached refresh_token, real UUID, breaker closed) goes through the global
+    // one-at-a-time rate limiter so we never burst the site. Warm gens
+    // (refresh_token cached) make zero steampass calls and run immediately.
+    const willUseSteampass = steampassUuid !== 'FAKE' && !steampassDisabled && !cachedRefreshToken;
+    const releaseSlot = willUseSteampass ? await acquireSteampassSlot(`AppID ${appId}`) : null;
+    const releaseOnce = () => { if (releaseSlot) releaseSlot(); };
+
     const proc = execFile(
       PYTHON_EXE,
       [HEADLESS_SCRIPT, String(appId), gameName, steampassUuid, generationMode],
@@ -511,6 +526,7 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
               });
             } catch { /* row may not exist yet — fine */ }
           }
+          releaseOnce();
           resolve({ zipPath: null, logs, installerKey });
           return;
         }
@@ -622,9 +638,11 @@ function generateHeadless(appId: number, gameName: string, steampassUuid: string
             }
           }
 
+          releaseOnce();
           resolve({ zipPath: lastLine, logs, installerKey, ticketHash, expectedHmac, appIdBound });
         } else {
           console.error(`[TokenGen:Headless] No valid zip path found. Output:\n${stdout}`);
+          releaseOnce();
           resolve({ zipPath: null, logs, installerKey });
         }
       }

@@ -12,6 +12,14 @@ export const CONFIG = {
   // While open, gens only use the free cached refresh_token path (no steampass
   // calls) so we stop hammering a rate-limited / banned endpoint.
   STEAMPASS_COOLDOWN_MINUTES: process.env.STEAMPASS_COOLDOWN_MINUTES !== undefined ? Number(process.env.STEAMPASS_COOLDOWN_MINUTES) : 20,
+  // Minimum gap (ms) between two steampass-touching gens. Serializes + spaces
+  // steampass calls to human cadence so we never burst the endpoint. Gens that
+  // reuse a cached refresh_token bypass this (they make no steampass calls).
+  STEAMPASS_MIN_GAP_MS: process.env.STEAMPASS_MIN_GAP_MS !== undefined ? Number(process.env.STEAMPASS_MIN_GAP_MS) : 4000,
+  // Max steampass pool accounts a single failed gen will rotate through before
+  // giving up. Caps the burst one bad game can cause (each account = a full
+  // steampass login flow). refresh_token/owned/steamauth attempts don't count.
+  STEAMPASS_MAX_ACCOUNTS_PER_GEN: process.env.STEAMPASS_MAX_ACCOUNTS_PER_GEN !== undefined ? Number(process.env.STEAMPASS_MAX_ACCOUNTS_PER_GEN) : 2,
   STAFF_ROLE_ID: process.env.STAFF_ROLE_ID || '1484195272270811226',
   DONATOR_ROLE_ID: process.env.DONATOR_ROLE_ID || '1485995423633117224',
   BRONZE_ROLE_ID: process.env.BRONZE_ROLE_ID || '1486006821775872222',
