@@ -91,6 +91,14 @@ export async function recordSteamAuthUsage(accountId: number): Promise<void> {
       where: { id: accountId },
       data: { lastUsedAt: new Date(), failureCount: 0, lastFailureAt: null },
     });
+    const acct = await (prisma as any).steamAuthAccount.findUnique({
+      where: { id: accountId },
+      select: { appId: true },
+    });
+    if (acct?.appId) {
+      const { syncStockForAppId } = await import('./accountCapacity');
+      await syncStockForAppId(acct.appId).catch(() => {});
+    }
   } catch (e) {
     console.warn('[steamAuthAccounts] recordUsage failed (non-fatal):', (e as Error).message);
   }

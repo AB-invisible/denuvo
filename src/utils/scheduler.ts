@@ -5,15 +5,29 @@ import { getEstimatedWaitTime, getStaffStats } from './stats';
 import { checkDutyAutoReset } from './dutyManager';
 import { refreshAllPanels } from './panelManager';
 import { isStaff } from './permissions';
+import { utcDateKey } from './steampassPool';
 
 /**
  * Periodically updates open and claimed ticket embeds with live wait times and durations.
  */
+const TICKET_UPDATE_GAP_MS = 350;
+
 export async function updateTicketWaitTimes(client: Client) {
   try {
     const activeTickets = await prisma.ticket.findMany({
-      where: { status: { in: ['OPEN', 'CLAIMED'] } }
+      where: { status: { in: ['OPEN', 'CLAIMED'] } },
+      select: {
+        id: true,
+        channelId: true,
+        controlMessageId: true,
+        status: true,
+        claimedAt: true,
+        createdAt: true,
+        guildId: true,
+      },
     });
+
+    if (activeTickets.length === 0) return;
 
     // Cache the wait estimate per guild for this cycle so a server's tickets
     // show ITS queue (not the global total) without re-querying per ticket.
@@ -26,7 +40,8 @@ export async function updateTicketWaitTimes(client: Client) {
 
     for (const ticket of activeTickets) {
       try {
-        const channel = await client.channels.fetch(ticket.channelId).catch(() => null) as TextChannel;
+        const channel = (client.channels.cache.get(ticket.channelId) ??
+          await client.channels.fetch(ticket.channelId).catch(() => null)) as TextChannel | null;
         if (!channel) continue;
 
         let controlMsg: Message | null = null;
@@ -86,6 +101,8 @@ export async function updateTicketWaitTimes(client: Client) {
       } catch (err) {
         console.error(`[Scheduler] Failed to update ticket ${ticket.id}:`, err);
       }
+
+      await new Promise((r) => setTimeout(r, TICKET_UPDATE_GAP_MS));
     }
   } catch (err) {
     console.error('[Scheduler] Error in ticket update cycle:', err);
@@ -190,8 +207,18 @@ export async function checkDutyStatusReset() {
 export async function checkStaleTickets(client: Client) {
   try {
     const activeTickets = await prisma.ticket.findMany({
-      where: { status: { in: ['OPEN', 'CLAIMED'] } }
+      where: { status: { in: ['OPEN', 'CLAIMED'] } },
+      select: {
+        id: true,
+        channelId: true,
+        userId: true,
+        guildId: true,
+        screenshotVerified: true,
+        lastUserActivityAt: true,
+      },
     });
+
+    if (activeTickets.length === 0) return;
 
     const twoHoursMs = 2 * 60 * 60 * 1000;
     const oneDayMs = 24 * 60 * 60 * 1000;
@@ -199,7 +226,8 @@ export async function checkStaleTickets(client: Client) {
     const now = new Date();
 
     for (const ticket of activeTickets) {
-      const channel = await client.channels.fetch(ticket.channelId).catch(() => null) as TextChannel;
+      const channel = (client.channels.cache.get(ticket.channelId) ??
+        await client.channels.fetch(ticket.channelId).catch(() => null)) as TextChannel | null;
       if (!channel) continue;
 
       const threshold = ticket.screenshotVerified ? oneDayMs : twoHoursMs;
@@ -263,6 +291,8 @@ export async function checkStaleTickets(client: Client) {
               where: { id: ticket.id },
               data: { status: 'CLOSED', closedAt: new Date() }
             });
+            const { untrackTicketChannel } = await import('./ticketChannelCache');
+            untrackTicketChannel(ticket.channelId);
             
             await channel.send({ 
               content: `🔒 **STALE SESSION TERMINATED:** No activity detected for over **${hourDisplay}**. This session has been closed. Please open a new request if assistance is still required.` 
@@ -306,8 +336,31 @@ export async function cleanupExpiredCooldowns() {
       await prisma.cooldown.upsert({ where: { userId_guildId: { userId: ticket.userId, guildId: ticket.guildId || '' } }, update: { until }, create: { userId: ticket.userId, guildId: ticket.guildId || '', until } });
       
       await prisma.ticket.update({ where: { id: ticket.id }, data: { status: 'CLOSED', vouchExpiresAt: null } });
+      const { untrackTicketChannel } = await import('./ticketChannelCache');
+      untrackTicketChannel(ticket.channelId);
     }
   } catch (err) {
     console.error('[Scheduler] Error cleaning expired cooldowns:', err);
+  }
+}
+
+/** Resync owner-server stock when the UTC day rolls over (account quotas reset). */
+export async function syncOwnerStockForNewUtcDay() {
+  try {
+    const today = utcDateKey();
+    const meta = await prisma.metadata.findUnique({ where: { key: 'lastOwnerStockSyncDate' } });
+    if (meta?.value === today) return;
+
+    const { syncAllOwnerGameStock } = await import('./accountCapacity');
+    const count = await syncAllOwnerGameStock();
+    await prisma.metadata.upsert({
+      where: { key: 'lastOwnerStockSyncDate' },
+      update: { value: today },
+      create: { key: 'lastOwnerStockSyncDate', value: today },
+    });
+    console.log(`[Scheduler] Owner stock resynced for new UTC day (${today}) — ${count} game(s).`);
+    refreshAllPanels();
+  } catch (err) {
+    console.error('[Scheduler] Error syncing owner stock for new UTC day:', err);
   }
 }

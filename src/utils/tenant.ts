@@ -123,6 +123,17 @@ export function isOwnerGuild(guildId: string | null | undefined): boolean {
   return !!guildId && guildId === CONFIG.OWNER_GUILD_ID;
 }
 
+/** Fast voucher-channel check using the in-memory tenant cache (no DB). */
+export function isVoucherChannelSync(guildId: string, channelId: string): boolean {
+  if (!guildId || !channelId) return false;
+  if (isOwnerGuild(guildId)) {
+    return !!CONFIG.VOUCHER_CHANNEL_ID && channelId === CONFIG.VOUCHER_CHANNEL_ID;
+  }
+  const row = tenantCache?.get(guildId);
+  if (row?.voucherChannelId) return channelId === row.voucherChannelId;
+  return !!CONFIG.VOUCHER_CHANNEL_ID && channelId === CONFIG.VOUCHER_CHANNEL_ID;
+}
+
 /** Get the raw tenant row for a guild, or null. (null for the home server.) */
 export async function getTenant(guildId: string): Promise<TenantRow | null> {
   const map = await loadTenants();

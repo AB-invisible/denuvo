@@ -40,13 +40,18 @@ export async function execute(interaction: any): Promise<void> {
       const game = await prisma.game.findFirst({ where: { appId } });
       const gameName = game?.name || `AppID ${appId}`;
       const cap = CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
+      const { syncStockForAppId } = await import('../utils/accountCapacity');
+      const remaining = await syncStockForAppId(appId);
+      const { refreshAllPanels } = await import('../utils/panelManager');
+      refreshAllPanels();
       await interaction.editReply({
         content:
           `✅ **Steam account saved** (#${acct.id}) for **${gameName}** (AppID \`${appId}\`).\n` +
           `• Login: \`${login}\`\n` +
           `• Steam Guard: ${sharedSecret ? '🔐 TOTP (shared_secret set)' : '🔓 none (login + password only)'}\n\n` +
           `The bot uses this account **after SteamAuth** for **${gameName}** — up to \`${cap}\` tokens/day — then falls back to steampass. ` +
-          `First gen does a full login to cache a refresh_token; after that it's login-free until the token expires (~200 days).`,
+          `First gen does a full login to cache a refresh_token; after that it's login-free until the token expires (~200 days).\n` +
+          `Panel stock for **${gameName}** is now **${Math.max(0, remaining)}** token(s) remaining today.`,
       });
       if (interaction.guild) {
         await logAction(interaction.guild, '🎮 Owned Steam Account Added', `Owner added Steam account \`${login}\` (#${acct.id}) for **${gameName}** (AppID \`${appId}\`). Guard: ${sharedSecret ? 'TOTP' : 'none'}.`, 0x57F287);
@@ -63,7 +68,11 @@ export async function execute(interaction: any): Promise<void> {
       const acct = await (prisma as any).ownedSteamAccount.findUnique({ where: { id } }).catch(() => null);
       if (!acct) return interaction.editReply({ content: `❌ No owned Steam account with ID \`${id}\`.` });
       await (prisma as any).ownedSteamAccount.delete({ where: { id } });
-      await interaction.editReply({ content: `🗑️ Removed Steam account #${id} (\`${acct.steamLogin}\`, AppID \`${acct.appId}\`).` });
+      const { syncStockForAppId } = await import('../utils/accountCapacity');
+      await syncStockForAppId(acct.appId);
+      const { refreshAllPanels } = await import('../utils/panelManager');
+      refreshAllPanels();
+      await interaction.editReply({ content: `🗑️ Removed Steam account #${id} (\`${acct.steamLogin}\`, AppID \`${acct.appId}\`). Stock resynced.` });
       if (interaction.guild) {
         await logAction(interaction.guild, '🗑️ Owned Steam Account Removed', `Owner removed Steam account \`${acct.steamLogin}\` (#${id}, AppID \`${acct.appId}\`).`, 0xFEE75C);
       }

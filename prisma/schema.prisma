@@ -68,6 +68,11 @@ model Ticket {
   // Mirrors how screenshotVerified gates the Steam flow, but the Ubisoft
   // flow has an extra round-trip (user must run the game first).
   ubisoftStage          String?
+
+  @@index([status])
+  @@index([guildId, status])
+  @@index([userId, status])
+  @@index([vouchExpiresAt])
 }
 
 model PendingVerification {
@@ -94,6 +99,7 @@ model Cooldown {
   until     DateTime
   createdAt DateTime @default(now())
   @@unique([userId, guildId])
+  @@index([until])
 }
 
 model Panel {
@@ -101,6 +107,8 @@ model Panel {
   channelId String
   messageId String
   createdAt DateTime @default(now())
+
+  @@index([channelId])
 }
 
 // Bug #20: Verification model removed — unused (state is managed in-memory via pendingVerifications map)
@@ -112,6 +120,8 @@ model Restock {
   game      Game     @relation(fields: [gameId], references: [id])
   restockAt DateTime
   createdAt DateTime @default(now())
+
+  @@index([guildId, restockAt])
 }
 
 model Metadata {
@@ -284,6 +294,20 @@ model SteampassAccount {
   createdAt DateTime @default(now())
   updatedAt DateTime @default(now()) @updatedAt
   usages    SteampassUsage[]
+  games     SteampassAccountGame[]
+}
+
+// Which catalog games a pool account can generate for. Stock + rotation only
+// count accounts linked here — not every pool account owns every game.
+model SteampassAccountGame {
+  id        Int              @id @default(autoincrement())
+  accountId Int
+  account   SteampassAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  appId     Int
+  createdAt DateTime         @default(now())
+
+  @@unique([accountId, appId])
+  @@index([appId])
 }
 
 // Per-account, per-game, per-day token counter for the owner pool.

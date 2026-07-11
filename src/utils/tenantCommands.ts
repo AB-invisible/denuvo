@@ -16,7 +16,7 @@ import {
 import prisma from '../lib/prisma';
 import { CONFIG } from '../config';
 import { invalidateTenantCache, getAllTenants } from './tenant';
-import { getPoolStatus } from './steampassPool';
+import { getPoolStatus, linkPoolAccountGame, unlinkPoolAccountGame, linkAllCatalogGamesToAccount, listPoolAccountGames } from './steampassPool';
 import { logAction } from './logging';
 
 export const OWNER_COMMANDS = [
@@ -86,6 +86,16 @@ export const OWNER_COMMANDS = [
       .addStringOption(o => o.setName('label').setDescription('label (optional)').setRequired(false)))
     .addSubcommand(s => s.setName('remove').setDescription('Remove an account from the pool')
       .addStringOption(o => o.setName('email').setDescription('steampass email to remove').setRequired(true)))
+    .addSubcommand(s => s.setName('linkgame').setDescription('Link a pool account to a game (+5 stock for that game)')
+      .addStringOption(o => o.setName('email').setDescription('Pool account email').setRequired(true))
+      .addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true)))
+    .addSubcommand(s => s.setName('unlinkgame').setDescription('Remove a game from a pool account')
+      .addStringOption(o => o.setName('email').setDescription('Pool account email').setRequired(true))
+      .addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true)))
+    .addSubcommand(s => s.setName('linkall').setDescription('Link ALL catalog games to an account (only if it truly owns everything)')
+      .addStringOption(o => o.setName('email').setDescription('Pool account email').setRequired(true)))
+    .addSubcommand(s => s.setName('games').setDescription('List games linked to a pool account')
+      .addStringOption(o => o.setName('email').setDescription('Pool account email').setRequired(true)))
     .addSubcommand(s => s.setName('list').setDescription('Show pool accounts + today usage'))
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
 ];
@@ -299,6 +309,8 @@ export async function handleTenantCommand(interaction: any): Promise<boolean> {
 
     if (name === 'steampass') {
       const sub = interaction.options.getSubcommand();
+      const cap = CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
+
       if (sub === 'add') {
         const email = interaction.options.getString('email', true).trim();
         const password = interaction.options.getString('password', true).trim();
@@ -308,9 +320,15 @@ export async function handleTenantCommand(interaction: any): Promise<boolean> {
           update: { password, label, active: true },
           create: { login: email, password, label, active: true },
         });
-        await interaction.editReply({ content: `✅ Added/updated pool account \`${email}\`.` });
+        await interaction.editReply({
+          content:
+            `✅ Added/updated pool account \`${email}\`.\n\n` +
+            `Link the games this account owns with \`/steampass linkgame\` — each linked game gets **+${cap}** stock/day from this account.\n` +
+            `Or \`/steampass linkall\` if it owns every game in the catalog.`,
+        });
         return true;
       }
+
       if (sub === 'remove') {
         const email = interaction.options.getString('email', true).trim();
         const exists = await (prisma as any).steampassAccount.findUnique({ where: { login: email } });
@@ -319,16 +337,128 @@ export async function handleTenantCommand(interaction: any): Promise<boolean> {
           return true;
         }
         await (prisma as any).steampassAccount.delete({ where: { login: email } });
-        await interaction.editReply({ content: `🗑️ Removed pool account \`${email}\`.` });
+        const { syncAllOwnerGameStock } = await import('./accountCapacity');
+        const synced = await syncAllOwnerGameStock();
+        await interaction.editReply({
+          content: `🗑️ Removed pool account \`${email}\`. Resynced stock for **${synced}** game(s).`,
+        });
+        const { refreshAllPanels } = await import('./panelManager');
+        refreshAllPanels();
         return true;
       }
-      const status = await getPoolStatus();
-      if (!status.length) { await interaction.editReply({ content: 'Pool is empty. Owner server falls back to the global env account.' }); return true; }
-      const cap = CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
-      const lines = status.map(a => `${a.active ? '🟢' : '⏸️'} \`#${a.id}\` \`${a.login}\`${a.label ? ` (${a.label})` : ''} — used today: **${a.usedToday}** (cap ${cap}/game) ${a.hasToken ? '🔑 token cached' : '⚠️ no token (uses /auth/login)'}`).join('\n');
-      const embed = new EmbedBuilder().setTitle('🔑 Steampass Pool').setDescription(lines.slice(0, 4000)).setColor(0x5865F2);
-      await interaction.editReply({ embeds: [embed] });
-      return true;
+
+      if (sub === 'linkgame') {
+        const email = interaction.options.getString('email', true).trim();
+        const gameName = interaction.options.getString('game', true).trim();
+        const acct = await (prisma as any).steampassAccount.findUnique({ where: { login: email } });
+        if (!acct) {
+          await interaction.editReply({ content: `❌ No pool account \`${email}\`. Add it first with \`/steampass add\`.` });
+          return true;
+        }
+        const game = await prisma.game.findUnique({ where: { name: gameName, disabled: false } });
+        if (!game?.appId) {
+          await interaction.editReply({ content: `❌ Game **${gameName}** not found or has no AppID.` });
+          return true;
+        }
+        await linkPoolAccountGame(acct.id, game.appId);
+        const { syncStockForGame, countAccountSourcesForApp } = await import('./accountCapacity');
+        const remaining = await syncStockForGame(game.id, CONFIG.OWNER_GUILD_ID);
+        const acctCount = await countAccountSourcesForApp(game.appId);
+        const { refreshAllPanels } = await import('./panelManager');
+        refreshAllPanels();
+        await interaction.editReply({
+          content:
+            `✅ Linked \`${email}\` → **${game.name}** (AppID \`${game.appId}\`).\n` +
+            `**${acctCount}** account(s) cover this game → **${remaining}** token(s) remaining today (${acctCount * cap} max/day).`,
+        });
+        return true;
+      }
+
+      if (sub === 'unlinkgame') {
+        const email = interaction.options.getString('email', true).trim();
+        const gameName = interaction.options.getString('game', true).trim();
+        const acct = await (prisma as any).steampassAccount.findUnique({ where: { login: email } });
+        if (!acct) {
+          await interaction.editReply({ content: `❌ No pool account \`${email}\`.` });
+          return true;
+        }
+        const game = await prisma.game.findUnique({ where: { name: gameName } });
+        if (!game?.appId) {
+          await interaction.editReply({ content: `❌ Game **${gameName}** not found.` });
+          return true;
+        }
+        await unlinkPoolAccountGame(acct.id, game.appId);
+        const { syncStockForGame } = await import('./accountCapacity');
+        const remaining = await syncStockForGame(game.id, CONFIG.OWNER_GUILD_ID);
+        const { refreshAllPanels } = await import('./panelManager');
+        refreshAllPanels();
+        await interaction.editReply({
+          content: `🗑️ Unlinked \`${email}\` from **${game.name}**. Stock is now **${remaining}** for that game.`,
+        });
+        return true;
+      }
+
+      if (sub === 'linkall') {
+        const email = interaction.options.getString('email', true).trim();
+        const acct = await (prisma as any).steampassAccount.findUnique({ where: { login: email } });
+        if (!acct) {
+          await interaction.editReply({ content: `❌ No pool account \`${email}\`.` });
+          return true;
+        }
+        const linked = await linkAllCatalogGamesToAccount(acct.id);
+        const { syncAllOwnerGameStock } = await import('./accountCapacity');
+        await syncAllOwnerGameStock();
+        const { refreshAllPanels } = await import('./panelManager');
+        refreshAllPanels();
+        await interaction.editReply({
+          content:
+            `✅ Linked **${linked}** catalog game(s) to \`${email}\` (+${cap} stock/day each from this account).\n` +
+            `Only use this if the account truly owns every game.`,
+        });
+        return true;
+      }
+
+      if (sub === 'games') {
+        const email = interaction.options.getString('email', true).trim();
+        const acct = await (prisma as any).steampassAccount.findUnique({ where: { login: email } });
+        if (!acct) {
+          await interaction.editReply({ content: `❌ No pool account \`${email}\`.` });
+          return true;
+        }
+        const appIds = await listPoolAccountGames(acct.id);
+        if (appIds.length === 0) {
+          await interaction.editReply({
+            content: `📭 \`${email}\` has no games linked yet. Use \`/steampass linkgame\` or \`/steampass linkall\`.`,
+          });
+          return true;
+        }
+        const games = await prisma.game.findMany({ where: { appId: { in: appIds } }, orderBy: { name: 'asc' } });
+        const nameByApp = new Map(games.map(g => [g.appId, g.name]));
+        const lines = appIds.map(id => `• **${nameByApp.get(id) || `AppID ${id}`}** (\`${id}\`) — ${cap}/day`).join('\n');
+        await interaction.editReply({
+          content: `🎮 **${appIds.length}** game(s) linked to \`${email}\`:\n${lines}`,
+        });
+        return true;
+      }
+
+      if (sub === 'list') {
+        const status = await getPoolStatus();
+        if (!status.length) {
+          await interaction.editReply({ content: 'Pool is empty. Add accounts with `/steampass add`, then link games with `/steampass linkgame`.' });
+          return true;
+        }
+        const lines = status.map(a =>
+          `${a.active ? '🟢' : '⏸️'} \`#${a.id}\` \`${a.login}\`${a.label ? ` (${a.label})` : ''}\n` +
+          `╰─ **${a.gameCount}** game(s) linked · **${a.usedToday}** tokens used today · ${a.hasToken ? '🔑 bearer cached' : '⚠️ no bearer'}`
+        ).join('\n\n');
+        const embed = new EmbedBuilder()
+          .setTitle('🔑 Steampass Pool')
+          .setDescription(lines.slice(0, 4000))
+          .setFooter({ text: `Each linked game = +${cap} stock/day per account · /steampass linkgame to assign` })
+          .setColor(0x5865F2);
+        await interaction.editReply({ embeds: [embed] });
+        return true;
+      }
     }
   } catch (e) {
     await interaction.editReply({ content: `❌ Error: ${(e as Error).message}` }).catch(() => {});

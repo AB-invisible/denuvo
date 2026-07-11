@@ -243,33 +243,18 @@ export async function generateTokenWithRetry(
     return { zipPath: null, logs: 'All pool accounts exhausted for today.', installerKey: '', poolAccountId: null, exhausted: true };
   }
 
-  const envLogin = process.env.STEAMPASS_LOGIN || '';
-  const envPassword = process.env.STEAMPASS_PASSWORD || '';
-
   const candidates: { id: number | null; login: string; password: string }[] = [
     ...accounts.map(a => ({ id: a.id as number | null, login: a.login, password: a.password })),
   ];
-  if (envLogin) {
-    const alreadyInPool = accounts.some(a => a.login === envLogin);
-    if (!alreadyInPool) {
-      candidates.push({ id: null, login: envLogin, password: envPassword });
-    }
-  }
 
   if (candidates.length === 0) {
-    if (envLogin) {
-      candidates.push({ id: null, login: envLogin, password: envPassword });
-    } else {
-      const result = await generateToken(appId, gameName, guildId);
-      return { ...result, poolAccountId: null, exhausted: false };
-    }
+    const result = await generateToken(appId, gameName, guildId);
+    return { ...result, poolAccountId: null, exhausted: false };
   }
 
-  // Cap how many accounts one gen rotates through. Each attempt is a full
-  // steampass login flow, so rotating through every account on a genuinely
-  // failing game is the biggest burst source. Trying a couple is enough to
-  // dodge a single bad account; beyond that we stop and let the user retry.
-  const maxAttempts = Math.min(candidates.length, Math.max(1, CONFIG.STEAMPASS_MAX_ACCOUNTS_PER_GEN));
+  // Cap how many accounts one gen rotates through. Use every account that
+  // still has daily quota — each account has its own 5/day Denuvo slot.
+  const maxAttempts = candidates.length;
 
   let lastResult: TokenGenResult | null = null;
   for (let i = 0; i < maxAttempts; i++) {

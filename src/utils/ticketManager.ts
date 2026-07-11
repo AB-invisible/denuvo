@@ -21,11 +21,13 @@ import path from 'path';
 import { consumeStock, processGuildRestocks, getOrCreateServerStock } from './gameManager';
 import { logAction } from './logging';
 import { refreshAllPanels } from './panelManager';
+import { trackTicketChannel, untrackTicketChannel } from './ticketChannelCache';
 import { createVerificationPromptEmbed, createTicketSuccessEmbed } from './embeds';
 import { getEstimatedWaitTime } from './stats';
 import { isStaff, getTier, getTierForGuild } from './permissions';
 import { computeCooldownHours } from './cooldown';
 import { resolveServerConfig } from './tenant';
+import { usesAccountSyncedStock, syncStockForGame } from './accountCapacity';
 
 // Note: The Maps below now only store active timers to handle timeouts.
 // All stateful metadata (retries, processing, vouches) is persisted in Prisma for durability across reboots.
@@ -119,6 +121,7 @@ export async function createTicket(interaction: StringSelectMenuInteraction, gam
         }).catch((e: Error) => {
           console.error(`[createTicket] Failed to close orphan ticket ${stale.id}:`, e.message);
         });
+        untrackTicketChannel(stale.channelId);
         // Fall through — user gets a fresh ticket below.
       } else {
         return interaction.editReply({
@@ -130,6 +133,14 @@ export async function createTicket(interaction: StringSelectMenuInteraction, gam
     // Process any pending auto-restocks for this server before checking stock
     const ticketGuildId = interaction.guildId || '';
     await processGuildRestocks(ticketGuildId);
+
+    const gamePreview = await prisma.game.findUnique({
+      where: { name: gameName, disabled: false },
+      select: { id: true, appId: true },
+    });
+    if (gamePreview?.appId && usesAccountSyncedStock(ticketGuildId)) {
+      await syncStockForGame(gamePreview.id, ticketGuildId);
+    }
 
     // --- ATOMIC TRANSACTION START ---
     const result = await prisma.$transaction(async (tx) => {
@@ -265,6 +276,7 @@ export async function createTicket(interaction: StringSelectMenuInteraction, gam
     const ticket = await prisma.ticket.create({
       data: { channelId: channel.id, userId: interaction.user.id, gameId: game.id, status: 'OPEN', guildId: interaction.guildId },
     });
+    trackTicketChannel(channel.id);
 
     const userTier = await getTierForGuild(interaction.member as GuildMember, guild.id);
     const infoContent = await getInfoContent();
@@ -509,6 +521,7 @@ export async function handleDeductionChoice(interaction: ButtonInteraction, choi
     where: { channelId: interaction.channelId },
     data: { status: 'CLOSED', closedAt: new Date(), screenshotVerified: true, activeClosingStaffId: null },
   });
+  untrackTicketChannel(interaction.channelId);
 
   const vTimer = pendingVerificationTimers.get(interaction.channelId);
   if (vTimer) {
@@ -564,6 +577,7 @@ export async function handleCooldownSelection(interaction: StringSelectMenuInter
       activeClosingStaffId: null 
     } 
   });
+  untrackTicketChannel(interaction.channelId);
   
   const vTimer = pendingVerificationTimers.get(interaction.channelId);
   if (vTimer) {
@@ -597,6 +611,7 @@ export async function triggerSessionFailure(channelId: string, userId: string, c
   await prisma.cooldown.upsert({ where: { userId_guildId: { userId, guildId: effectiveGuildId } }, update: { until }, create: { userId, guildId: effectiveGuildId, until } });
 
   await prisma.ticket.update({ where: { channelId }, data: { status: 'CLOSED', closedAt: new Date() } });
+  untrackTicketChannel(channelId);
 
   if (channel) {
     const failures = await prisma.ticket.count({

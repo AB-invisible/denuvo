@@ -58,6 +58,10 @@ export async function execute(interaction: any): Promise<void> {
     }
     try {
       const { linked, skipped } = await syncSteamAuthLinks('');
+      const { syncAllOwnerGameStock } = await import('../utils/accountCapacity');
+      await syncAllOwnerGameStock();
+      const { refreshAllPanels } = await import('../utils/panelManager');
+      refreshAllPanels();
       await interaction.editReply({
         content:
           `✅ **SteamAuth sync complete** — ${linked} new link(s) created, ${skipped} already linked.\n` +
@@ -143,13 +147,18 @@ export async function execute(interaction: any): Promise<void> {
       const game = await prisma.game.findFirst({ where: { appId } });
       const gameName = game?.name || `AppID ${appId}`;
       const cap = CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
+      const { syncStockForAppId } = await import('../utils/accountCapacity');
+      const remaining = await syncStockForAppId(appId);
+      const { refreshAllPanels } = await import('../utils/panelManager');
+      refreshAllPanels();
       await interaction.editReply({
         content:
           `✅ **SteamAuth account linked** (#${acct.id}) for **${gameName}** (AppID \`${appId}\`).\n` +
           `• Service ID: \`${accountId}\`\n` +
           `• Steam login: \`${steamLogin}\`\n` +
           `• Auth: 🔐 API key → \`GET /credentials\` (no password stored on bot)\n\n` +
-          `Autogen tries this account **first** for **${gameName}** — up to \`${cap}\`/day.`,
+          `Autogen tries this account **first** for **${gameName}** — up to \`${cap}\`/day.\n` +
+          `Panel stock for **${gameName}** is now **${Math.max(0, remaining)}** token(s) remaining today.`,
       });
       if (interaction.guild) {
         await logAction(
@@ -171,6 +180,10 @@ export async function execute(interaction: any): Promise<void> {
       const acct = await (prisma as any).steamAuthAccount.findUnique({ where: { id } }).catch(() => null);
       if (!acct) return interaction.editReply({ content: `❌ No SteamAuth link with ID \`${id}\`.` });
       await (prisma as any).steamAuthAccount.delete({ where: { id } });
+      const { syncStockForAppId } = await import('../utils/accountCapacity');
+      await syncStockForAppId(acct.appId);
+      const { refreshAllPanels } = await import('../utils/panelManager');
+      refreshAllPanels();
       await interaction.editReply({
         content: `🗑️ Removed SteamAuth link #${id} (\`${acct.steamLogin}\`, AppID \`${acct.appId}\`).`,
       });

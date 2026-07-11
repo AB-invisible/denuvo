@@ -7,7 +7,7 @@ import { createMainPanel, createVerificationPromptEmbed, createVerificationProce
 import { createTicket, claimTicket, closeTicket, handleCooldownSelection, handleDeductionChoice, unclaimTicket, autoCloseTicketForVerificationTimeout, triggerSessionFailure, pendingVerificationTimers, vouchTimers } from './utils/ticketManager';
 import { getEstimatedWaitTime } from './utils/stats';
 import { computeCooldownHours } from './utils/cooldown';
-import { consumeStock, updateStockForAllGames } from './utils/gameManager';
+import { consumeStock, updateStockForAllGames, manualConsumeStock } from './utils/gameManager';
 import prisma from './lib/prisma';
 import { logAction } from './utils/logging';
 import { refreshAllPanels, resumeFromMaintenance } from './utils/panelManager';
@@ -18,11 +18,14 @@ import { uploadFile } from './utils/fileHost';
 import { isUbisoftGame } from './utils/ubisoftCatalog';
 import { startUbisoftDelivery, handleUbisoftTokenReq, UBISOFT_STAGE_AWAITING } from './utils/ubisoftFlow';
 import { enqueueTokenGen } from './utils/tokenQueue';
-import { updateTicketWaitTimes, checkWeeklyStaffStats, checkDutyStatusReset, checkStaleTickets, cleanupExpiredCooldowns } from './utils/scheduler';
+import { updateTicketWaitTimes, checkWeeklyStaffStats, checkDutyStatusReset, checkStaleTickets, cleanupExpiredCooldowns, syncOwnerStockForNewUtcDay } from './utils/scheduler';
 import { addSubscription } from './utils/subscriptionManager';
 import { logTenant } from './utils/logging';
 import { checkGuild, shouldLeaveGuild } from './utils/guildAccess';
-import { getAllowedGuildIds, invalidateTenantCache } from './utils/tenant';
+import { getAllowedGuildIds, invalidateTenantCache, isVoucherChannelSync } from './utils/tenant';
+import { hydrateActiveTicketChannels, isActiveTicketChannel, untrackTicketChannel } from './utils/ticketChannelCache';
+import { syncAllOwnerGameStock } from './utils/accountCapacity';
+import { migrateGameLinksFromUsage, ensureEnvPoolAccount } from './utils/steampassPool';
 import { OWNER_COMMANDS, SETLOGS_COMMAND, SETVOUCH_COMMAND, ADDSUPPORT_COMMAND, OWNER_COMMAND_NAMES, handleTenantCommand } from './utils/tenantCommands';
 // Spin up the payload HTTP server immediately so Railway's PORT-based
 // healthcheck has something to talk to even before the Discord client
@@ -400,6 +403,15 @@ client.once(Events.ClientReady, async () => {
   await syncGamesFromFile();
   initFileWatcher();
 
+  // Warm caches before message/interaction handlers run hot paths.
+  await Promise.all([
+    getAllowedGuildIds(),
+    hydrateActiveTicketChannels(),
+    ensureEnvPoolAccount(),
+    migrateGameLinksFromUsage(),
+    syncAllOwnerGameStock(),
+  ]);
+
   // New: Check for persisted states on startup
   await checkActiveMaintenance();
   await rehydrateVerificationTimers();
@@ -445,6 +457,7 @@ async function applyVouchTimeoutStrike(ticketId: number, userId: string, channel
       vouchExpiresAt: null
     }
   });
+  untrackTicketChannel(channelId);
 
   // Count strikes (CLOSED tickets with screenshotVerified=false) — per-server
   const failures = await prisma.ticket.count({
@@ -721,7 +734,7 @@ if (interaction.guildId) {
 });
 
 async function handleAutocomplete(interaction: any) {
-  if (interaction.commandName === 'stock' || interaction.commandName === 'exclude-auto' || interaction.commandName === 'test' || interaction.commandName === 'tokengen' || interaction.commandName === 'setmode' || interaction.commandName === 'getmode' || interaction.commandName === 'game' || interaction.commandName === 'removegame' || interaction.commandName === 'settokens' || interaction.commandName === 'autogen' || interaction.commandName === 'simulate' || interaction.commandName === 'deplet' || interaction.commandName === 'waitlist' || interaction.commandName === 'ubisoftgame') {
+  if (interaction.commandName === 'stock' || interaction.commandName === 'exclude-auto' || interaction.commandName === 'test' || interaction.commandName === 'tokengen' || interaction.commandName === 'setmode' || interaction.commandName === 'getmode' || interaction.commandName === 'game' || interaction.commandName === 'removegame' || interaction.commandName === 'settokens' || interaction.commandName === 'autogen' || interaction.commandName === 'simulate' || interaction.commandName === 'deplet' || interaction.commandName === 'waitlist' || interaction.commandName === 'ubisoftgame' || interaction.commandName === 'steampass') {
     const focusedValue = interaction.options.getFocused();
     const games = await prisma.game.findMany({
       where: { name: { contains: focusedValue, mode: 'insensitive' } },
@@ -1333,6 +1346,7 @@ async function handleWorksNo(interaction: any) {
              where: { id: ticket.id },
              data: { status: 'CLOSED', closedAt: new Date() }
            });
+           untrackTicketChannel(ticket.channelId);
 
            const timer = pendingVerificationTimers.get(ticket.channelId);
            if (timer) {
@@ -1365,12 +1379,19 @@ async function handleWorksNo(interaction: any) {
 
 
 client.on(Events.MessageCreate, async (message) => {
-  if (message.author.bot) return;
+  if (message.author.bot || !message.guild) return;
 
-  const ticket = await prisma.ticket.findUnique({
-    where: { channelId: message.channelId },
-    include: { verification: true, game: true }
-  });
+  const inTicketChannel = isActiveTicketChannel(message.channelId);
+  const inVoucherChannel = isVoucherChannelSync(message.guild.id, message.channelId);
+
+  if (!inTicketChannel && !inVoucherChannel) return;
+
+  let ticket = inTicketChannel
+    ? await prisma.ticket.findUnique({
+        where: { channelId: message.channelId },
+        include: { verification: true, game: true },
+      })
+    : null;
 
   if (ticket && message.author.id === ticket.userId) {
     await prisma.ticket.update({
@@ -1563,14 +1584,15 @@ client.on(Events.MessageCreate, async (message) => {
 
   // --- NEW: Staff Delivery Detection ---
   const firstAttachment = message.attachments.first();
-  if (firstAttachment && firstAttachment.name.toLowerCase().endsWith('.zip') && message.member && await (await import('./utils/permissions')).isStaffForGuild(message.member as GuildMember, message.guildId ?? '')) {
+  if (
+    ticket &&
+    firstAttachment &&
+    firstAttachment.name.toLowerCase().endsWith('.zip') &&
+    message.member &&
+    await (await import('./utils/permissions')).isStaffForGuild(message.member as GuildMember, message.guildId ?? '')
+  ) {
     try {
-      const ticket = await prisma.ticket.findFirst({
-        where: { channelId: message.channelId },
-        include: { game: true }
-      });
-
-      if (ticket && (ticket.status === 'OPEN' || ticket.status === 'CLAIMED')) {
+      if (ticket.status === 'OPEN' || ticket.status === 'CLAIMED') {
         const zipName = firstAttachment.name.toLowerCase();
         const fullGameName = ticket.game.name.toLowerCase();
         const appIdString = ticket.game.appId?.toString();
@@ -1616,6 +1638,11 @@ client.on(Events.MessageCreate, async (message) => {
           if (guild) {
             await logAction(guild, '📦 Token Delivered', `Staff ${message.author} delivered a token zip for **${ticket.game.name}** in <#${message.channelId}>.`, 0x5865F2);
           }
+
+          await manualConsumeStock(ticket.gameId, ticket.guildId || message.guildId || '').catch((e) =>
+            console.error('[StaffDelivery] manualConsumeStock failed:', e),
+          );
+          refreshAllPanels();
         }
       }
     } catch (err) {
@@ -1624,16 +1651,12 @@ client.on(Events.MessageCreate, async (message) => {
   }
 
   // --- NEW: Voucher Monitoring (Keep legacy message detection for backward compat, but prioritize reactions) ---
-   // Resolve THIS server's voucher channel (tenant override or home env).
-  const vouchSc = message.guildId
-    ? await (await import('./utils/tenant')).resolveServerConfig(message.guildId)
-    : null;
-  if (vouchSc && message.channelId === vouchSc.voucherChannelId) {
+  if (inVoucherChannel) {
 
     // Find any open/claimed ticket for this user — vouchExpiresAt is preferred
     // but we fall back to any open ticket so this still works if the user posts
     // in voucher channel before clicking "Yes, it works!".
-    const ticket = await prisma.ticket.findFirst({
+    const vouchTicket = await prisma.ticket.findFirst({
       where: { userId: message.author.id, status: { in: ['OPEN', 'CLAIMED'] } },
       include: { game: true },
       orderBy: { createdAt: 'desc' }
@@ -1644,11 +1667,11 @@ client.on(Events.MessageCreate, async (message) => {
 
     console.log(
       `[VouchAuto] msg in voucher channel by ${message.author.tag} | ` +
-      `ticket=${ticket ? ticket.id : 'none'} | pingsBot=${pingsBot} | hasScreenshot=${hasScreenshot} | ` +
+      `ticket=${vouchTicket ? vouchTicket.id : 'none'} | pingsBot=${pingsBot} | hasScreenshot=${hasScreenshot} | ` +
       `attachments=[${message.attachments.map(a => `${a.name}(${a.contentType})`).join(', ')}]`
     );
 
-    if (ticket) {
+    if (vouchTicket) {
       // ─── ENFORCE VOUCH FORMAT ───
       // User has an open ticket → they must vouch with BOTH a bot-ping AND a screenshot.
       // If they're missing either, delete the message and post a self-deleting reminder.
@@ -1698,34 +1721,34 @@ client.on(Events.MessageCreate, async (message) => {
       if (pingsBot && hasScreenshot) {
         try {
           // Clear any pending vouch timeout — we're closing now
-          const vTimer = vouchTimers.get(ticket.userId);
+          const vTimer = vouchTimers.get(vouchTicket.userId);
           if (vTimer) {
             clearTimeout(vTimer);
-            vouchTimers.delete(ticket.userId);
+            vouchTimers.delete(vouchTicket.userId);
           }
 
           // Cooldown from the shared helper — membership tier (Gold/Silver/
           // Bronze) + any active temp_tier promo. Same logic as staff /close
           // and the reaction-close path, so paid perks and /redeem codes
           // apply on the normal vouch flow too (they used to be ignored here).
-          const cdGuildId = ticket.guildId || message.guildId || '';
+          const cdGuildId = vouchTicket.guildId || message.guildId || '';
           const cdMember = (message.member as GuildMember | null)
-            ?? (await message.guild?.members.fetch(ticket.userId).catch(() => null))
+            ?? (await message.guild?.members.fetch(vouchTicket.userId).catch(() => null))
             ?? null;
-          const { hours: cooldownHours } = await computeCooldownHours(cdMember, ticket.userId, cdGuildId);
+          const { hours: cooldownHours } = await computeCooldownHours(cdMember, vouchTicket.userId, cdGuildId);
           const until = new Date(Date.now() + cooldownHours * 60 * 60 * 1000);
           await prisma.cooldown.upsert({
-            where: { userId_guildId: { userId: ticket.userId, guildId: cdGuildId } },
+            where: { userId_guildId: { userId: vouchTicket.userId, guildId: cdGuildId } },
             update: { until },
-            create: { userId: ticket.userId, guildId: cdGuildId, until }
+            create: { userId: vouchTicket.userId, guildId: cdGuildId, until }
           });
 
           // Deduct one token from stock
-          await consumeStock(ticket.gameId, ticket.guildId || message.guildId || '').catch((e) => console.error('[VouchAuto] consumeStock failed:', e));
+          await consumeStock(vouchTicket.gameId, vouchTicket.guildId || message.guildId || '').catch((e) => console.error('[VouchAuto] consumeStock failed:', e));
 
           // Close ticket
           await prisma.ticket.update({
-            where: { id: ticket.id },
+            where: { id: vouchTicket.id },
             data: {
               status: 'CLOSED',
               closedAt: new Date(),
@@ -1733,9 +1756,10 @@ client.on(Events.MessageCreate, async (message) => {
               vouchExpiresAt: null
             }
           });
+          untrackTicketChannel(vouchTicket.channelId);
 
           // Notify ticket channel + delete it
-          const ticketChannel = await client.channels.fetch(ticket.channelId).catch(() => null) as TextChannel | null;
+          const ticketChannel = await client.channels.fetch(vouchTicket.channelId).catch(() => null) as TextChannel | null;
           if (ticketChannel) {
             const closeEmbed = new EmbedBuilder()
               .setTitle('✅ Vouch Auto-Verified')
@@ -1751,7 +1775,7 @@ client.on(Events.MessageCreate, async (message) => {
             await logAction(
               message.guild,
               '🤖 Vouch Auto-Closed',
-              `Bot auto-closed session for <@${ticket.userId}> after vouch (ping + screenshot) in <#${message.channelId}>.\n\n**Game:** ${ticket.game.name}\n**Cooldown:** \`${cooldownHours}h\`\n**Token Deducted:** \`YES\``,
+              `Bot auto-closed session for <@${vouchTicket.userId}> after vouch (ping + screenshot) in <#${message.channelId}>.\n\n**Game:** ${vouchTicket.game.name}\n**Cooldown:** \`${cooldownHours}h\`\n**Token Deducted:** \`YES\``,
               0x57F287
             );
           }
@@ -1810,6 +1834,7 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
         await prisma.cooldown.upsert({ where: { userId_guildId: { userId: ticket.userId, guildId: cdGuildId } }, update: { until }, create: { userId: ticket.userId, guildId: cdGuildId, until } });
 
         await prisma.ticket.update({ where: { id: ticket.id }, data: { status: 'CLOSED', closedAt: new Date(), vouchExpiresAt: null } });
+        untrackTicketChannel(ticket.channelId);
 
         const channel = await client.channels.fetch(ticket.channelId).catch(() => null) as TextChannel;
         if (channel) {
@@ -1858,10 +1883,11 @@ async function checkActiveMaintenance() {
 
 
 // --- Background Cycles ---
-setInterval(() => updateTicketWaitTimes(client), 60 * 1000); // Live Wait Updates (Every 1m)
+setInterval(() => updateTicketWaitTimes(client), 2 * 60 * 1000); // Live wait updates (every 2m)
 setInterval(() => checkWeeklyStaffStats(client), 15 * 60 * 1000); // Weekly Check (Every 15m for precision)
 setInterval(() => checkDutyStatusReset(), 30 * 60 * 1000); // Duty Reset (Every 30m)
 setInterval(() => checkStaleTickets(client), 10 * 60 * 1000); // Stale Tickets (Every 10m)
+setInterval(() => syncOwnerStockForNewUtcDay(), 15 * 60 * 1000); // UTC daily account quota reset
 setInterval(() => cleanupExpiredCooldowns(), 6 * 60 * 60 * 1000); // Bug #15: Cooldown Cleanup (Every 6h)
 // Token downloads have a 30-minute TTL; sweep every 5 minutes to delete
 // the stored zip file + DB row once the link expires.

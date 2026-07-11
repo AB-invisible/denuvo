@@ -14,6 +14,11 @@ import { getPanelAssetUrl, panelImageAttachmentPath } from './downloadHost';
 import prisma from '../lib/prisma';
 
 const PANEL_EDIT_DELAY_MS = 500;
+const PANEL_REFRESH_DEBOUNCE_MS = 2500;
+
+let panelRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+let panelRefreshInFlight = false;
+let panelRefreshQueued = false;
 
 function isStaleDiscordResource(err: unknown): boolean {
   const e = err as { code?: number; status?: number };
@@ -149,7 +154,7 @@ export async function sendMessageWithRetry(
 /**
  * Refreshes all active game selection panels in the guild.
  */
-export async function refreshAllPanels() {
+async function refreshAllPanelsNow() {
   try {
     const panels = await prisma.panel.findMany();
 
@@ -211,6 +216,36 @@ export async function refreshAllPanels() {
   } catch (err) {
     console.error('Error refreshing panels:', err);
   }
+}
+
+/** Coalesce burst refresh calls (ticket closes, stock changes) into one panel rebuild. */
+export function refreshAllPanels(delayMs = PANEL_REFRESH_DEBOUNCE_MS): void {
+  if (panelRefreshTimer) clearTimeout(panelRefreshTimer);
+  panelRefreshTimer = setTimeout(async () => {
+    panelRefreshTimer = null;
+    if (panelRefreshInFlight) {
+      panelRefreshQueued = true;
+      return;
+    }
+    panelRefreshInFlight = true;
+    try {
+      await refreshAllPanelsNow();
+    } finally {
+      panelRefreshInFlight = false;
+      if (panelRefreshQueued) {
+        panelRefreshQueued = false;
+        refreshAllPanels(500);
+      }
+    }
+  }, delayMs);
+}
+
+export async function refreshAllPanelsImmediate(): Promise<void> {
+  if (panelRefreshTimer) {
+    clearTimeout(panelRefreshTimer);
+    panelRefreshTimer = null;
+  }
+  await refreshAllPanelsNow();
 }
 
 export async function postMainPanel(channel: TextBasedChannel) {

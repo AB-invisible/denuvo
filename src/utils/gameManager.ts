@@ -5,6 +5,12 @@ import { notifySubscribers } from './subscriptionManager';
 import { notifyWaitlist } from './waitlistManager';
 import { getAllowedGuildIds } from './tenant';
 import { CONFIG } from '../config';
+import {
+  usesAccountSyncedStock,
+  syncStockForGame,
+  getDefaultStockForApp,
+  computeRemainingDailyTokens,
+} from './accountCapacity';
 
 export const REGEN_TIME = 24 * 60 * 60 * 1000; // 24 hours
 
@@ -13,8 +19,14 @@ export async function getOrCreateServerStock(gameId: number, guildId: string): P
     where: { gameId_guildId: { gameId, guildId } },
   });
   if (existing) return existing;
+
+  const game = await prisma.game.findUnique({ where: { id: gameId } });
+  const defaultStock = game?.appId
+    ? await getDefaultStockForApp(game.appId, guildId)
+    : CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
+
   return prisma.serverStock.create({
-    data: { gameId, guildId, stock: 5 },
+    data: { gameId, guildId, stock: defaultStock },
   });
 }
 
@@ -62,12 +74,16 @@ export async function processGuildRestocks(guildId: string): Promise<void> {
 }
 
 export async function initServerStocksForGame(gameId: number): Promise<void> {
+  const game = await prisma.game.findUnique({ where: { id: gameId } });
   const guildIds = await getAllowedGuildIds();
   for (const guildId of guildIds) {
+    const stock = game?.appId
+      ? await getDefaultStockForApp(game.appId, guildId)
+      : CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
     await prisma.serverStock.upsert({
       where: { gameId_guildId: { gameId, guildId } },
       update: {},
-      create: { gameId, guildId, stock: 5 },
+      create: { gameId, guildId, stock },
     });
   }
 }
@@ -75,15 +91,6 @@ export async function initServerStocksForGame(gameId: number): Promise<void> {
 export async function getActiveGames() {
   return prisma.game.findMany({
     where: { disabled: false },
-    include: {
-      _count: {
-        select: {
-          tickets: {
-            where: { status: { in: ['OPEN', 'CLAIMED'] } },
-          },
-        },
-      },
-    },
     orderBy: { name: 'asc' },
   });
 }
@@ -163,6 +170,43 @@ export async function consumeStock(gameId: number, guildId: string) {
   const game = await prisma.game.findUnique({ where: { id: gameId } });
   if (!game) throw new Error('Game not found.');
 
+  // Owner server: stock tracks live account quota (usage tables). Resync
+  // from usage but never raise stock above a manual delivery deduction.
+  if (usesAccountSyncedStock(guildId) && game.appId) {
+    const synced = await computeRemainingDailyTokens(game.appId, guildId);
+    const ss = await prisma.serverStock.findUnique({
+      where: { gameId_guildId: { gameId, guildId } },
+    });
+    const newStock = Math.min(synced, ss?.stock ?? synced);
+
+    await prisma.serverStock.upsert({
+      where: { gameId_guildId: { gameId, guildId } },
+      update: {
+        stock: newStock,
+        lastDepletedAt: newStock === 0 ? new Date() : null,
+      },
+      create: {
+        gameId,
+        guildId,
+        stock: newStock,
+        lastDepletedAt: newStock === 0 ? new Date() : null,
+      },
+    });
+
+    if (newStock === 0) {
+      await logGlobal('🚨 Game Depleted', `Stock for **${game.name}** has reached zero — all account quotas used for today.`, 0xED4245);
+    } else if (newStock === 1) {
+      await logGlobal('⚠️ Last Token Alert', `Only **1 token** remains for **${game.name}**.`, 0xFEE75C);
+    } else if (newStock > 0) {
+      const thresholdSetting = await prisma.metadata.findUnique({ where: { key: 'lowStockThreshold' } });
+      const threshold = thresholdSetting ? parseInt(thresholdSetting.value) : 3;
+      if (newStock <= threshold) {
+        await logGlobal('⚠️ Low Stock Warning', `**${game.name}** is running low — only **${newStock}** token(s) remaining today.`, 0xFEE75C);
+      }
+    }
+    return { ...game, stock: newStock };
+  }
+
   await processGuildRestocks(guildId);
   const restockAt = new Date(Date.now() + REGEN_TIME);
 
@@ -211,6 +255,24 @@ export async function consumeStock(gameId: number, guildId: string) {
   }
 
   return { ...game, stock: updatedStock.stock };
+}
+
+/** Staff manually delivered a zip without autogen — decrement panel stock by 1. */
+export async function manualConsumeStock(gameId: number, guildId: string) {
+  const game = await prisma.game.findUnique({ where: { id: gameId } });
+  if (!game) throw new Error('Game not found.');
+
+  if (usesAccountSyncedStock(guildId)) {
+    const ss = await getOrCreateServerStock(gameId, guildId);
+    const newStock = Math.max(0, ss.stock - 1);
+    await prisma.serverStock.update({
+      where: { gameId_guildId: { gameId, guildId } },
+      data: { stock: newStock, lastDepletedAt: newStock === 0 ? new Date() : null },
+    });
+    return { ...game, stock: newStock };
+  }
+
+  return consumeStock(gameId, guildId);
 }
 
 export async function purgeGameCascade(gameId: number) {
