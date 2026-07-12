@@ -2529,7 +2529,15 @@ def _kill_game_processes(game_dir: Path, target_dir: Path, launched: Path | None
             continue
     for name in names:
         try:
-            subprocess.run(["taskkill", "/F", "/IM", name], capture_output=True, timeout=15)
+            # _NO_WINDOW (CREATE_NO_WINDOW) so taskkill doesn't flash a console
+            # window for every exe — the installer is --noconsole, so each
+            # console child would otherwise pop its own window.
+            subprocess.run(
+                ["taskkill", "/F", "/IM", name],
+                capture_output=True,
+                timeout=15,
+                creationflags=_NO_WINDOW,
+            )
         except Exception:
             pass
 
