@@ -16,7 +16,13 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from ea_auth import bootstrap_session, ensure_default_account_configured, import_remid_session, resolve_config
+from ea_auth import (
+    bootstrap_session,
+    ensure_default_account_configured,
+    import_remid_session,
+    resolve_config,
+    validate_stored_session,
+)
 from ea_login import EA_LOGIN_BUILD, EaLoginError, submit_verification_code
 from ea_minter import EaConfig, EaMintError, mint_ticket
 from ea_pending import has_pending, load_pending, masked_email
@@ -56,6 +62,7 @@ class VerifyCodeRequest(BaseModel):
 class SessionImportRequest(BaseModel):
     remid: str = Field(..., min_length=8)
     email: Optional[str] = None
+    cookies: Optional[dict[str, str]] = None
 
 
 class ErrorResponse(BaseModel):
@@ -108,11 +115,13 @@ def health() -> dict:
     has_env_creds = bool(env("EA_EMAIL") and env("EA_PASSWORD"))
     has_manual = bool(env("EA_LOGIN_REMID") and env("EA_LOGIN_SIGNATURE") and env("EA_MACHINE_HASH"))
     ready = stored.is_complete() or has_env_creds or has_manual
+    session_valid = validate_stored_session(stored) if stored.is_complete() else False
     return {
         "ok": True,
         "tool": True,
         "mode": "python",
         "configured": ready,
+        "session_valid": session_valid,
         "has_remind": bool(stored.remid or env("EA_LOGIN_REMID")),
         "has_signature": bool(stored.login_signature or env("EA_LOGIN_SIGNATURE")),
         "has_machine_hash": bool(stored.machine_hash or env("EA_MACHINE_HASH")),
@@ -157,15 +166,17 @@ def mint_token(body: TokenRequest, x_api_key: Optional[str] = Header(default=Non
             token = mint_ticket(body.ticket, body.contentId, body.engine, cfg)
             return TokenResponse(token=token)
         except EaMintError as e:
-            # Stale remid on volume — force re-login when creds are available.
-            if e.code == "AuthError" and (body.email and body.password):
-                try:
-                    bootstrap_session(body.email.strip(), body.password, force=True)
-                    cfg = build_config(body)
-                    token = mint_ticket(body.ticket, body.contentId, body.engine, cfg)
-                    return TokenResponse(token=token)
-                except EaMintError as e2:
-                    e = e2
+            # Never force Railway password/OTP bootstrap — it fails captcha and can
+            # wipe a valid imported session. Session keeper refreshes remid locally.
+            if e.code == "AuthError":
+                return _mint_error_response(
+                    EaMintError(
+                        "AuthError",
+                        "EA session expired — auto-refresh should fix this within 48h, "
+                        "or run: python ea-service/import_browser_session.py",
+                        logs=e.logs or "",
+                    )
+                )
             return _mint_error_response(e)
 
 
@@ -213,7 +224,11 @@ def ea_session_import(body: SessionImportRequest, x_api_key: Optional[str] = Hea
     require_api_key(x_api_key)
     with RUN_LOCK:
         try:
-            sess = import_remid_session(body.remid, email=body.email or env("EA_EMAIL"))
+            sess = import_remid_session(
+                body.remid,
+                email=body.email or env("EA_EMAIL"),
+                extra_cookies=body.cookies,
+            )
             return {"ok": True, "status": "imported", "email": sess.email or body.email}
         except EaMintError as e:
             return _mint_error_response(e)

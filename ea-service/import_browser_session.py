@@ -1,19 +1,13 @@
 #!/usr/bin/env python3
 """
-One-shot: open EA login in a real browser, grab remid from any .ea.com origin,
-validate + save it on ea-service (Railway volume).
+Grab a JUNO-compatible remid from a real browser and upload to ea-service.
 
-Run locally (needs your machine's browser — Railway IPs can't do this):
+The remid from www.ea.com alone can expire quickly or fail minting — this opens
+the same JUNO_PC_CLIENT auth URL the token minter uses, so the cookie works.
 
   pip install playwright requests
   playwright install chromium
-
-  set EA_SERVICE_URL=https://ea-service-production.up.railway.app
-  set EA_SERVICE_KEY=...
-  set EA_EMAIL=pokemgo300@gmail.com
   python import_browser_session.py
-
-Optional: set EA_PASSWORD to auto-fill (you may still need to solve captcha/2FA).
 """
 
 from __future__ import annotations
@@ -22,22 +16,33 @@ import json
 import os
 import sys
 import time
-from urllib.parse import urlparse
 
 import requests
 
-LOGIN_URLS = (
-    "https://www.ea.com/login",
-    "https://accounts.ea.com/connect/auth?client_id=ORIGIN_SPA_ID&response_type=code"
-    "&redirect_uri=https://www.ea.com/login/check&locale=en_US&display=originX/login",
-    "https://signin.ea.com/p/juno/login",
-)
-
+TRUST_NAMES = frozenset({"remid", "sid", "_nx_mpcid", "osc"})
 EA_ORIGINS = ("https://www.ea.com", "https://accounts.ea.com", "https://signin.ea.com")
+PROFILE_DIR = os.path.join(os.path.expanduser("~"), "AppData", "Local", "GameGen", "ea-browser-profile")
 
 
 def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
+
+
+def _juno_login_url(email: str, password: str) -> str:
+    from ea_pc_sign import generate_pc_sign
+
+    seed = f"{email.strip().lower()}|{password}"
+    pc_sign = generate_pc_sign(seed, "v2")
+    return (
+        "https://accounts.ea.com/connect/auth"
+        f"?client_id=JUNO_PC_CLIENT"
+        f"&response_type=code%20id_token"
+        f"&redirect_uri=qrc%3A%2F%2F%2Fhtml%2Flogin_successful.html"
+        f"&display=junoClient%2Flogin"
+        f"&locale=en_US"
+        f"&pc_sign={requests.utils.quote(pc_sign, safe='')}"
+        f"&sbiod_enabled=true"
+    )
 
 
 def _find_remid(cookies: list[dict]) -> str:
@@ -47,31 +52,32 @@ def _find_remid(cookies: list[dict]) -> str:
     return ""
 
 
-def _collect_remid(context) -> str:
+def _collect_trust(context) -> dict[str, str]:
+    out: dict[str, str] = {}
     for origin in EA_ORIGINS:
         try:
-            jar = context.cookies(origin)
-            remid = _find_remid(jar)
-            if remid:
-                print(f"[import] found remid on {origin}", flush=True)
-                return remid
+            for c in context.cookies(origin):
+                name = c.get("name", "")
+                val = c.get("value", "")
+                if name in TRUST_NAMES and val:
+                    out[name] = str(val)
         except Exception:
             pass
-    # Fallback: all cookies in context
     try:
-        remid = _find_remid(context.cookies())
-        if remid:
-            print("[import] found remid in browser context", flush=True)
-            return remid
+        for c in context.cookies():
+            name = c.get("name", "")
+            val = c.get("value", "")
+            if name in TRUST_NAMES and val:
+                out[name] = str(val)
     except Exception:
         pass
-    return ""
+    return out
 
 
 def _try_autofill(page, email: str, password: str) -> None:
     if not email:
         return
-    for sel in ('input[type="email"]', 'input[name="email"]', '#email', 'input[id*="email"]'):
+    for sel in ('input[type="email"]', 'input[name="email"]', '#email'):
         try:
             loc = page.locator(sel).first
             if loc.count() and loc.is_visible(timeout=2000):
@@ -88,7 +94,7 @@ def _try_autofill(page, email: str, password: str) -> None:
                     break
             except Exception:
                 continue
-        for sel in ('button[type="submit"]', 'input[type="submit"]', 'button:has-text("Sign in")'):
+        for sel in ('button[type="submit"]', 'button:has-text("Sign in")', 'input[type="submit"]'):
             try:
                 loc = page.locator(sel).first
                 if loc.count() and loc.is_visible(timeout=2000):
@@ -98,69 +104,86 @@ def _try_autofill(page, email: str, password: str) -> None:
                 continue
 
 
-def grab_remid_interactive(timeout_sec: int = 180) -> str:
+def grab_session_interactive(timeout_sec: int = 180) -> tuple[str, dict[str, str]]:
     from playwright.sync_api import sync_playwright
 
     email = _env("EA_EMAIL")
     password = _env("EA_PASSWORD")
     headless = _env("EA_IMPORT_HEADLESS", "0").lower() in ("1", "true", "yes")
 
+    login_urls = []
+    if email and password:
+        login_urls.append(_juno_login_url(email, password))
+    login_urls.extend(
+        [
+            "https://www.ea.com/login",
+            "https://signin.ea.com/p/juno/login",
+        ]
+    )
+
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=headless, channel="chrome" if not headless else None)
-        context = browser.new_context(
+        os.makedirs(PROFILE_DIR, exist_ok=True)
+        headless = headless and os.path.isdir(PROFILE_DIR)  # first login must be visible
+        context = p.chromium.launch_persistent_context(
+            PROFILE_DIR,
+            headless=headless,
+            channel="chrome" if not headless else None,
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                 "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
             ),
             locale="en-US",
         )
-        page = context.new_page()
+        page = context.pages[0] if context.pages else context.new_page()
         loaded = False
-        for url in LOGIN_URLS:
+        for url in login_urls:
             try:
-                print(f"[import] trying {url}", flush=True)
-                page.goto(url, wait_until="domcontentloaded", timeout=45000)
+                print(f"[import] trying {url[:100]}...", flush=True)
+                page.goto(url, wait_until="domcontentloaded", timeout=60000)
                 loaded = True
                 break
             except Exception as e:
-                print(f"[import] {url} failed: {e}", flush=True)
+                print(f"[import] failed: {e}", flush=True)
         if not loaded:
-            browser.close()
-            raise RuntimeError("Could not load any EA login page — check network/adblock.")
+            context.close()
+            raise RuntimeError("Could not load any EA login page.")
 
         _try_autofill(page, email, password)
-        print(
-            "[import] Log in in the browser window if needed. "
-            f"Waiting up to {timeout_sec}s for remid cookie...",
-            flush=True,
-        )
+        if not headless:
+            print(f"[import] Log in if needed — waiting {timeout_sec}s for JUNO remid...", flush=True)
+        else:
+            print(f"[import] refreshing session from saved browser profile...", flush=True)
 
         deadline = time.time() + timeout_sec
-        remid = ""
+        trust: dict[str, str] = {}
         while time.time() < deadline:
-            remid = _collect_remid(context)
-            if remid:
+            trust = _collect_trust(context)
+            if trust.get("remid"):
                 break
+            if headless:
+                break  # profile empty/stale — need headed login once
             time.sleep(2)
 
-        browser.close()
+        context.close()
+        remid = trust.get("remid", "")
         if not remid:
             raise RuntimeError(
-                "No remid cookie found. Log in at www.ea.com/login, then re-run this script."
+                "No remid cookie — run once with EA_IMPORT_HEADLESS=0, log in in the "
+                f"browser window, then the scheduled keeper reuses profile: {PROFILE_DIR}"
             )
-        return remid
+        return remid, trust
 
 
-def upload_remid(remid: str) -> dict:
+def upload_session(remid: str, cookies: dict[str, str]) -> dict:
     base = _env("EA_SERVICE_URL", "https://ea-service-production.up.railway.app").rstrip("/")
     key = _env("EA_SERVICE_KEY")
     if not key:
-        raise RuntimeError("Set EA_SERVICE_KEY (same value as on Railway ea-service).")
+        raise RuntimeError("Set EA_SERVICE_KEY")
 
     r = requests.post(
         f"{base}/ea/session/import",
-        headers={"X-Api-Key": key, "Content-Type": "application/json", "Accept": "application/json"},
-        json={"remid": remid, "email": _env("EA_EMAIL") or None},
+        headers={"X-Api-Key": key, "Content-Type": "application/json"},
+        json={"remid": remid, "email": _env("EA_EMAIL") or None, "cookies": cookies},
         timeout=60,
     )
     try:
@@ -168,25 +191,26 @@ def upload_remid(remid: str) -> dict:
     except Exception:
         body = {"error": r.text[:500]}
     if r.status_code >= 400:
-        raise RuntimeError(f"ea-service rejected import ({r.status_code}): {body}")
+        raise RuntimeError(f"import failed ({r.status_code}): {body}")
     return body
 
 
 def main() -> int:
     remid = _env("EA_REMID")
+    trust: dict[str, str] = {}
     if not remid:
-        remid = grab_remid_interactive()
+        remid, trust = grab_session_interactive()
     else:
-        print("[import] using EA_REMID from environment", flush=True)
+        print("[import] using EA_REMID from env", flush=True)
+        trust = {"remid": remid}
 
-    print(f"[import] remid length={len(remid)}", flush=True)
-    result = upload_remid(remid)
+    print(f"[import] remid={len(remid)} chars, trust={[k for k in trust]}", flush=True)
+    result = upload_session(remid, trust)
     print(json.dumps(result, indent=2), flush=True)
 
-    # Verify health
     base = _env("EA_SERVICE_URL", "https://ea-service-production.up.railway.app").rstrip("/")
     h = requests.get(f"{base}/health", timeout=30).json()
-    print(f"[import] health: configured={h.get('configured')} has_remind={h.get('has_remind')} build={h.get('login_build')}", flush=True)
+    print(f"[import] health build={h.get('login_build')} has_remind={h.get('has_remind')}", flush=True)
     return 0
 
 

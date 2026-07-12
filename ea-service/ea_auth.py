@@ -29,12 +29,12 @@ def _cache_key(email: str) -> str:
 
 
 def session_from_stored(stored: EaSession) -> EaConfig:
-    sig = refresh_pc_sign(stored.login_signature, stored.login_sv or "v2")
     return EaConfig(
         remid=stored.remid,
-        login_signature=sig,
+        login_signature=stored.login_signature,
         login_sv=stored.login_sv or "v2",
         machine_hash=stored.machine_hash,
+        trust_cookies=dict(stored.trust_cookies or {}),
     )
 
 
@@ -153,9 +153,14 @@ def resolve_config(
     )
 
 
-def import_remid_session(remid: str, email: str = "", password: str = "") -> EaSession:
+def import_remid_session(
+    remid: str,
+    email: str = "",
+    password: str = "",
+    extra_cookies: Optional[dict[str, str]] = None,
+) -> EaSession:
     """
-    Import a remid cookie copied from a browser login (www.ea.com / accounts.ea.com).
+    Import remid (+ optional sid/osc trust cookies) from a browser JUNO login.
     Validates with the same OAuth+nonce flow used for token minting.
     """
     remid = remid.strip()
@@ -168,11 +173,15 @@ def import_remid_session(remid: str, email: str = "", password: str = "") -> EaS
     machine_hash = generate_machine_hash(seed)
     signature = generate_pc_sign(seed)
 
+    trust = {k: v.strip() for k, v in (extra_cookies or {}).items() if v and str(v).strip()}
+    trust["remid"] = remid
+
     cfg = EaConfig(
         remid=remid,
         login_signature=signature,
         login_sv="v2",
         machine_hash=machine_hash,
+        trust_cookies=trust,
     )
     http = requests.Session()
     try:
@@ -181,8 +190,8 @@ def import_remid_session(remid: str, email: str = "", password: str = "") -> EaS
         if e.code == "AuthError":
             raise EaMintError(
                 "AuthError",
-                "remid is expired or invalid — log in at https://www.ea.com/login, "
-                "then copy a fresh remid cookie (F12 → Application → Cookies).",
+                "remid is expired or not a JUNO session — log in via the JUNO link in "
+                "import_browser_session.py (or www.ea.com/login), then re-import.",
                 logs=e.logs or str(e),
             ) from e
         raise
@@ -193,7 +202,7 @@ def import_remid_session(remid: str, email: str = "", password: str = "") -> EaS
         login_signature=signature,
         login_sv="v2",
         machine_hash=machine_hash,
-        trust_cookies={"remid": remid},
+        trust_cookies=trust,
         updated_at=time.time(),
     )
     save_session(out)
@@ -202,13 +211,42 @@ def import_remid_session(remid: str, email: str = "", password: str = "") -> EaS
     return out
 
 
+def validate_stored_session(stored: Optional[EaSession] = None) -> bool:
+    """Return True if persisted remid still works for JUNO token minting."""
+    stored = stored or merge_env_session(load_session())
+    if not stored.is_complete():
+        return False
+    try:
+        from ea_minter import _http_session
+
+        login_automatic(session_from_stored(stored), _http_session())
+        return True
+    except EaMintError:
+        return False
+
+
 def ensure_default_account_configured() -> EaSession:
-    """Called on startup / health to warm the default env account session."""
+    """
+    Startup hook: validate existing volume session — never overwrite a good
+    session with a failed Railway OTP/password bootstrap.
+    """
+    stored = merge_env_session(load_session())
+    if stored.is_complete():
+        if validate_stored_session(stored):
+            print("[ea-service] persisted EA session is valid", flush=True)
+        else:
+            print(
+                "[ea-service] persisted EA session is stale — "
+                "session keeper or import_browser_session.py will refresh it",
+                flush=True,
+            )
+        return stored
+
     email = os.environ.get("EA_EMAIL", "").strip()
     password = os.environ.get("EA_PASSWORD", "")
     if email and password:
-        return bootstrap_session(email, password)
-    stored = merge_env_session(load_session())
-    if stored.is_complete():
-        return stored
+        try:
+            return bootstrap_session(email, password)
+        except EaMintError as e:
+            print(f"[ea-service] auto-bootstrap skipped: {e}", flush=True)
     return stored
