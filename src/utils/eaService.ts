@@ -10,7 +10,7 @@
 import prisma from '../lib/prisma';
 import { CONFIG } from '../config';
 import { utcDateKey } from './steampassPool';
-import { syncEaGamesStock, incrementEnvPlatformUsage, markEnvPlatformExhaustedToday, decrementSharedPlatformServerStock } from './accountCapacity';
+import { syncEaGamesStock, incrementEnvPlatformUsage, markEnvPlatformExhaustedToday } from './accountCapacity';
 
 export interface EaMintSuccess {
   ok: true;
@@ -143,7 +143,6 @@ async function recordEaUsage(accountId: number): Promise<void> {
       where: { id: accountId },
       data: { lastUsedAt: new Date(), failureCount: 0 },
     });
-    await decrementSharedPlatformServerStock('ea', CONFIG.OWNER_GUILD_ID).catch(() => {});
   } catch {
     /* non-fatal */
   }
@@ -192,7 +191,6 @@ async function recordEaMintUsage(accountId: number | null): Promise<void> {
     await syncEaGamesStock(CONFIG.OWNER_GUILD_ID).catch(() => {});
   } catch {
     await incrementEnvPlatformUsage('ea');
-    await decrementSharedPlatformServerStock('ea', CONFIG.OWNER_GUILD_ID).catch(() => {});
   }
 }
 

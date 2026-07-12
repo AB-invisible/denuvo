@@ -10,8 +10,6 @@ import {
   syncStockForGame,
   computeRemainingDailyTokens,
   resolveOwnerManualStock,
-  applySharedPlatformStockTarget,
-  getSharedPlatformStockFromServer,
   getDefaultStockForApp,
 } from './accountCapacity';
 import { isUbisoftGame } from './ubisoftCatalog';
@@ -156,16 +154,10 @@ export async function updateStock(gameName: string, sub: 'add' | 'remove' | 'set
 
   const lastDepletedAt = newStock === 0 ? new Date() : null;
 
-  if (isUbisoftGame(game)) {
-    await applySharedPlatformStockTarget('ubisoft', guildId, newStock, lastDepletedAt);
-  } else if (isEaGame(game)) {
-    await applySharedPlatformStockTarget('ea', guildId, newStock, lastDepletedAt);
-  } else {
-    await prisma.serverStock.update({
-      where: { gameId_guildId: { gameId: game.id, guildId } },
-      data: { stock: newStock, lastDepletedAt },
-    });
-  }
+  await prisma.serverStock.update({
+    where: { gameId_guildId: { gameId: game.id, guildId } },
+    data: { stock: newStock, lastDepletedAt },
+  });
 
   await notifyStockRestocked(game.id, game.name, previousStock, newStock);
 
@@ -195,17 +187,11 @@ export async function updateStockForAllGames(amount: number, guildId: string = '
       stock = await resolveOwnerManualStock(game.id, guildId, amount);
     }
     const depletedAtRow = stock === 0 ? new Date() : null;
-    if (isUbisoftGame(game)) {
-      await applySharedPlatformStockTarget('ubisoft', guildId, stock, depletedAtRow);
-    } else if (isEaGame(game)) {
-      await applySharedPlatformStockTarget('ea', guildId, stock, depletedAtRow);
-    } else {
-      await prisma.serverStock.upsert({
-        where: { gameId_guildId: { gameId: game.id, guildId } },
-        update: { stock, lastDepletedAt: depletedAtRow },
-        create: { gameId: game.id, guildId, stock, lastDepletedAt: depletedAtRow },
-      });
-    }
+    await prisma.serverStock.upsert({
+      where: { gameId_guildId: { gameId: game.id, guildId } },
+      update: { stock, lastDepletedAt: depletedAtRow },
+      create: { gameId: game.id, guildId, stock, lastDepletedAt: depletedAtRow },
+    });
 
     if (stock > previousStock) {
       await notifyStockRestocked(game.id, game.name, previousStock, stock);
@@ -232,13 +218,34 @@ export async function consumeStock(gameId: number, guildId: string, _fromQueue =
 
   // Owner server: stock tracks live account quota (usage tables).
   if (usesAccountSyncedStock(guildId)) {
-    if (isUbisoftGame(game)) {
-      const stock = await getSharedPlatformStockFromServer('ubisoft', guildId);
-      return { ...game, stock };
-    }
-    if (isEaGame(game)) {
-      const stock = await getSharedPlatformStockFromServer('ea', guildId);
-      return { ...game, stock };
+    if (isUbisoftGame(game) || isEaGame(game)) {
+      const ss = await prisma.serverStock.findUnique({
+        where: { gameId_guildId: { gameId, guildId } },
+      });
+      const current = ss?.stock ?? CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
+      const newStock = Math.max(0, current - 1);
+
+      await prisma.serverStock.upsert({
+        where: { gameId_guildId: { gameId, guildId } },
+        update: {
+          stock: newStock,
+          lastDepletedAt: newStock === 0 ? new Date() : null,
+        },
+        create: {
+          gameId,
+          guildId,
+          stock: newStock,
+          lastDepletedAt: newStock === 0 ? new Date() : null,
+        },
+      });
+
+      if (newStock === 0) {
+        await logGlobal('🚨 Game Depleted', `Stock for **${game.name}** has reached zero.`, 0xED4245);
+      } else if (newStock === 1) {
+        await logGlobal('⚠️ Last Token Alert', `Only **1 token** remains for **${game.name}**.`, 0xFEE75C);
+      }
+
+      return { ...game, stock: newStock };
     }
     if (game.appId) {
       const synced = await computeRemainingDailyTokens(game.appId, guildId);

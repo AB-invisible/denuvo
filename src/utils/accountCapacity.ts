@@ -547,16 +547,19 @@ export async function syncStockForGame(
   if (!game) return -1;
   if (!game.appId && !isUbisoftGame(game) && !isEaGame(game)) return -1;
 
-  let remaining: number;
-  if (isUbisoftGame(game)) {
-    remaining = await computeUbisoftRemaining(guildId);
-  } else if (isEaGame(game)) {
-    remaining = await computeEaRemaining(guildId);
-  } else if (!game.appId) {
-    return -1;
-  } else {
-    remaining = await computeRemainingDailyTokens(game.appId, guildId);
+  // Ubisoft/EA stock is per-game (staff /settokens) — never overwrite from account pool.
+  if (isUbisoftGame(game) || isEaGame(game)) {
+    const existing = await prisma.serverStock.findUnique({
+      where: { gameId_guildId: { gameId, guildId } },
+    });
+    return existing?.stock ?? CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
   }
+
+  let remaining: number;
+  if (!game.appId) {
+    return -1;
+  }
+  remaining = await computeRemainingDailyTokens(game.appId, guildId);
 
   const existing = await prisma.serverStock.findUnique({
     where: { gameId_guildId: { gameId, guildId } },
@@ -570,8 +573,7 @@ export async function syncStockForGame(
     ? remaining
     : Math.min(remaining, current);
 
-  const platformManaged = isUbisoftGame(game) || isEaGame(game);
-  if (opts.preserveManualFloor && current > newStock && !platformManaged) {
+  if (opts.preserveManualFloor && current > newStock) {
     newStock = current;
   }
 
@@ -626,25 +628,16 @@ export async function syncAllOwnerGameStock(
   return synced;
 }
 
-/** Push live Ubisoft pool quota into ServerStock for every Ubisoft game. */
+/** Reconcile orphan env usage only — per-game ServerStock is not bulk-synced. */
 export async function syncUbisoftGamesStock(guildId: string = CONFIG.OWNER_GUILD_ID): Promise<void> {
   if (!usesAccountSyncedStock(guildId)) return;
   await reconcileOrphanEnvUsage('ubisoft');
-  const remaining = await computeUbisoftRemaining(guildId);
-  await setSharedPlatformServerStock(
-    'ubisoft',
-    guildId,
-    remaining,
-    remaining === 0 ? new Date() : null,
-  );
 }
 
-/** Push live EA pool quota into ServerStock for every EA game. */
+/** Reconcile orphan env usage only — per-game ServerStock is not bulk-synced. */
 export async function syncEaGamesStock(guildId: string = CONFIG.OWNER_GUILD_ID): Promise<void> {
   if (!usesAccountSyncedStock(guildId)) return;
   await reconcileOrphanEnvUsage('ea');
-  const remaining = await computeEaRemaining(guildId);
-  await setSharedPlatformServerStock('ea', guildId, remaining, remaining === 0 ? new Date() : null);
 }
 
 /** Recompute stock for all owner games before panel render (live quotas). */
