@@ -370,6 +370,133 @@ export async function countSharedPoolTickets(
   return prisma.ticket.count({ where: where as any });
 }
 
+/** Read shared Ubisoft/EA pool stock from ServerStock (same value on every title in the pool). */
+export async function getSharedPlatformStockFromServer(
+  platform: 'ubisoft' | 'ea',
+  guildId: string = CONFIG.OWNER_GUILD_ID,
+): Promise<number> {
+  const games = await prisma.game.findMany({
+    where: { disabled: false },
+    select: { id: true, appId: true, ubisoftAppId: true, eaContentId: true },
+  });
+  let best = 0;
+  for (const g of games) {
+    if (platform === 'ubisoft' ? !isUbisoftGame(g) : !isEaGame(g)) continue;
+    const ss = await prisma.serverStock.findUnique({
+      where: { gameId_guildId: { gameId: g.id, guildId } },
+    });
+    if (ss && ss.stock > best) best = ss.stock;
+  }
+  return best;
+}
+
+/** Write the same pool stock to every Ubisoft or EA game row (shared daily pool). */
+export async function setSharedPlatformServerStock(
+  platform: 'ubisoft' | 'ea',
+  guildId: string,
+  stock: number,
+  lastDepletedAt: Date | null = null,
+): Promise<void> {
+  const games = await prisma.game.findMany({ where: { disabled: false } });
+  for (const g of games) {
+    if (platform === 'ubisoft' ? !isUbisoftGame(g) : !isEaGame(g)) continue;
+    await prisma.serverStock.upsert({
+      where: { gameId_guildId: { gameId: g.id, guildId } },
+      update: { stock, lastDepletedAt },
+      create: { gameId: g.id, guildId, stock, lastDepletedAt },
+    });
+  }
+}
+
+/**
+ * Align today's usage counters so compute*Remaining() matches the target pool
+ * stock. Required when staff /settokens — otherwise the next sync overwrites
+ * ServerStock back to the old usage-derived value (e.g. set 5, panel shows 1).
+ */
+export async function alignPlatformUsageToStock(
+  platform: 'ubisoft' | 'ea',
+  guildId: string,
+  stock: number,
+): Promise<void> {
+  const accountTable = platform === 'ubisoft' ? 'ubisoftAccount' : 'eaAccount';
+  const usageTable = platform === 'ubisoft' ? 'ubisoftUsage' : 'eaUsage';
+  const cap = CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
+  const today = utcDateKey();
+  const envConfigured = platform === 'ubisoft' ? ubisoftEnvConfigured() : eaEnvConfigured();
+  const envKey = envUsageKey(platform, today);
+
+  const where: Record<string, unknown> = { active: true };
+  if (guildId) {
+    where.OR = [{ guildId: '' }, { guildId }];
+  } else {
+    where.guildId = '';
+  }
+
+  let accounts: { id: number }[] = [];
+  try {
+    accounts = await (prisma as any)[accountTable].findMany({
+      where,
+      orderBy: [{ priority: 'asc' }, { id: 'asc' }],
+      select: { id: true },
+    });
+  } catch {
+    accounts = [];
+  }
+
+  const totalCapacity = accounts.length > 0 ? accounts.length * cap : (envConfigured ? cap : 0);
+  const clampedStock = totalCapacity > 0 ? Math.max(0, Math.min(stock, totalCapacity)) : Math.max(0, stock);
+  let usedTotal = Math.max(0, totalCapacity - clampedStock);
+
+  if (accounts.length === 0) {
+    if (envConfigured) {
+      if (usedTotal <= 0) {
+        await prisma.metadata.delete({ where: { key: envKey } }).catch(() => {});
+      } else {
+        await prisma.metadata.upsert({
+          where: { key: envKey },
+          update: { value: String(Math.min(cap, usedTotal)) },
+          create: { key: envKey, value: String(Math.min(cap, usedTotal)) },
+        });
+      }
+    }
+    return;
+  }
+
+  await prisma.metadata.delete({ where: { key: envKey } }).catch(() => {});
+
+  for (const acct of accounts) {
+    const usedForAcct = Math.min(cap, usedTotal);
+    usedTotal -= usedForAcct;
+    await (prisma as any)[usageTable].upsert({
+      where: { accountId_usageDate: { accountId: acct.id, usageDate: today } },
+      update: { count: usedForAcct },
+      create: { accountId: acct.id, usageDate: today, count: usedForAcct },
+    });
+  }
+}
+
+/** Staff restock: set shared pool stock and keep usage tables in sync. */
+export async function applySharedPlatformStockTarget(
+  platform: 'ubisoft' | 'ea',
+  guildId: string,
+  stock: number,
+  lastDepletedAt: Date | null = null,
+): Promise<void> {
+  await alignPlatformUsageToStock(platform, guildId, stock);
+  await setSharedPlatformServerStock(platform, guildId, stock, lastDepletedAt);
+}
+
+/** Decrement shared pool stock by one after a mint or manual deduct. */
+export async function decrementSharedPlatformServerStock(
+  platform: 'ubisoft' | 'ea',
+  guildId: string = CONFIG.OWNER_GUILD_ID,
+): Promise<number> {
+  const current = await getSharedPlatformStockFromServer(platform, guildId);
+  const next = Math.max(0, current - 1);
+  await setSharedPlatformServerStock(platform, guildId, next, next === 0 ? new Date() : null);
+  return next;
+}
+
 /** Default stock when seeding ServerStock for a game on the owner server. */
 export async function getDefaultStockForApp(appId: number, guildId: string): Promise<number> {
   if (!usesAccountSyncedStock(guildId)) {
@@ -400,12 +527,8 @@ export async function resolveOwnerManualStock(
   const game = await prisma.game.findUnique({ where: { id: gameId } });
   if (!game) return requestedAmount;
 
-  if (isUbisoftGame(game)) {
-    return Math.min(requestedAmount, await computeUbisoftRemaining(guildId));
-  }
-  if (isEaGame(game)) {
-    return Math.min(requestedAmount, await computeEaRemaining(guildId));
-  }
+  // Ubisoft/EA pool stock is staff-managed via /settokens (applySharedPlatformStockTarget).
+  if (isUbisoftGame(game) || isEaGame(game)) return requestedAmount;
   if (!game.appId) return requestedAmount;
 
   const remaining = await computeRemainingDailyTokens(game.appId, guildId);
@@ -497,6 +620,9 @@ export async function syncAllOwnerGameStock(
     synced++;
   }
 
+  await syncUbisoftGamesStock(guildId);
+  await syncEaGamesStock(guildId);
+
   return synced;
 }
 
@@ -505,15 +631,12 @@ export async function syncUbisoftGamesStock(guildId: string = CONFIG.OWNER_GUILD
   if (!usesAccountSyncedStock(guildId)) return;
   await reconcileOrphanEnvUsage('ubisoft');
   const remaining = await computeUbisoftRemaining(guildId);
-  const games = await prisma.game.findMany({ where: { disabled: false } });
-  for (const g of games) {
-    if (!isUbisoftGame(g)) continue;
-    await prisma.serverStock.upsert({
-      where: { gameId_guildId: { gameId: g.id, guildId } },
-      update: { stock: remaining, lastDepletedAt: remaining === 0 ? new Date() : null },
-      create: { gameId: g.id, guildId, stock: remaining, lastDepletedAt: remaining === 0 ? new Date() : null },
-    });
-  }
+  await setSharedPlatformServerStock(
+    'ubisoft',
+    guildId,
+    remaining,
+    remaining === 0 ? new Date() : null,
+  );
 }
 
 /** Push live EA pool quota into ServerStock for every EA game. */
@@ -521,15 +644,7 @@ export async function syncEaGamesStock(guildId: string = CONFIG.OWNER_GUILD_ID):
   if (!usesAccountSyncedStock(guildId)) return;
   await reconcileOrphanEnvUsage('ea');
   const remaining = await computeEaRemaining(guildId);
-  const games = await prisma.game.findMany({ where: { disabled: false } });
-  for (const g of games) {
-    if (!isEaGame(g)) continue;
-    await prisma.serverStock.upsert({
-      where: { gameId_guildId: { gameId: g.id, guildId } },
-      update: { stock: remaining, lastDepletedAt: remaining === 0 ? new Date() : null },
-      create: { gameId: g.id, guildId, stock: remaining, lastDepletedAt: remaining === 0 ? new Date() : null },
-    });
-  }
+  await setSharedPlatformServerStock('ea', guildId, remaining, remaining === 0 ? new Date() : null);
 }
 
 /** Recompute stock for all owner games before panel render (live quotas). */
@@ -540,11 +655,14 @@ export async function syncAllOwnerGameStockForPanel(
 
   const games = await prisma.game.findMany({
     where: { disabled: false },
-    select: { id: true },
+    select: { id: true, appId: true, ubisoftAppId: true, eaContentId: true },
   });
 
   let synced = 0;
   for (const game of games) {
+    // Ubisoft/EA use ServerStock as panel source — updated on mint/deduct/settokens,
+    // not overwritten every panel refresh (that broke /settokens).
+    if (isUbisoftGame(game) || isEaGame(game)) continue;
     await syncStockForGame(game.id, guildId);
     synced++;
   }

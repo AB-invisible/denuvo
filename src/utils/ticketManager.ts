@@ -28,7 +28,7 @@ import { isStaff, getTier, getTierForGuild } from './permissions';
 import { canBypassQueue, checkQueueAccess, removeFromQueue } from './queueManager';
 import { computeCooldownHours } from './cooldown';
 import { resolveServerConfig } from './tenant';
-import { usesAccountSyncedStock, syncStockForGame, computeUbisoftRemaining, computeEaRemaining, countSharedPoolTickets, syncUbisoftGamesStock, syncEaGamesStock } from './accountCapacity';
+import { usesAccountSyncedStock, syncStockForGame, countSharedPoolTickets, getSharedPlatformStockFromServer } from './accountCapacity';
 import { isUbisoftGame } from './ubisoftCatalog';
 import { isEaGame } from './eaCatalog';
 import { consumeUbisoftPoolSlot } from './ubisoftService';
@@ -167,7 +167,7 @@ export async function createTicket(interaction: StringSelectMenuInteraction, sel
 
     const gamePreview = gameRecord;
     if (gamePreview && usesAccountSyncedStock(ticketGuildId)) {
-      if (isUbisoftGame(gamePreview) || isEaGame(gamePreview) || gamePreview.appId) {
+      if (!isUbisoftGame(gamePreview) && !isEaGame(gamePreview) && gamePreview.appId) {
         await syncStockForGame(gamePreview.id, ticketGuildId);
       }
     }
@@ -226,10 +226,10 @@ export async function createTicket(interaction: StringSelectMenuInteraction, sel
       let currentStock: number;
       let serverReservations: number;
       if (usesAccountSyncedStock(ticketGuildId) && isUbi) {
-        currentStock = await computeUbisoftRemaining(ticketGuildId);
+        currentStock = await getSharedPlatformStockFromServer('ubisoft', ticketGuildId);
         serverReservations = await countSharedPoolTickets('ubisoft', ticketGuildId);
       } else if (usesAccountSyncedStock(ticketGuildId) && isEa) {
-        currentStock = await computeEaRemaining(ticketGuildId);
+        currentStock = await getSharedPlatformStockFromServer('ea', ticketGuildId);
         serverReservations = await countSharedPoolTickets('ea', ticketGuildId);
       } else {
         currentStock = serverStock?.stock ?? (authoritative ? 0 : 5);
@@ -579,28 +579,20 @@ async function applyStockDeduction(ticket: { gameId: number; game: { appId?: num
   if (isUbisoftGame(ticket.game)) {
     if (!ticketTokenAlreadyConsumed(ticket)) {
       await consumeUbisoftPoolSlot();
-    } else {
-      await syncUbisoftGamesStock(guildId);
     }
     return;
   }
   if (isEaGame(ticket.game)) {
     if (!ticketTokenAlreadyConsumed(ticket)) {
       await consumeEaPoolSlot();
-    } else {
-      await syncEaGamesStock(guildId);
     }
     return;
   }
   await consumeStock(ticket.gameId, guildId, !!ticket.fromQueue);
 }
 
-async function refreshPlatformStockAfterClose(ticket: { game: { appId?: number | null; ubisoftAppId?: number | null; eaContentId?: number | null } }, guildId: string): Promise<void> {
-  if (isUbisoftGame(ticket.game)) {
-    await syncUbisoftGamesStock(guildId);
-  } else if (isEaGame(ticket.game)) {
-    await syncEaGamesStock(guildId);
-  }
+async function refreshPlatformStockAfterClose(_ticket: { game: { appId?: number | null; ubisoftAppId?: number | null; eaContentId?: number | null } }, _guildId: string): Promise<void> {
+  /* Ubisoft/EA pool stock is updated on mint/deduct — no resync on close. */
 }
 
 export async function handleDeductionChoice(interaction: ButtonInteraction, choice: 'yes' | 'no') {

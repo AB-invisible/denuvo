@@ -145,18 +145,14 @@ export async function createMainPanel(guildId?: string) {
     serverReservedMap = await getServerReservedMap(guildId);
   }
 
-  // Per-server stock: read cached ServerStock (synced by scheduler / account link commands).
+  // Per-server stock: ServerStock is the panel source for every game (incl. Ubisoft/EA).
   let serverStockMap = new Map<number, { stock: number; lastDepletedAt: Date | null }>();
-  let ubisoftPoolRemaining = 0;
-  let eaPoolRemaining = 0;
   let ubisoftPoolReserved = 0;
   let eaPoolReserved = 0;
   if (guildId) {
     serverStockMap = await getServerStockMapForGuild(guildId);
     if (accountSynced) {
       const cap = await import('./accountCapacity');
-      ubisoftPoolRemaining = await cap.computeUbisoftRemaining(guildId);
-      eaPoolRemaining = await cap.computeEaRemaining(guildId);
       ubisoftPoolReserved = await cap.countSharedPoolTickets('ubisoft', guildId);
       eaPoolReserved = await cap.countSharedPoolTickets('ea', guildId);
     }
@@ -234,10 +230,10 @@ export async function createMainPanel(guildId?: string) {
           let gameStock: number;
           let reserved: number;
           if (accountSynced && isUbi) {
-            gameStock = ubisoftPoolRemaining;
+            gameStock = ss ? ss.stock : 0;
             reserved = ubisoftPoolReserved;
           } else if (accountSynced && isEa) {
-            gameStock = eaPoolRemaining;
+            gameStock = ss ? ss.stock : 0;
             reserved = eaPoolReserved;
           } else {
             gameStock = ss ? ss.stock : (authoritative ? 0 : 5);
