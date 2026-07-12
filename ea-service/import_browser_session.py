@@ -104,7 +104,30 @@ def _try_autofill(page, email: str, password: str) -> None:
                 continue
 
 
-def grab_session_interactive(timeout_sec: int = 180) -> tuple[str, dict[str, str]]:
+def validate_local(remid: str, trust: dict[str, str]) -> bool:
+    """Quick check: remid works for JUNO OAuth before uploading to Railway."""
+    try:
+        from ea_pc_sign import generate_machine_hash, generate_pc_sign
+        from ea_minter import EaConfig, _http_session, login_automatic
+
+        email = _env("EA_EMAIL")
+        password = _env("EA_PASSWORD")
+        seed = f"{email.strip().lower()}|{password}" if email and password else (email or "imported")
+        cfg = EaConfig(
+            remid=remid,
+            login_signature=generate_pc_sign(seed, "v2"),
+            login_sv="v2",
+            machine_hash=generate_machine_hash(seed),
+            trust_cookies=trust,
+        )
+        login_automatic(cfg, _http_session())
+        return True
+    except Exception as e:
+        print(f"[import] local validation failed: {e}", flush=True)
+        return False
+
+
+def grab_session_interactive(timeout_sec: int = 300) -> tuple[str, dict[str, str]]:
     from playwright.sync_api import sync_playwright
 
     email = _env("EA_EMAIL")
@@ -149,27 +172,30 @@ def grab_session_interactive(timeout_sec: int = 180) -> tuple[str, dict[str, str
             raise RuntimeError("Could not load any EA login page.")
 
         _try_autofill(page, email, password)
-        if not headless:
-            print(f"[import] Log in if needed — waiting {timeout_sec}s for JUNO remid...", flush=True)
-        else:
-            print(f"[import] refreshing session from saved browser profile...", flush=True)
+        print(
+            f"[import] If you see a login page, sign in now — waiting up to {timeout_sec}s "
+            f"for a fresh JUNO remid...",
+            flush=True,
+        )
 
         deadline = time.time() + timeout_sec
         trust: dict[str, str] = {}
+        remid = ""
         while time.time() < deadline:
             trust = _collect_trust(context)
-            if trust.get("remid"):
+            remid = trust.get("remid", "")
+            if remid and validate_local(remid, trust):
                 break
-            if headless:
-                break  # profile empty/stale — need headed login once
-            time.sleep(2)
+            if headless and remid:
+                break
+            time.sleep(3)
 
         context.close()
         remid = trust.get("remid", "")
-        if not remid:
+        if not remid or not validate_local(remid, trust):
             raise RuntimeError(
-                "No remid cookie — run once with EA_IMPORT_HEADLESS=0, log in in the "
-                f"browser window, then the scheduled keeper reuses profile: {PROFILE_DIR}"
+                "Could not get a working JUNO remid — log in when the browser opens, "
+                f"then re-run with EA_IMPORT_HEADLESS=0. Profile: {PROFILE_DIR}"
             )
         return remid, trust
 

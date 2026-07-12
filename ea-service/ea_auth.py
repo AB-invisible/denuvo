@@ -183,7 +183,9 @@ def import_remid_session(
         machine_hash=machine_hash,
         trust_cookies=trust,
     )
-    http = requests.Session()
+    from ea_minter import _http_session
+
+    http = _http_session()
     try:
         login_automatic(cfg, http)
     except EaMintError as e:

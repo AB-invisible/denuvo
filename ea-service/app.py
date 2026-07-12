@@ -10,6 +10,7 @@ from __future__ import annotations
 import hmac
 import os
 import threading
+import time
 from typing import Optional
 
 from fastapi import FastAPI, Header, HTTPException
@@ -30,6 +31,8 @@ from ea_session import load_session, merge_env_session
 
 app = FastAPI(title="EaTokenService", version="2.0.0")
 RUN_LOCK = threading.Lock()
+_SESSION_VALID_CACHE: dict[str, object] = {"ok": None, "at": 0.0}
+_SESSION_VALID_TTL = 300  # don't hammer EA OAuth on every /health
 
 
 def env(key: str, default: str = "") -> str:
@@ -115,7 +118,16 @@ def health() -> dict:
     has_env_creds = bool(env("EA_EMAIL") and env("EA_PASSWORD"))
     has_manual = bool(env("EA_LOGIN_REMID") and env("EA_LOGIN_SIGNATURE") and env("EA_MACHINE_HASH"))
     ready = stored.is_complete() or has_env_creds or has_manual
-    session_valid = validate_stored_session(stored) if stored.is_complete() else False
+    session_valid = False
+    if stored.is_complete():
+        now = time.time()
+        cached = _SESSION_VALID_CACHE.get("ok")
+        if cached is not None and now - float(_SESSION_VALID_CACHE.get("at", 0)) < _SESSION_VALID_TTL:
+            session_valid = bool(cached)
+        else:
+            session_valid = validate_stored_session(stored)
+            _SESSION_VALID_CACHE["ok"] = session_valid
+            _SESSION_VALID_CACHE["at"] = now
     return {
         "ok": True,
         "tool": True,
@@ -229,6 +241,8 @@ def ea_session_import(body: SessionImportRequest, x_api_key: Optional[str] = Hea
                 email=body.email or env("EA_EMAIL"),
                 extra_cookies=body.cookies,
             )
+            _SESSION_VALID_CACHE["ok"] = True
+            _SESSION_VALID_CACHE["at"] = time.time()
             return {"ok": True, "status": "imported", "email": sess.email or body.email}
         except EaMintError as e:
             return _mint_error_response(e)
