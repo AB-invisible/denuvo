@@ -4,6 +4,7 @@ import { execute as settokens } from './settokens';
 import { execute as removegame } from './removegame';
 import { execute as stock } from './stock';
 import { execute as cooldown } from './cooldown';
+import { execute as blacklist } from './blacklist';
 import { execute as mycooldown } from './mycooldown';
 import { execute as staffstats } from './staffstats';
 import { execute as onduty } from './onduty';
@@ -49,6 +50,7 @@ export const commandHandlers: Record<string, (interaction: any) => Promise<void>
   removegame,
   stock,
   cooldown,
+  blacklist,
   mycooldown,
   staffstats,
   onduty,

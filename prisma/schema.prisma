@@ -113,6 +113,20 @@ model Cooldown {
   @@index([until])
 }
 
+// Staff-managed permanent ban from opening Denuvo activation tickets.
+model DenuvoBlacklist {
+  id        Int      @id @default(autoincrement())
+  userId    String
+  guildId   String   @default("")
+  reason    String?
+  staffId   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, guildId])
+  @@index([guildId])
+}
+
 model Panel {
   id        Int      @id @default(autoincrement())
   channelId String

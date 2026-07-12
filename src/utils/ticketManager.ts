@@ -31,6 +31,7 @@ import { resolveServerConfig } from './tenant';
 import { usesAccountSyncedStock, syncStockForGame } from './accountCapacity';
 import { isUbisoftGame } from './ubisoftCatalog';
 import { isEaGame } from './eaCatalog';
+import { isUserBlacklisted, BLACKLIST_TICKET_MESSAGE } from './blacklistManager';
 
 // Note: The Maps below now only store active timers to handle timeouts.
 // All stateful metadata (retries, processing, vouches) is persisted in Prisma for durability across reboots.
@@ -93,6 +94,11 @@ export async function createTicket(interaction: StringSelectMenuInteraction, sel
     }
     gameName = gameRecord.name;
 
+    const ticketGuildId = interaction.guildId || '';
+    if (await isUserBlacklisted(interaction.user.id, ticketGuildId)) {
+      return interaction.editReply({ content: BLACKLIST_TICKET_MESSAGE });
+    }
+
     // ─── Closed-panel / maintenance guard ──────────────────────
     // /closepanel deletes the panel message + the panel DB record, but
     // Discord keeps serving the cached dropdown to clients for up to
@@ -153,7 +159,6 @@ export async function createTicket(interaction: StringSelectMenuInteraction, sel
     }
 
     // Process any pending auto-restocks for this server before checking stock
-    const ticketGuildId = interaction.guildId || '';
     await processGuildRestocks(ticketGuildId);
 
     const gamePreview = gameRecord;
@@ -321,7 +326,7 @@ export async function createTicket(interaction: StringSelectMenuInteraction, sel
         userId: interaction.user.id,
         gameId: game.id,
         status: 'OPEN',
-        guildId: interaction.guildId,
+        guildId: interaction.guildId || '',
         fromQueue,
       },
     });

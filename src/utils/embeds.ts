@@ -21,20 +21,11 @@ function truncateDiscordText(text: string, max: number): string {
   return chars.slice(0, max).join('');
 }
 
-/** Count OPEN/CLAIMED tickets per game for this panel's guild. */
+/** Count OPEN/CLAIMED tickets per game for this guild only. */
 async function getServerReservedMap(guildId: string): Promise<Map<number, number>> {
-  const statusFilter = { in: ['OPEN', 'CLAIMED'] };
-  const where = usesAccountSyncedStock(guildId)
-    ? {
-        status: statusFilter,
-        // Legacy owner tickets may have null/empty guildId.
-        OR: [{ guildId }, { guildId: '' }, { guildId: null }],
-      }
-    : { guildId, status: statusFilter };
-
   const serverCounts = await prisma.ticket.groupBy({
     by: ['gameId'],
-    where,
+    where: { guildId, status: { in: ['OPEN', 'CLAIMED'] } },
     _count: { _all: true },
   });
   return new Map(serverCounts.map((c) => [c.gameId, c._count._all]));
@@ -385,18 +376,28 @@ export function createProfileEmbed(user: User, cooldown: Cooldown | null, subscr
   return embed;
 }
 
-export function createStaffLookupEmbed(targetUser: User, history: Ticket[], cooldown: Cooldown | null) {
+export function createStaffLookupEmbed(
+  targetUser: User,
+  history: Ticket[],
+  cooldown: Cooldown | null,
+  blacklist?: { reason?: string | null; staffId?: string | null; createdAt?: Date } | null,
+) {
   const verifiedCount = history.filter(t => t.screenshotVerified).length;
   const totalCount = history.length;
   const failRate = totalCount > 0 ? Math.round(((totalCount - verifiedCount) / totalCount) * 100) : 0;
 
+  const blacklistValue = blacklist
+    ? `**YES**${blacklist.reason ? ` — ${blacklist.reason}` : ''}`
+    : '`No`';
+
   const embed = new EmbedBuilder()
     .setTitle(`🔍 Staff Intelligence • ${targetUser.username}`)
     .setDescription(`Comprehensive analytical overview for user **${targetUser.id}**.`)
-    .setColor(failRate > 50 ? 0xED4245 : 0x57F287)
+    .setColor(blacklist || failRate > 50 ? 0xED4245 : 0x57F287)
     .setThumbnail(targetUser.displayAvatarURL())
     .addFields(
       { name: '🆔 User ID', value: `\`${targetUser.id}\``, inline: true },
+      { name: '🚫 Denuvo Blacklist', value: blacklistValue, inline: true },
       { name: '🛡️ Cooldown', value: cooldown && cooldown.until > new Date() ? `\`${cooldown.until.toLocaleString()}\`` : '`None`', inline: true },
       { name: '📈 AI Verify Success', value: `\`${verifiedCount}/${totalCount}\` (${100 - failRate}%)`, inline: true },
       { name: '📝 Recent Sessions', value: history.length > 0 ? history.map(t => `<#${t.channelId}> (${t.status})`).join('\n') : 'No history found.', inline: false }

@@ -15,6 +15,9 @@ export async function execute(interaction: any): Promise<void> {
     if (result.restocksCleared > 0) {
       content += ` Cleared \`${result.restocksCleared}\` pending restock(s).`;
     }
+    if (result.notified > 0) {
+      content += ` DM'd subscribers/queue for \`${result.notified}\` game(s) with increased stock.`;
+    }
     await interaction.editReply({ content });
     if (interaction.guild) {
       await logAction(

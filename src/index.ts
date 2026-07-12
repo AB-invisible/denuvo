@@ -72,6 +72,19 @@ const commands = [
     .setDescription('Manage user cooldowns')
     .addSubcommand(sub => sub.setName('remove').setDescription('Remove cooldown from a user').addUserOption(o => o.setName('user').setDescription('The user to remove cooldown from').setRequired(true)))
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+  new SlashCommandBuilder()
+    .setName('blacklist')
+    .setDescription('Permanently ban a user from opening Denuvo activation tickets')
+    .addSubcommand(sub => sub
+      .setName('add')
+      .setDescription('Blacklist a user from ever opening Denuvo tickets on this server')
+      .addUserOption(o => o.setName('user').setDescription('User to blacklist').setRequired(true))
+      .addStringOption(o => o.setName('reason').setDescription('Optional reason (shown to staff in logs)').setRequired(false)))
+    .addSubcommand(sub => sub
+      .setName('remove')
+      .setDescription('Remove a user from the Denuvo ticket blacklist')
+      .addUserOption(o => o.setName('user').setDescription('User to unblacklist').setRequired(true)))
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   // Top-level convenience aliases for /game delete and /stock set so admins
   // don't have to remember the subcommand path.
   new SlashCommandBuilder()
