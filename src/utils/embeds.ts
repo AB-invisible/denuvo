@@ -4,6 +4,7 @@ import { CONFIG } from '../config';
 import { getActiveGames, REGEN_TIME, processGuildRestocks, getServerStockMapForGuild } from './gameManager';
 import { usesAccountSyncedStock } from './accountCapacity';
 import { isUbisoftGame } from './ubisoftCatalog';
+import { isEaGame } from './eaCatalog';
 import { getEstimatedWaitTime, getStaffStats } from './stats';
 import { getActiveStaffCount } from './dutyManager';
 import { getPanelAssetUrl } from './downloadHost';
@@ -125,8 +126,8 @@ export async function createMainPanel(guildId?: string) {
   // Owner server: refresh depleted games from live account quotas so the panel
   // does not show "Restocks 0m" while stock is still 0 in the DB.
   if (guildId && accountSynced) {
-    const { syncDepletedOwnerGamesForPanel } = await import('./accountCapacity');
-    await syncDepletedOwnerGamesForPanel(guildId);
+    const { syncAllOwnerGameStockForPanel } = await import('./accountCapacity');
+    await syncAllOwnerGameStockForPanel(guildId);
   }
 
   const allGames = await getActiveGames() as GameWithCount[];
@@ -156,7 +157,7 @@ export async function createMainPanel(guildId?: string) {
 
   const totalStock = allGames.reduce((acc: number, game: GameWithCount) => {
     const ss = serverStockMap.get(game.id);
-    const authoritative = accountSynced && !!game.appId && !isUbisoftGame(game);
+    const authoritative = accountSynced && !!game.appId && !isUbisoftGame(game) && !isEaGame(game);
     return acc + (ss ? ss.stock : (authoritative ? 0 : 5));
   }, 0);
   const totalReserved = allGames.reduce((acc: number, game: GameWithCount) => {
@@ -215,8 +216,8 @@ export async function createMainPanel(guildId?: string) {
       .addOptions(
         chunk.map((game: GameWithCount) => {
           const ss = serverStockMap.get(game.id);
-          const authoritative = accountSynced && !!game.appId && !isUbisoftGame(game);
-          const gameStock = ss ? ss.stock : (authoritative ? 0 : 5);
+          const authoritative = accountSynced && !!game.appId && !isUbisoftGame(game) && !isEaGame(game);
+          const gameStock = ss ? ss.stock : (authoritative ? 0 : isUbisoftGame(game) || isEaGame(game) ? 0 : 5);
           const gameLastDepleted = ss ? ss.lastDepletedAt : null;
           const reserved = serverReservedMap.get(game.id) || 0;
           const availableStock = Math.max(0, gameStock - reserved);

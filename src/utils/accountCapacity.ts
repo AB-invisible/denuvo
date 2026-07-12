@@ -19,6 +19,14 @@ import { utcDateKey, getPoolAccountIdsForApp, getCachedRefreshTokenPoolAccountId
 import { isUbisoftGame } from './ubisoftCatalog';
 import { isEaGame } from './eaCatalog';
 
+function ubisoftEnvConfigured(): boolean {
+  return Boolean((CONFIG.UBISOFT_SERVICE_URL || '').trim() && (CONFIG.UBISOFT_SERVICE_KEY || '').trim());
+}
+
+function eaEnvConfigured(): boolean {
+  return Boolean((CONFIG.EA_SERVICE_URL || '').trim() && (CONFIG.EA_SERVICE_KEY || '').trim());
+}
+
 export function usesAccountSyncedStock(guildId: string): boolean {
   return !guildId || guildId === CONFIG.OWNER_GUILD_ID;
 }
@@ -142,6 +150,84 @@ export async function computeRemainingDailyTokens(
   return breakdown.totalRemaining;
 }
 
+/** Remaining Ubisoft activations today (shared pool across all Ubisoft games). */
+export async function computeUbisoftRemaining(guildId: string = CONFIG.OWNER_GUILD_ID): Promise<number> {
+  if (!usesAccountSyncedStock(guildId)) return CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
+
+  const cap = CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
+  const today = utcDateKey();
+  let remaining = 0;
+
+  try {
+    const where: Record<string, unknown> = { active: true };
+    if (guildId) {
+      where.OR = [{ guildId: '' }, { guildId }];
+    } else {
+      where.guildId = '';
+    }
+    const accounts = await (prisma as any).ubisoftAccount.findMany({ where });
+    for (const acct of accounts) {
+      let used = 0;
+      try {
+        const usage = await (prisma as any).ubisoftUsage.findUnique({
+          where: { accountId_usageDate: { accountId: acct.id, usageDate: today } },
+        });
+        used = usage?.count ?? 0;
+      } catch {
+        used = 0;
+      }
+      remaining += Math.max(0, cap - used);
+    }
+  } catch {
+    /* table may not exist */
+  }
+
+  if (ubisoftEnvConfigured()) {
+    remaining += cap;
+  }
+
+  return remaining;
+}
+
+/** Remaining EA activations today (shared pool across all EA games). */
+export async function computeEaRemaining(guildId: string = CONFIG.OWNER_GUILD_ID): Promise<number> {
+  if (!usesAccountSyncedStock(guildId)) return CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
+
+  const cap = CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
+  const today = utcDateKey();
+  let remaining = 0;
+
+  try {
+    const where: Record<string, unknown> = { active: true };
+    if (guildId) {
+      where.OR = [{ guildId: '' }, { guildId }];
+    } else {
+      where.guildId = '';
+    }
+    const accounts = await (prisma as any).eaAccount.findMany({ where });
+    for (const acct of accounts) {
+      let used = 0;
+      try {
+        const usage = await (prisma as any).eaUsage.findUnique({
+          where: { accountId_usageDate: { accountId: acct.id, usageDate: today } },
+        });
+        used = usage?.count ?? 0;
+      } catch {
+        used = 0;
+      }
+      remaining += Math.max(0, cap - used);
+    }
+  } catch {
+    /* table may not exist */
+  }
+
+  if (eaEnvConfigured()) {
+    remaining += cap;
+  }
+
+  return remaining;
+}
+
 /** Default stock when seeding ServerStock for a game on the owner server. */
 export async function getDefaultStockForApp(appId: number, guildId: string): Promise<number> {
   if (!usesAccountSyncedStock(guildId)) {
@@ -170,10 +256,18 @@ export async function resolveOwnerManualStock(
   if (!usesAccountSyncedStock(guildId)) return requestedAmount;
 
   const game = await prisma.game.findUnique({ where: { id: gameId } });
-  if (!game?.appId || isUbisoftGame(game) || isEaGame(game)) return requestedAmount;
+  if (!game) return requestedAmount;
+
+  if (isUbisoftGame(game)) {
+    return Math.min(requestedAmount, await computeUbisoftRemaining(guildId));
+  }
+  if (isEaGame(game)) {
+    return Math.min(requestedAmount, await computeEaRemaining(guildId));
+  }
+  if (!game.appId) return requestedAmount;
 
   const remaining = await computeRemainingDailyTokens(game.appId, guildId);
-  return Math.max(requestedAmount, remaining);
+  return Math.min(requestedAmount, remaining);
 }
 
 /** Push account-derived remaining tokens into ServerStock for one game. */
@@ -185,15 +279,20 @@ export async function syncStockForGame(
   if (!usesAccountSyncedStock(guildId)) return -1;
 
   const game = await prisma.game.findUnique({ where: { id: gameId } });
-  if (!game?.appId) return -1;
+  if (!game) return -1;
+  if (!game.appId && !isUbisoftGame(game) && !isEaGame(game)) return -1;
 
-  // Ubisoft / EA games use magic-files + ticket pipelines and consume ZERO
-  // Steam-account capacity — computeAccountCapacity() would always report 0 for
-  // them and force ServerStock to 0, permanently blocking sales. Skip them so
-  // their stock stays owner-managed (set via /stock).
-  if (isUbisoftGame(game) || isEaGame(game)) return -1;
+  let remaining: number;
+  if (isUbisoftGame(game)) {
+    remaining = await computeUbisoftRemaining(guildId);
+  } else if (isEaGame(game)) {
+    remaining = await computeEaRemaining(guildId);
+  } else if (!game.appId) {
+    return -1;
+  } else {
+    remaining = await computeRemainingDailyTokens(game.appId, guildId);
+  }
 
-  const remaining = await computeRemainingDailyTokens(game.appId, guildId);
   const existing = await prisma.serverStock.findUnique({
     where: { gameId_guildId: { gameId, guildId } },
   });
@@ -206,7 +305,8 @@ export async function syncStockForGame(
     ? remaining
     : Math.min(remaining, current);
 
-  if (opts.preserveManualFloor && current > newStock) {
+  const platformManaged = isUbisoftGame(game) || isEaGame(game);
+  if (opts.preserveManualFloor && current > newStock && !platformManaged) {
     newStock = current;
   }
 
@@ -258,21 +358,50 @@ export async function syncAllOwnerGameStock(
   return synced;
 }
 
-/** Recompute stock for zero-stock owner games before panel render. */
-export async function syncDepletedOwnerGamesForPanel(
+/** Push live Ubisoft pool quota into ServerStock for every Ubisoft game. */
+export async function syncUbisoftGamesStock(guildId: string = CONFIG.OWNER_GUILD_ID): Promise<void> {
+  if (!usesAccountSyncedStock(guildId)) return;
+  const remaining = await computeUbisoftRemaining(guildId);
+  const games = await prisma.game.findMany({ where: { disabled: false } });
+  for (const g of games) {
+    if (!isUbisoftGame(g)) continue;
+    await prisma.serverStock.upsert({
+      where: { gameId_guildId: { gameId: g.id, guildId } },
+      update: { stock: remaining, lastDepletedAt: remaining === 0 ? new Date() : null },
+      create: { gameId: g.id, guildId, stock: remaining, lastDepletedAt: remaining === 0 ? new Date() : null },
+    });
+  }
+}
+
+/** Push live EA pool quota into ServerStock for every EA game. */
+export async function syncEaGamesStock(guildId: string = CONFIG.OWNER_GUILD_ID): Promise<void> {
+  if (!usesAccountSyncedStock(guildId)) return;
+  const remaining = await computeEaRemaining(guildId);
+  const games = await prisma.game.findMany({ where: { disabled: false } });
+  for (const g of games) {
+    if (!isEaGame(g)) continue;
+    await prisma.serverStock.upsert({
+      where: { gameId_guildId: { gameId: g.id, guildId } },
+      update: { stock: remaining, lastDepletedAt: remaining === 0 ? new Date() : null },
+      create: { gameId: g.id, guildId, stock: remaining, lastDepletedAt: remaining === 0 ? new Date() : null },
+    });
+  }
+}
+
+/** Recompute stock for all owner games before panel render (live quotas). */
+export async function syncAllOwnerGameStockForPanel(
   guildId: string = CONFIG.OWNER_GUILD_ID,
 ): Promise<number> {
   if (!usesAccountSyncedStock(guildId)) return 0;
 
-  const depleted = await prisma.serverStock.findMany({
-    where: { guildId, stock: 0 },
-    select: { gameId: true },
+  const games = await prisma.game.findMany({
+    where: { disabled: false },
+    select: { id: true },
   });
-  if (depleted.length === 0) return 0;
 
   let synced = 0;
-  for (const { gameId } of depleted) {
-    await syncStockForGame(gameId, guildId, { forceRaise: true });
+  for (const game of games) {
+    await syncStockForGame(game.id, guildId);
     synced++;
   }
   return synced;

@@ -16,9 +16,9 @@ import { initFileWatcher, syncGamesFromFile } from './utils/syncManager';
 import { generateToken, generateTokenWithRetry } from './utils/tokenGenerator';
 import { uploadFile } from './utils/fileHost';
 import { isUbisoftGame } from './utils/ubisoftCatalog';
-import { startUbisoftDelivery, handleUbisoftTokenReq, UBISOFT_STAGE_AWAITING } from './utils/ubisoftFlow';
+import { startUbisoftDelivery, handleUbisoftTokenReq, UBISOFT_STAGE_AWAITING, UBISOFT_STAGE_CALLHOME } from './utils/ubisoftFlow';
 import { isEaGame } from './utils/eaCatalog';
-import { startEaDelivery, handleEaTicket, EA_STAGE_AWAITING } from './utils/eaFlow';
+import { startEaDelivery, handleEaTicket, EA_STAGE_AWAITING, EA_STAGE_CALLHOME } from './utils/eaFlow';
 import { enqueueTokenGen } from './utils/tokenQueue';
 import { updateTicketWaitTimes, checkWeeklyStaffStats, checkDutyStatusReset, checkStaleTickets, cleanupExpiredCooldowns, syncOwnerStockForNewUtcDay } from './utils/scheduler';
 import { addSubscription } from './utils/subscriptionManager';
@@ -1555,7 +1555,7 @@ client.on(Events.MessageCreate, async (message) => {
   if (
     ticket &&
     message.author.id === ticket.userId &&
-    (ticket as any).eaStage === EA_STAGE_AWAITING &&
+    ((ticket as any).eaStage === EA_STAGE_AWAITING || (ticket as any).eaStage === EA_STAGE_CALLHOME) &&
     (ticket.status === 'OPEN' || ticket.status === 'CLAIMED')
   ) {
     if (eaMintingChannels.has(message.channelId)) return;
@@ -1578,7 +1578,7 @@ client.on(Events.MessageCreate, async (message) => {
   if (
     ticket &&
     message.author.id === ticket.userId &&
-    (ticket as any).ubisoftStage === UBISOFT_STAGE_AWAITING &&
+    ((ticket as any).ubisoftStage === UBISOFT_STAGE_AWAITING || (ticket as any).ubisoftStage === UBISOFT_STAGE_CALLHOME) &&
     (ticket.status === 'OPEN' || ticket.status === 'CLAIMED')
   ) {
     if (ubisoftMintingChannels.has(message.channelId)) return;

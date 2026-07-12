@@ -27,6 +27,7 @@ import { mintEaToken } from './eaService';
 import { mintUbisoftToken } from './ubisoftService';
 import { EA_STAGE_DONE, normalizeEaTicketInput } from './eaFlow';
 import { UBISOFT_STAGE_DONE } from './ubisoftFlow';
+import { consumeStock } from './gameManager';
 
 export type ActivationPlatform = 'ea' | 'ubisoft';
 
@@ -95,6 +96,12 @@ async function finalizeTicket(row: ActivationRow, gameName: string, platform: Ac
     where: { id: ticket.id },
     data: { ...stageField, deliveryMessageId: msg?.id, staffId: client.user!.id } as any,
   }).catch(() => {});
+
+  if (ticket.gameId) {
+    await consumeStock(ticket.gameId, ticket.guildId || '', !!ticket.fromQueue).catch((e) =>
+      console.error('[InstallerActivation] consumeStock failed:', (e as Error).message),
+    );
+  }
 
   const hg = homeGuild();
   if (hg) {

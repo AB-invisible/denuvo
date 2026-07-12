@@ -41,6 +41,8 @@ import { createCallhomeInstaller } from './installerPackage';
 import { consumeStock } from './gameManager';
 
 export const UBISOFT_STAGE_AWAITING = 'AWAITING_TOKEN_REQ';
+/** Call-home installer delivered — user should run installer.exe, not paste token_req. */
+export const UBISOFT_STAGE_CALLHOME = 'AWAITING_CALLHOME';
 export const UBISOFT_STAGE_DONE = 'DONE';
 
 // The Denuvo token_req is a long opaque string. Guard against someone
@@ -217,7 +219,7 @@ export async function startUbisoftDelivery(channel: TextChannel, ticket: any, gu
 
   await prisma.ticket.update({
     where: { id: ticket.id },
-    data: { ubisoftStage: UBISOFT_STAGE_AWAITING, screenshotVerified: true, staffId: client.user!.id } as any,
+    data: { ubisoftStage: UBISOFT_STAGE_CALLHOME, screenshotVerified: true, staffId: client.user!.id } as any,
   });
 
   if (hg) {
@@ -269,7 +271,34 @@ export async function handleUbisoftTokenReq(message: Message, ticket: any): Prom
 
   const tokenReq = await extractTokenReq(message);
   if (!tokenReq) {
-    // Not a token request — likely just chatter. Nudge once, don't spam.
+    const stage = (ticket as any).ubisoftStage as string | undefined;
+    const callhomeRow = await prisma.tokenDownload.findFirst({
+      where: {
+        ticketId: ticket.id,
+        platform: 'ubisoft',
+        persistent: false,
+        expiresAt: { gt: new Date() },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    const onCallhome = stage === UBISOFT_STAGE_CALLHOME || !!callhomeRow;
+
+    if (onCallhome) {
+      await message.reply({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle('⏳ Installer in progress')
+            .setDescription(
+              `You already have the **installer** — run **\`installer.exe\`** from the download link above if you have not yet.\n\n` +
+                `It handles everything automatically. When it finishes, you will see **Activation Complete** here — **no need to attach \`token_req.txt\`.**\n\n` +
+                `Only paste **\`token_req.txt\`** if the installer popup explicitly tells you to.`,
+            )
+            .setColor(0x5865f2),
+        ],
+      }).catch(() => {});
+      return true;
+    }
+
     await message.reply({
       embeds: [
         new EmbedBuilder()

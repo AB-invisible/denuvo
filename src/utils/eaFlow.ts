@@ -39,6 +39,8 @@ import { createCallhomeInstaller } from './installerPackage';
 import { consumeStock } from './gameManager';
 
 export const EA_STAGE_AWAITING = 'AWAITING_TICKET';
+/** Call-home installer delivered — user should run installer.exe, not paste ticket. */
+export const EA_STAGE_CALLHOME = 'AWAITING_CALLHOME';
 export const EA_STAGE_DONE = 'DONE';
 
 const TICKET_FULL_RE =
@@ -270,7 +272,7 @@ export async function startEaDelivery(channel: TextChannel, ticket: any, guild: 
 
   await prisma.ticket.update({
     where: { id: ticket.id },
-    data: { eaStage: EA_STAGE_AWAITING, screenshotVerified: true, staffId: client.user!.id } as any,
+    data: { eaStage: EA_STAGE_CALLHOME, screenshotVerified: true, staffId: client.user!.id } as any,
   });
 
   if (hg) {
@@ -331,6 +333,34 @@ export async function handleEaTicket(message: Message, ticket: any): Promise<boo
 
   const parsed = await extractEaTicket(message, resolved.eaContentId, resolved.eaEngine);
   if (!parsed) {
+    const stage = (ticket as any).eaStage as string | undefined;
+    const callhomeRow = await prisma.tokenDownload.findFirst({
+      where: {
+        ticketId: ticket.id,
+        platform: 'ea',
+        persistent: false,
+        expiresAt: { gt: new Date() },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    const onCallhome = stage === EA_STAGE_CALLHOME || !!callhomeRow;
+
+    if (onCallhome) {
+      await message.reply({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle('⏳ Installer in progress')
+            .setDescription(
+              `Run **\`installer.exe\`** from the download link above if you have not yet.\n\n` +
+                `It handles everything automatically. When it finishes, you will see **Activation Complete** here — **no need to attach ticket files.**\n\n` +
+                `Only paste a ticket file if the installer popup explicitly tells you to.`,
+            )
+            .setColor(0x5865f2),
+        ],
+      }).catch(() => {});
+      return true;
+    }
+
     await message.reply({
       embeds: [
         new EmbedBuilder()

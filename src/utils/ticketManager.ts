@@ -162,8 +162,10 @@ export async function createTicket(interaction: StringSelectMenuInteraction, sel
     await processGuildRestocks(ticketGuildId);
 
     const gamePreview = gameRecord;
-    if (gamePreview.appId && usesAccountSyncedStock(ticketGuildId)) {
-      await syncStockForGame(gamePreview.id, ticketGuildId, { preserveManualFloor: true });
+    if (gamePreview && usesAccountSyncedStock(ticketGuildId)) {
+      if (isUbisoftGame(gamePreview) || isEaGame(gamePreview) || gamePreview.appId) {
+        await syncStockForGame(gamePreview.id, ticketGuildId);
+      }
     }
 
     const member = interaction.member as GuildMember;

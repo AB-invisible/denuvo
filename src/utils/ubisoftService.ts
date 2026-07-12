@@ -17,6 +17,7 @@
 import prisma from '../lib/prisma';
 import { CONFIG } from '../config';
 import { utcDateKey } from './steampassPool';
+import { syncUbisoftGamesStock } from './accountCapacity';
 
 export interface UbisoftMintSuccess {
   ok: true;
@@ -173,6 +174,7 @@ async function recordUbisoftUsage(accountId: number): Promise<void> {
       where: { id: accountId },
       data: { lastUsedAt: new Date(), failureCount: 0, lastFailureAt: null },
     });
+    await syncUbisoftGamesStock(CONFIG.OWNER_GUILD_ID).catch(() => {});
   } catch (e) {
     console.warn('[ubisoftService] recordUsage failed (non-fatal):', (e as Error).message);
   }

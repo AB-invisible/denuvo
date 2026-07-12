@@ -11,6 +11,8 @@ import {
   getDefaultStockForApp,
   computeRemainingDailyTokens,
   resolveOwnerManualStock,
+  syncUbisoftGamesStock,
+  syncEaGamesStock,
 } from './accountCapacity';
 import { isUbisoftGame } from './ubisoftCatalog';
 import { isEaGame } from './eaCatalog';
@@ -215,41 +217,52 @@ export async function consumeStock(gameId: number, guildId: string, _fromQueue =
   const game = await prisma.game.findUnique({ where: { id: gameId } });
   if (!game) throw new Error('Game not found.');
 
-  // Owner server: stock tracks live account quota (usage tables). Resync
-  // from usage but never raise stock above a manual delivery deduction.
-  if (usesAccountSyncedStock(guildId) && game.appId) {
-    const synced = await computeRemainingDailyTokens(game.appId, guildId);
-    const ss = await prisma.serverStock.findUnique({
-      where: { gameId_guildId: { gameId, guildId } },
-    });
-    const newStock = Math.min(synced, ss?.stock ?? synced);
-
-    await prisma.serverStock.upsert({
-      where: { gameId_guildId: { gameId, guildId } },
-      update: {
-        stock: newStock,
-        lastDepletedAt: newStock === 0 ? new Date() : null,
-      },
-      create: {
-        gameId,
-        guildId,
-        stock: newStock,
-        lastDepletedAt: newStock === 0 ? new Date() : null,
-      },
-    });
-
-    if (newStock === 0) {
-      await logGlobal('🚨 Game Depleted', `Stock for **${game.name}** has reached zero — all account quotas used for today.`, 0xED4245);
-    } else if (newStock === 1) {
-      await logGlobal('⚠️ Last Token Alert', `Only **1 token** remains for **${game.name}**.`, 0xFEE75C);
-    } else if (newStock > 0) {
-      const thresholdSetting = await prisma.metadata.findUnique({ where: { key: 'lowStockThreshold' } });
-      const threshold = thresholdSetting ? parseInt(thresholdSetting.value) : 3;
-      if (newStock <= threshold) {
-        await logGlobal('⚠️ Low Stock Warning', `**${game.name}** is running low — only **${newStock}** token(s) remaining today.`, 0xFEE75C);
-      }
+  // Owner server: stock tracks live account quota (usage tables).
+  if (usesAccountSyncedStock(guildId)) {
+    if (isUbisoftGame(game)) {
+      await syncUbisoftGamesStock(guildId);
+      const ss = await prisma.serverStock.findUnique({ where: { gameId_guildId: { gameId, guildId } } });
+      return { ...game, stock: ss?.stock ?? 0 };
     }
-    return { ...game, stock: newStock };
+    if (isEaGame(game)) {
+      await syncEaGamesStock(guildId);
+      const ss = await prisma.serverStock.findUnique({ where: { gameId_guildId: { gameId, guildId } } });
+      return { ...game, stock: ss?.stock ?? 0 };
+    }
+    if (game.appId) {
+      const synced = await computeRemainingDailyTokens(game.appId, guildId);
+      const ss = await prisma.serverStock.findUnique({
+        where: { gameId_guildId: { gameId, guildId } },
+      });
+      const newStock = Math.min(synced, ss?.stock ?? synced);
+
+      await prisma.serverStock.upsert({
+        where: { gameId_guildId: { gameId, guildId } },
+        update: {
+          stock: newStock,
+          lastDepletedAt: newStock === 0 ? new Date() : null,
+        },
+        create: {
+          gameId,
+          guildId,
+          stock: newStock,
+          lastDepletedAt: newStock === 0 ? new Date() : null,
+        },
+      });
+
+      if (newStock === 0) {
+        await logGlobal('🚨 Game Depleted', `Stock for **${game.name}** has reached zero — all account quotas used for today.`, 0xED4245);
+      } else if (newStock === 1) {
+        await logGlobal('⚠️ Last Token Alert', `Only **1 token** remains for **${game.name}**.`, 0xFEE75C);
+      } else if (newStock > 0) {
+        const thresholdSetting = await prisma.metadata.findUnique({ where: { key: 'lowStockThreshold' } });
+        const threshold = thresholdSetting ? parseInt(thresholdSetting.value) : 3;
+        if (newStock <= threshold) {
+          await logGlobal('⚠️ Low Stock Warning', `**${game.name}** is running low — only **${newStock}** token(s) remaining today.`, 0xFEE75C);
+        }
+      }
+      return { ...game, stock: newStock };
+    }
   }
 
   await processGuildRestocks(guildId);
