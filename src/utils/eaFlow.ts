@@ -251,17 +251,19 @@ export async function startEaDelivery(channel: TextChannel, ticket: any, guild: 
   }
 
   const embed = new EmbedBuilder()
-    .setTitle(`🎮 ${ticket.game.name} — One-Click Activation`)
+    .setTitle(`✅ ${ticket.game.name} — Get Activated`)
     .setDescription(
-      `Your screenshot has been verified. **Download and run the installer below** — it does everything for you:\n\n` +
-        `**1.** Installs the setup files into your game folder\n` +
-        `**2.** Launches the game once to generate your activation request\n` +
-        `**3.** Generates your token and places it into the game folder automatically\n\n` +
-        `When it finishes, **launch ${ticket.game.name}** and confirm it works below.`,
+      `Your screenshot is verified. **Do these 3 steps:**\n\n` +
+        `**1️⃣  Download** the file below.\n` +
+        `**2️⃣  Extract** the ZIP  →  right-click it, pick **Extract All**.\n` +
+        `**3️⃣  Run** the **\`installer.exe\`** inside the extracted folder.\n\n` +
+        `That's it. The installer does **everything else by itself** — no clicking, no pasting.\n\n` +
+        `⚠️  **${ticket.game.name} must already be installed on Steam.**\n\n` +
+        `When it finishes, **launch the game** and press **Confirm Working** below. ❤️`,
     )
-    .setColor(0x5865f2)
-    .addFields({ name: '📦 Installer', value: `[Download here](${installer.url})` })
-    .setFooter({ text: 'Install the game via Steam first • Link valid for 3 hours' })
+    .setColor(0x57f287)
+    .addFields({ name: '⬇️ Download', value: `**[⬇️  CLICK HERE TO DOWNLOAD](${installer.url})**` })
+    .setFooter({ text: '① Download  ②  Extract the ZIP  ③  Run installer.exe  •  Link valid 3 hours' })
     .setTimestamp();
 
   await channel.send({ embeds: [embed] });
