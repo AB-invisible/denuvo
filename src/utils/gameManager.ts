@@ -46,46 +46,87 @@ export async function processGuildRestocks(guildId: string): Promise<void> {
     where: { guildId, restockAt: { lte: now } },
     include: { game: true },
   });
-  if (pendingRestocks.length === 0) return;
 
-  const byGame = new Map<number, typeof pendingRestocks>();
-  const excludedRestockIds: number[] = [];
+  if (pendingRestocks.length > 0) {
+    const byGame = new Map<number, typeof pendingRestocks>();
+    const excludedRestockIds: number[] = [];
 
-  for (const r of pendingRestocks) {
-    if (r.game.excludeRegen) {
-      excludedRestockIds.push(r.id);
-      continue;
+    for (const r of pendingRestocks) {
+      if (r.game.excludeRegen) {
+        excludedRestockIds.push(r.id);
+        continue;
+      }
+      if (!byGame.has(r.gameId)) byGame.set(r.gameId, []);
+      byGame.get(r.gameId)!.push(r);
     }
-    if (!byGame.has(r.gameId)) byGame.set(r.gameId, []);
-    byGame.get(r.gameId)!.push(r);
+
+    if (excludedRestockIds.length > 0) {
+      await prisma.restock.deleteMany({ where: { id: { in: excludedRestockIds } } });
+    }
+
+    for (const [gameId, restocks] of byGame) {
+      const amount = restocks.length;
+      const serverStock = await getOrCreateServerStock(gameId, guildId);
+      const previousStock = serverStock.stock;
+
+      await prisma.$transaction([
+        prisma.serverStock.update({
+          where: { gameId_guildId: { gameId, guildId } },
+          data: { stock: previousStock + amount, lastDepletedAt: null },
+        }),
+        prisma.restock.deleteMany({
+          where: { id: { in: restocks.map(r => r.id) } },
+        }),
+      ]);
+
+      const gameName = restocks[0].game.name;
+      const newStock = previousStock + amount;
+      await logGlobal('✅ Auto-Restock', `**${amount} token(s)** auto-restocked for **${gameName}**.`, 0x57F287);
+      await notifySubscribers(gameId, gameName, amount);
+      await notifyWaitlist(gameId, gameName, previousStock, newStock);
+    }
   }
 
-  if (excludedRestockIds.length > 0) {
-    await prisma.restock.deleteMany({ where: { id: { in: excludedRestockIds } } });
-  }
+  // Always heal stuck games (must run even when no Restock rows are pending —
+  // stuck games have none, which is exactly why they got stuck).
+  await healStuckDepletedGames(guildId, now);
+}
 
-  if (byGame.size === 0) return;
+/**
+ * Refill owner-managed games left depleted with no scheduled restock — e.g.
+ * zeroed by a capacity sync (which sets lastDepletedAt but never schedules a
+ * Restock) before they were excluded from it, leaving them at "Restocks 0m"
+ * forever. Once REGEN_TIME has elapsed, top them back up to the base amount.
+ *
+ * Account-synced Steam games are intentionally skipped: their stock is
+ * re-derived from real account capacity by the sync, so faking stock here would
+ * let users open tickets that dead-end at "Out of Tokens Today".
+ */
+async function healStuckDepletedGames(guildId: string, now: Date): Promise<void> {
+  const stuckCutoff = new Date(now.getTime() - REGEN_TIME);
+  const stuck = await prisma.serverStock.findMany({
+    where: { guildId, stock: { lte: 0 }, lastDepletedAt: { not: null, lte: stuckCutoff } },
+    include: { game: true },
+  });
+  if (stuck.length === 0) return;
 
-  for (const [gameId, restocks] of byGame) {
-    const amount = restocks.length;
-    const serverStock = await getOrCreateServerStock(gameId, guildId);
-    const previousStock = serverStock.stock;
+  for (const s of stuck) {
+    if (s.game.excludeRegen) continue;
+    // Only owner-managed games (Ubisoft/EA, tenant, or appId-less). This mirrors
+    // the `authoritative` check used by the stock gate / panel.
+    const accountSynced = usesAccountSyncedStock(guildId) && !!s.game.appId && !isUbisoftGame(s.game) && !isEaGame(s.game);
+    if (accountSynced) continue;
+    // Don't fight an already-scheduled restock.
+    const pending = await prisma.restock.findFirst({ where: { gameId: s.gameId, guildId } });
+    if (pending) continue;
 
-    await prisma.$transaction([
-      prisma.serverStock.update({
-        where: { gameId_guildId: { gameId, guildId } },
-        data: { stock: previousStock + amount, lastDepletedAt: null },
-      }),
-      prisma.restock.deleteMany({
-        where: { id: { in: restocks.map(r => r.id) } },
-      }),
-    ]);
-
-    const gameName = restocks[0].game.name;
-    const newStock = previousStock + amount;
-    await logGlobal('✅ Auto-Restock', `**${amount} token(s)** auto-restocked for **${gameName}**.`, 0x57F287);
-    await notifySubscribers(gameId, gameName, amount);
-    await notifyWaitlist(gameId, gameName, previousStock, newStock);
+    const amount = CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
+    await prisma.serverStock.update({
+      where: { gameId_guildId: { gameId: s.gameId, guildId } },
+      data: { stock: amount, lastDepletedAt: null },
+    });
+    await logGlobal('✅ Auto-Restock', `**${amount} token(s)** auto-restocked for **${s.game.name}**.`, 0x57F287);
+    await notifyWaitlist(s.gameId, s.game.name, 0, amount);
   }
 }
 
