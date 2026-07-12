@@ -82,10 +82,18 @@ def build_config(body: TokenRequest) -> EaConfig:
 
 @app.on_event("startup")
 def warm_default_session() -> None:
-    try:
-        ensure_default_account_configured()
-    except Exception:
-        pass
+    # Warm the session in a BACKGROUND thread. A cold account triggers a full
+    # EA login (network + maybe email verification) which can take many seconds
+    # — doing it inline blocks uvicorn from serving /health and fails the Railway
+    # healthcheck. Backgrounding it lets the service come up immediately; if EA
+    # wants a code, it's emailed + saved as pending for /eacode.
+    def _warm() -> None:
+        try:
+            ensure_default_account_configured()
+        except Exception:
+            pass
+
+    threading.Thread(target=_warm, daemon=True).start()
 
 
 @app.get("/health")
