@@ -59,20 +59,29 @@ def _diag(stage: str, resp: "requests.Response") -> None:
     """Print a password-free snippet of EA's response so headless-login failures
     are debuggable from Railway logs (invalid-creds vs captcha vs challenge)."""
     try:
-        text = re.sub(r"<[^>]+>", " ", resp.text or "")
+        raw = resp.text or ""
+        # Drop script/style so the visible page text (incl. the error) shows.
+        stripped = re.sub(r"(?is)<script.*?</script>|<style.*?</style>", " ", raw)
+        text = re.sub(r"<[^>]+>", " ", stripped)
         text = re.sub(r"\s+", " ", text).strip()
         markers = []
-        if INVALID_CREDS_RE.search(resp.text or ""):
+        if INVALID_CREDS_RE.search(raw):
             markers.append("INVALID_CREDS")
-        if CAPTCHA_RE.search(resp.text or ""):
+        if CAPTCHA_RE.search(raw):
             markers.append("CAPTCHA")
-        if SEND_CODE_RE.search(resp.text or ""):
+        if SEND_CODE_RE.search(raw):
             markers.append("SEND_CODE")
-        if VERIFY_CODE_RE.search(resp.text or ""):
+        if VERIFY_CODE_RE.search(raw):
             markers.append("VERIFY_CODE")
+        # Zoom in on the meaningful region rather than the page chrome.
+        m = re.search(
+            r"(?i)(incorrect|expired|verify|captcha|human|arkose|robot|too many|locked|disabled|unusual|suspicious)",
+            text,
+        )
+        region = text[max(0, m.start() - 140): m.start() + 320] if m else text[:460]
         print(
             f"[ea_login] {stage}: status={resp.status_code} url={resp.url} "
-            f"markers={markers or ['none']} snippet={text[:400]!r}",
+            f"markers={markers or ['none']} text={region!r}",
             flush=True,
         )
     except Exception:
