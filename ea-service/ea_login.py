@@ -55,6 +55,30 @@ class EaLoginError(Exception):
         self.code = code
 
 
+def _diag(stage: str, resp: "requests.Response") -> None:
+    """Print a password-free snippet of EA's response so headless-login failures
+    are debuggable from Railway logs (invalid-creds vs captcha vs challenge)."""
+    try:
+        text = re.sub(r"<[^>]+>", " ", resp.text or "")
+        text = re.sub(r"\s+", " ", text).strip()
+        markers = []
+        if INVALID_CREDS_RE.search(resp.text or ""):
+            markers.append("INVALID_CREDS")
+        if CAPTCHA_RE.search(resp.text or ""):
+            markers.append("CAPTCHA")
+        if SEND_CODE_RE.search(resp.text or ""):
+            markers.append("SEND_CODE")
+        if VERIFY_CODE_RE.search(resp.text or ""):
+            markers.append("VERIFY_CODE")
+        print(
+            f"[ea_login] {stage}: status={resp.status_code} url={resp.url} "
+            f"markers={markers or ['none']} snippet={text[:400]!r}",
+            flush=True,
+        )
+    except Exception:
+        pass
+
+
 def _juno_auth_start_url(pc_sign: str) -> str:
     params = {
         "client_id": CLIENT_ID,
@@ -133,6 +157,7 @@ def login_with_email_password(
     }
     r2 = http.post(post_url, data=data, timeout=timeout, allow_redirects=True)
     body = r2.text or ""
+    _diag("password-post", r2)
 
     if INVALID_CREDS_RE.search(body):
         raise EaLoginError(
