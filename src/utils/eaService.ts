@@ -181,8 +181,24 @@ async function recordEaMintUsage(accountId: number | null): Promise<void> {
     /* fall through */
   }
 
-  await incrementEnvPlatformUsage('ea');
-  await syncEaGamesStock(CONFIG.OWNER_GUILD_ID).catch(() => {});
+  try {
+    const rows = await (prisma as any).eaAccount.findMany({
+      where: { active: true, guildId: '' },
+      select: { id: true },
+    });
+    for (const acct of rows) {
+      await markEaAccountExhaustedToday(acct.id);
+    }
+    await syncEaGamesStock(CONFIG.OWNER_GUILD_ID).catch(() => {});
+  } catch {
+    await incrementEnvPlatformUsage('ea');
+    await syncEaGamesStock(CONFIG.OWNER_GUILD_ID).catch(() => {});
+  }
+}
+
+/** Staff close / manual deduct — burn one EA activation slot without minting. */
+export async function consumeEaPoolSlot(): Promise<void> {
+  await recordEaMintUsage(null);
 }
 
 async function recordEaFailure(accountId: number): Promise<void> {
@@ -205,6 +221,7 @@ async function markEaAccountExhaustedToday(accountId: number): Promise<void> {
       update: { count: cap },
       create: { accountId, usageDate: today, count: cap },
     });
+    await syncEaGamesStock(CONFIG.OWNER_GUILD_ID).catch(() => {});
   } catch {
     /* non-fatal */
   }

@@ -213,8 +213,25 @@ async function recordUbisoftMintUsage(accountId: number | null): Promise<void> {
     /* fall through */
   }
 
-  await incrementEnvPlatformUsage('ubisoft');
-  await syncUbisoftGamesStock(CONFIG.OWNER_GUILD_ID).catch(() => {});
+  // All BYO accounts at cap — mark exhausted so panel reads 0 (env metadata
+  // is ignored when BYO rows exist).
+  try {
+    const rows = await (prisma as any).ubisoftAccount.findMany({
+      where: { active: true, guildId: '' },
+      select: { id: true },
+    });
+    for (const acct of rows) {
+      await markAccountExhaustedToday(acct.id);
+    }
+  } catch {
+    await incrementEnvPlatformUsage('ubisoft');
+    await syncUbisoftGamesStock(CONFIG.OWNER_GUILD_ID).catch(() => {});
+  }
+}
+
+/** Staff close / manual deduct — burn one Ubisoft activation slot without minting. */
+export async function consumeUbisoftPoolSlot(): Promise<void> {
+  await recordUbisoftMintUsage(null);
 }
 
 async function recordUbisoftFailure(accountId: number): Promise<void> {
@@ -223,6 +240,22 @@ async function recordUbisoftFailure(accountId: number): Promise<void> {
       where: { id: accountId },
       data: { failureCount: { increment: 1 }, lastFailureAt: new Date() },
     });
+  } catch {
+    /* non-fatal */
+  }
+}
+
+/** Force an account's daily counter to the cap so rotation skips it today. */
+async function markAccountExhaustedToday(accountId: number): Promise<void> {
+  const today = utcDateKey();
+  const cap = CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
+  try {
+    await (prisma as any).ubisoftUsage.upsert({
+      where: { accountId_usageDate: { accountId, usageDate: today } },
+      update: { count: cap },
+      create: { accountId, usageDate: today, count: cap },
+    });
+    await syncUbisoftGamesStock(CONFIG.OWNER_GUILD_ID).catch(() => {});
   } catch {
     /* non-fatal */
   }
@@ -356,21 +389,6 @@ export async function mintUbisoftToken(
 
   if (lastFailure) return { ...lastFailure, poolQuotaAtStart };
   return { ok: false, code: 'Failure', error: 'no attempt produced a result', poolQuotaAtStart };
-}
-
-/** Force an account's daily counter to the cap so rotation skips it today. */
-async function markAccountExhaustedToday(accountId: number): Promise<void> {
-  const today = utcDateKey();
-  const cap = CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
-  try {
-    await (prisma as any).ubisoftUsage.upsert({
-      where: { accountId_usageDate: { accountId, usageDate: today } },
-      update: { count: cap },
-      create: { accountId, usageDate: today, count: cap },
-    });
-  } catch {
-    /* non-fatal */
-  }
 }
 
 /** Health probe for /ubisofthealth-style staff commands. */

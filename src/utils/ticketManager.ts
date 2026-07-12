@@ -28,9 +28,13 @@ import { isStaff, getTier, getTierForGuild } from './permissions';
 import { canBypassQueue, checkQueueAccess, removeFromQueue } from './queueManager';
 import { computeCooldownHours } from './cooldown';
 import { resolveServerConfig } from './tenant';
-import { usesAccountSyncedStock, syncStockForGame, computeUbisoftRemaining, computeEaRemaining, countSharedPoolTickets } from './accountCapacity';
+import { usesAccountSyncedStock, syncStockForGame, computeUbisoftRemaining, computeEaRemaining, countSharedPoolTickets, syncUbisoftGamesStock, syncEaGamesStock } from './accountCapacity';
 import { isUbisoftGame } from './ubisoftCatalog';
 import { isEaGame } from './eaCatalog';
+import { consumeUbisoftPoolSlot } from './ubisoftService';
+import { consumeEaPoolSlot } from './eaService';
+import { UBISOFT_STAGE_DONE } from './ubisoftFlow';
+import { EA_STAGE_DONE } from './eaFlow';
 import { isUserBlacklisted, BLACKLIST_TICKET_MESSAGE } from './blacklistManager';
 
 // Note: The Maps below now only store active timers to handle timeouts.
@@ -563,6 +567,42 @@ export async function closeTicket(interaction: ButtonInteraction) {
   await interaction.editReply({ embeds: [embed], components: [row] });
 }
 
+function ticketTokenAlreadyConsumed(ticket: { deliveryMessageId?: string | null; ubisoftStage?: string | null; eaStage?: string | null }): boolean {
+  return Boolean(
+    ticket.deliveryMessageId ||
+    ticket.ubisoftStage === UBISOFT_STAGE_DONE ||
+    ticket.eaStage === EA_STAGE_DONE,
+  );
+}
+
+async function applyStockDeduction(ticket: { gameId: number; game: { appId?: number | null; ubisoftAppId?: number | null; eaContentId?: number | null }; deliveryMessageId?: string | null; ubisoftStage?: string | null; eaStage?: string | null; fromQueue?: boolean }, guildId: string): Promise<void> {
+  if (isUbisoftGame(ticket.game)) {
+    if (!ticketTokenAlreadyConsumed(ticket)) {
+      await consumeUbisoftPoolSlot();
+    } else {
+      await syncUbisoftGamesStock(guildId);
+    }
+    return;
+  }
+  if (isEaGame(ticket.game)) {
+    if (!ticketTokenAlreadyConsumed(ticket)) {
+      await consumeEaPoolSlot();
+    } else {
+      await syncEaGamesStock(guildId);
+    }
+    return;
+  }
+  await consumeStock(ticket.gameId, guildId, !!ticket.fromQueue);
+}
+
+async function refreshPlatformStockAfterClose(ticket: { game: { appId?: number | null; ubisoftAppId?: number | null; eaContentId?: number | null } }, guildId: string): Promise<void> {
+  if (isUbisoftGame(ticket.game)) {
+    await syncUbisoftGamesStock(guildId);
+  } else if (isEaGame(ticket.game)) {
+    await syncEaGamesStock(guildId);
+  }
+}
+
 export async function handleDeductionChoice(interaction: ButtonInteraction, choice: 'yes' | 'no') {
   await interaction.deferUpdate();
   const ticket = await prisma.ticket.findUnique({ where: { channelId: interaction.channelId }, include: { game: true } });
@@ -580,7 +620,9 @@ export async function handleDeductionChoice(interaction: ButtonInteraction, choi
   const deduct = choice === 'yes';
 
   if (deduct) {
-    await consumeStock(ticket.gameId, effectiveGuildId, ticket.fromQueue).catch(console.error);
+    await applyStockDeduction(ticket, effectiveGuildId).catch(console.error);
+  } else {
+    await refreshPlatformStockAfterClose(ticket, effectiveGuildId).catch(console.error);
   }
 
   const until = new Date();
@@ -618,7 +660,7 @@ export async function handleDeductionChoice(interaction: ButtonInteraction, choi
 
 export async function handleCooldownSelection(interaction: StringSelectMenuInteraction) {
   await interaction.deferUpdate();
-  const ticket = await prisma.ticket.findFirst({ where: { channelId: interaction.channelId } });
+  const ticket = await prisma.ticket.findFirst({ where: { channelId: interaction.channelId }, include: { game: true } });
   if (!ticket || ticket.activeClosingStaffId !== interaction.user.id) {
     return interaction.followUp({ content: '❌ **Lock Conflict.**', flags: [MessageFlags.Ephemeral] });
   }
@@ -631,7 +673,9 @@ export async function handleCooldownSelection(interaction: StringSelectMenuInter
   const csGuildId = ticket.guildId || interaction.guildId || '';
 
   if (deduct) {
-    await consumeStock(ticket.gameId, csGuildId, ticket.fromQueue).catch(console.error);
+    await applyStockDeduction(ticket, csGuildId).catch(console.error);
+  } else {
+    await refreshPlatformStockAfterClose(ticket, csGuildId).catch(console.error);
   }
 
   const until = new Date();
