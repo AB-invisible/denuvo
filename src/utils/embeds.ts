@@ -69,8 +69,11 @@ function formatGameSelectDescription(input: GameSelectStatusInput): string {
   return truncateDiscordText(parts.join(' | '), 100);
 }
 
-function buildGameSelectOption(game: GameWithCount, description: string, tone: GameSelectStatusTone) {
-  const statusEmoji = tone === 'ok' ? '🟢' : tone === 'low' ? '🟡' : '🔴';
+function buildGameSelectOption(game: GameWithCount, description: string, tone: GameSelectStatusTone, highDemand = false) {
+  let statusEmoji = tone === 'ok' ? '🟢' : tone === 'low' ? '🟡' : '🔴';
+  // High-demand games fly a 🔥 flag so they stand out — but only while they
+  // still have stock; keep 🔴 when out so availability still reads correctly.
+  if (highDemand && tone !== 'out') statusEmoji = '🔥';
   const cleanName = game.name.replace(/[^\x20-\x7E]/g, '').trim() || `Game ${game.id}`;
   const safeLabel = truncateDiscordText(`${statusEmoji} ${cleanName}`, 100);
   return new StringSelectMenuOptionBuilder()
@@ -148,7 +151,7 @@ export async function createMainPanel(guildId?: string) {
     .setColor(0x5865F2)
     .setImage(getPanelAssetUrl('gamegen.png') ?? 'attachment://gamegen.png')
     .setTimestamp()
-    .setFooter({ text: '🟢 In stock   🟡 Low stock   🔴 Out of stock   ·   Pick a game from the dropdown' });
+    .setFooter({ text: '🟢 In stock   🟡 Low stock   🔴 Out of stock   🔥 High demand   ·   Pick a game from the dropdown' });
 
   if (allGames.length === 0) {
     mainEmbed.setDescription(`Welcome to the **${CONFIG.NAME} Activation Lounge**.\n\n⚠️ **No games are currently available in the system.**\nIf you are an administrator, please run the seed script to populate the database.`);
@@ -193,7 +196,7 @@ export async function createMainPanel(guildId?: string) {
           const description = formatGameSelectDescription(statusInput);
           const tone = gameSelectStatusTone(statusInput);
 
-          return buildGameSelectOption(game, description, tone);
+          return buildGameSelectOption(game, description, tone, !!game.highDemand);
         })
       );
 
