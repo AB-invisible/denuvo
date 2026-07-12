@@ -352,7 +352,8 @@ export async function syncOwnerStockForNewUtcDay() {
     if (meta?.value === today) return;
 
     const { syncAllOwnerGameStock } = await import('./accountCapacity');
-    const count = await syncAllOwnerGameStock();
+    const { CONFIG } = await import('../config');
+    const count = await syncAllOwnerGameStock(CONFIG.OWNER_GUILD_ID, { forceRaise: true });
     await prisma.metadata.upsert({
       where: { key: 'lastOwnerStockSyncDate' },
       update: { value: today },

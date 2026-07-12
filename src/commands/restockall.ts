@@ -1,6 +1,7 @@
 import prisma from '../lib/prisma';
 import { refreshAllPanels } from '../utils/panelManager';
 import { logAction } from '../utils/logging';
+import { resolveOwnerManualStock } from '../utils/accountCapacity';
 
 export async function execute(interaction: any): Promise<void> {
   const amount = interaction.options.getInteger('amount') ?? 5;
@@ -12,10 +13,11 @@ export async function execute(interaction: any): Promise<void> {
   }
 
   for (const game of games) {
+    const stock = await resolveOwnerManualStock(game.id, guildId, amount);
     await prisma.serverStock.upsert({
       where: { gameId_guildId: { gameId: game.id, guildId } },
-      update: { stock: amount, lastDepletedAt: null },
-      create: { gameId: game.id, guildId, stock: amount },
+      update: { stock, lastDepletedAt: null },
+      create: { gameId: game.id, guildId, stock },
     });
   }
 
@@ -23,7 +25,7 @@ export async function execute(interaction: any): Promise<void> {
   await refreshAllPanels();
 
   await interaction.editReply({
-    content: `✅ **Restocked All:** Set \`${games.length}\` game(s) to \`${amount}\` token(s). Cleared pending restocks.`,
+    content: `✅ **Restocked All:** Set \`${games.length}\` game(s) to at least \`${amount}\` token(s) (account-linked games may be higher). Cleared pending restocks.`,
   });
 
   if (interaction.guild) {

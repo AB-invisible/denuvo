@@ -24,6 +24,7 @@ function truncateDiscordText(text: string, max: number): string {
 /** Select option text must be plain — emoji in descriptions caused Discord 500s. */
 type GameSelectStatusInput = {
   availableStock: number;
+  totalStock: number;
   reserved: number;
   queueCount: number;
   gameLastDepleted: Date | null;
@@ -31,6 +32,7 @@ type GameSelectStatusInput = {
   donatorOnly: boolean;
   boosterOnly: boolean;
   highDemand: boolean;
+  accountSynced: boolean;
 };
 
 export type GameSelectStatusTone = 'ok' | 'low' | 'out';
@@ -42,23 +44,35 @@ function gameSelectStatusTone(input: GameSelectStatusInput): GameSelectStatusTon
 }
 
 function formatGameSelectDescription(input: GameSelectStatusInput): string {
-  const { availableStock, reserved, queueCount, gameLastDepleted, now } = input;
+  const { availableStock, totalStock, reserved, queueCount, gameLastDepleted, now, accountSynced } = input;
   const parts: string[] = [];
 
   if (availableStock >= 10) {
     parts.push(`${availableStock} available`);
   } else if (availableStock > 0) {
     parts.push(`Only ${availableStock} left`);
+  } else if (totalStock > 0 && reserved >= totalStock) {
+    parts.push(`All ${totalStock} reserved`);
+  } else if (accountSynced) {
+    parts.push('Out for today');
   } else if (gameLastDepleted) {
     const timeDiff = now.getTime() - gameLastDepleted.getTime();
     const remaining = Math.max(0, REGEN_TIME - timeDiff);
     const hours = Math.floor(remaining / (1000 * 60 * 60));
     const minutes = Math.floor((remaining % (1000 * 60 * 60)) / (1000 * 60));
-    parts.push(hours > 0 ? `Restocks ${hours}h ${minutes}m` : `Restocks ${minutes}m`);
+    if (remaining <= 0) {
+      parts.push('Restocking soon');
+    } else {
+      parts.push(hours > 0 ? `Restocks ${hours}h ${minutes}m` : `Restocks ${minutes}m`);
+    }
   } else if (reserved > 0) {
     parts.push(`${reserved} in progress`);
   } else {
     parts.push('Out of stock');
+  }
+
+  if (reserved > 0 && !(totalStock > 0 && reserved >= totalStock)) {
+    parts.push(`${reserved} reserved`);
   }
 
   if (queueCount > 0) parts.push(`${queueCount} waiting`);
@@ -86,6 +100,15 @@ export async function createMainPanel(guildId?: string) {
   // Process any pending auto-restocks for this server before building panel
   if (guildId) await processGuildRestocks(guildId);
 
+  const accountSynced = guildId ? usesAccountSyncedStock(guildId) : false;
+
+  // Owner server: refresh depleted games from live account quotas so the panel
+  // does not show "Restocks 0m" while stock is still 0 in the DB.
+  if (guildId && accountSynced) {
+    const { syncDepletedOwnerGamesForPanel } = await import('./accountCapacity');
+    await syncDepletedOwnerGamesForPanel(guildId);
+  }
+
   const allGames = await getActiveGames() as GameWithCount[];
   const now = new Date();
 
@@ -112,7 +135,9 @@ export async function createMainPanel(guildId?: string) {
     serverStockMap = await getServerStockMapForGuild(guildId);
   }
 
-  const accountSynced = guildId ? usesAccountSyncedStock(guildId) : false;
+  const restockCycleLine = accountSynced
+    ? 'Account quotas reset at **00:00 UTC** each day.'
+    : 'Depleted games refill **5 tokens** every **24 hours**.';
 
   const totalStock = allGames.reduce((acc: number, game: GameWithCount) => {
     const ss = serverStockMap.get(game.id);
@@ -143,7 +168,7 @@ export async function createMainPanel(guildId?: string) {
       },
       {
         name: 'Restock cycle',
-        value: 'Depleted games refill **5 tokens** every **24 hours**.',
+        value: restockCycleLine,
         inline: true,
       },
       { name: 'Staff', value: staffLine, inline: true },
@@ -184,6 +209,7 @@ export async function createMainPanel(guildId?: string) {
 
           const statusInput: GameSelectStatusInput = {
             availableStock,
+            totalStock: gameStock,
             reserved,
             queueCount,
             gameLastDepleted,
@@ -191,6 +217,7 @@ export async function createMainPanel(guildId?: string) {
             donatorOnly: !!game.donatorOnly,
             boosterOnly: !!game.boosterOnly,
             highDemand: !!game.highDemand,
+            accountSynced,
           };
 
           const description = formatGameSelectDescription(statusInput);

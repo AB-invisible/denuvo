@@ -154,6 +154,26 @@ export async function getDefaultStockForApp(appId: number, guildId: string): Pro
 export interface SyncStockOptions {
   /** When true, set stock to full account capacity even if excludeRegen capped it. */
   forceRaise?: boolean;
+  /** Keep current stock when it exceeds the synced value (staff manual restock). */
+  preserveManualFloor?: boolean;
+}
+
+/**
+ * Owner-server manual stock: honour the staff count but never go below live
+ * account quota when accounts cover the game (SteamAuth / owned / pool).
+ */
+export async function resolveOwnerManualStock(
+  gameId: number,
+  guildId: string,
+  requestedAmount: number,
+): Promise<number> {
+  if (!usesAccountSyncedStock(guildId)) return requestedAmount;
+
+  const game = await prisma.game.findUnique({ where: { id: gameId } });
+  if (!game?.appId || isUbisoftGame(game) || isEaGame(game)) return requestedAmount;
+
+  const remaining = await computeRemainingDailyTokens(game.appId, guildId);
+  return Math.max(requestedAmount, remaining);
 }
 
 /** Push account-derived remaining tokens into ServerStock for one game. */
@@ -182,9 +202,13 @@ export async function syncStockForGame(
   // When regen is excluded (or staff manually depleted), never raise stock from
   // account sync — only allow it to drop if quotas are exhausted. forceRaise
   // bypasses this when staff adds a new account source (/steamauth link, etc.).
-  const newStock = opts.forceRaise || !game.excludeRegen
+  let newStock = opts.forceRaise || !game.excludeRegen
     ? remaining
     : Math.min(remaining, current);
+
+  if (opts.preserveManualFloor && current > newStock) {
+    newStock = current;
+  }
 
   await prisma.serverStock.upsert({
     where: { gameId_guildId: { gameId, guildId } },
@@ -231,6 +255,26 @@ export async function syncAllOwnerGameStock(
     synced++;
   }
 
+  return synced;
+}
+
+/** Recompute stock for zero-stock owner games before panel render. */
+export async function syncDepletedOwnerGamesForPanel(
+  guildId: string = CONFIG.OWNER_GUILD_ID,
+): Promise<number> {
+  if (!usesAccountSyncedStock(guildId)) return 0;
+
+  const depleted = await prisma.serverStock.findMany({
+    where: { guildId, stock: 0 },
+    select: { gameId: true },
+  });
+  if (depleted.length === 0) return 0;
+
+  let synced = 0;
+  for (const { gameId } of depleted) {
+    await syncStockForGame(gameId, guildId, { forceRaise: true });
+    synced++;
+  }
   return synced;
 }
 

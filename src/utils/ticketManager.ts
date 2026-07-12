@@ -158,7 +158,7 @@ export async function createTicket(interaction: StringSelectMenuInteraction, sel
 
     const gamePreview = gameRecord;
     if (gamePreview.appId && usesAccountSyncedStock(ticketGuildId)) {
-      await syncStockForGame(gamePreview.id, ticketGuildId);
+      await syncStockForGame(gamePreview.id, ticketGuildId, { preserveManualFloor: true });
     }
 
     const member = interaction.member as GuildMember;

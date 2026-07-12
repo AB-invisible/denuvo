@@ -10,7 +10,10 @@ import {
   syncStockForGame,
   getDefaultStockForApp,
   computeRemainingDailyTokens,
+  resolveOwnerManualStock,
 } from './accountCapacity';
+import { isUbisoftGame } from './ubisoftCatalog';
+import { isEaGame } from './eaCatalog';
 
 export const REGEN_TIME = 24 * 60 * 60 * 1000; // 24 hours
 
@@ -133,6 +136,10 @@ export async function updateStock(gameName: string, sub: 'add' | 'remove' | 'set
   }
   if (newStock < 0) newStock = 0;
 
+  if (usesAccountSyncedStock(guildId) && game.appId && !isUbisoftGame(game) && !isEaGame(game)) {
+    newStock = await resolveOwnerManualStock(game.id, guildId, newStock);
+  }
+
   const lastDepletedAt = newStock === 0 ? new Date() : null;
 
   await prisma.serverStock.update({
@@ -160,10 +167,14 @@ export async function updateStockForAllGames(amount: number, guildId: string = '
   const depletedAt = amount === 0 ? new Date() : null;
 
   for (const game of games) {
+    let stock = amount;
+    if (amount > 0) {
+      stock = await resolveOwnerManualStock(game.id, guildId, amount);
+    }
     await prisma.serverStock.upsert({
       where: { gameId_guildId: { gameId: game.id, guildId } },
-      update: { stock: amount, lastDepletedAt: depletedAt },
-      create: { gameId: game.id, guildId, stock: amount, lastDepletedAt: depletedAt },
+      update: { stock, lastDepletedAt: depletedAt },
+      create: { gameId: game.id, guildId, stock, lastDepletedAt: depletedAt },
     });
   }
 

@@ -1,4 +1,5 @@
 import prisma from '../lib/prisma';
+import { CONFIG } from '../config';
 import { logAction } from '../utils/logging';
 
 export async function execute(interaction: any): Promise<void> {
@@ -24,9 +25,11 @@ export async function execute(interaction: any): Promise<void> {
       }
     } else {
       const updated = await prisma.game.updateMany({ data: { excludeRegen: false } });
+      const { syncAllOwnerGameStock } = await import('../utils/accountCapacity');
+      const synced = await syncAllOwnerGameStock(CONFIG.OWNER_GUILD_ID, { forceRaise: true });
 
       await interaction.editReply({
-        content: `🔓 **Bulk Regen Enabled:** Auto-regeneration is now enabled for **${updated.count}** game(s).`,
+        content: `🔓 **Bulk Regen Enabled:** Auto-regeneration is now enabled for **${updated.count}** game(s). Resynced **${synced}** owner game(s) from account quotas.`,
       });
 
       if (interaction.guild) {
@@ -52,6 +55,10 @@ export async function execute(interaction: any): Promise<void> {
       await interaction.editReply({ content: `🔒 **Regen Excluded:** **${gameName}** will no longer auto-regenerate stock.` });
     }
   } else {
-    await interaction.editReply({ content: `🔓 **Regen Enabled:** **${gameName}** will now auto-regenerate stock as normal.` });
+    const { syncStockForGame } = await import('../utils/accountCapacity');
+    const remaining = await syncStockForGame(game.id, CONFIG.OWNER_GUILD_ID, { forceRaise: true });
+    await interaction.editReply({
+      content: `🔓 **Regen Enabled:** **${gameName}** will now auto-regenerate stock as normal. Owner stock resynced to **${remaining}** token(s) from account quotas.`,
+    });
   }
 }
