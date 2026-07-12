@@ -1,8 +1,17 @@
 import Groq from 'groq-sdk';
 import { CONFIG } from '../config';
 
+// Hard cap on how long a single verification may take. Without this, a slow /
+// hung Groq call (or a huge/odd screenshot the model chokes on) leaves the
+// "Analyzing Assets…" message frozen forever. On timeout the SDK throws, the
+// catch below returns the transient-error sentinel, and the ticket routes to
+// staff approval instead of getting stuck.
+const GROQ_TIMEOUT_MS = Number(process.env.GROQ_TIMEOUT_MS || 45_000);
+
 const groq = new Groq({
   apiKey: CONFIG.GROQ_API_KEY,
+  timeout: GROQ_TIMEOUT_MS,
+  maxRetries: 1,
 });
 
 /**
@@ -32,7 +41,11 @@ export async function verifyScreenshot(imageUrl: string, gameName: string): Prom
   }
 
   try {
-    const response = await groq.chat.completions.create({
+    // Belt-and-suspenders hard cap: even if the SDK timeout misbehaves, this
+    // race guarantees verifyScreenshot() resolves/throws within the window so
+    // the "Analyzing…" message never hangs.
+    const response = await Promise.race([
+      groq.chat.completions.create({
       messages: [
         {
           role: 'system',
@@ -103,7 +116,11 @@ ANSWER: [YES or NO]`,
       // List of models: https://console.groq.com/docs/models
       model: process.env.GROQ_MODEL || 'meta-llama/llama-4-scout-17b-16e-instruct',
       temperature: 0.1, // Low temperature for higher consistency
-    });
+      }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Groq verification timed out')), GROQ_TIMEOUT_MS + 5_000),
+      ),
+    ]);
 
     const rawResult = response.choices[0]?.message?.content?.trim() || "";
     console.log(`[Groq Verification] Processed response: "${rawResult}"`);

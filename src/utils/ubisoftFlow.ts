@@ -38,6 +38,7 @@ import { resolveUbisoftForGame, catalogByMagicFile, resolveMagicDir, catalogBySt
 import { mintUbisoftToken, ubisoftServiceConfigured } from './ubisoftService';
 import { resolvePublicBaseUrl } from './downloadHost';
 import { createCallhomeInstaller } from './installerPackage';
+import { consumeStock } from './gameManager';
 
 export const UBISOFT_STAGE_AWAITING = 'AWAITING_TOKEN_REQ';
 export const UBISOFT_STAGE_DONE = 'DONE';
@@ -197,17 +198,19 @@ export async function startUbisoftDelivery(channel: TextChannel, ticket: any, gu
   }
 
   const embed = new EmbedBuilder()
-    .setTitle(`🎮 ${ticket.game.name} — One-Click Activation`)
+    .setTitle(`✅ ${ticket.game.name} — Get Activated`)
     .setDescription(
-      `Your screenshot has been verified. **Download and run the installer below** — it does everything for you:\n\n` +
-        `**1.** Installs the setup files into your game folder\n` +
-        `**2.** Launches the game once to generate your activation request\n` +
-        `**3.** Generates your token and places it into the game folder automatically\n\n` +
-        `When it finishes, **launch ${ticket.game.name}** and confirm it works below.`,
+      `Your screenshot is verified. **Do these 3 steps:**\n\n` +
+        `**1️⃣  Download** the file below.\n` +
+        `**2️⃣  Extract** the ZIP  →  right-click it, pick **Extract All**.\n` +
+        `**3️⃣  Run** the **\`installer.exe\`** inside the extracted folder.\n\n` +
+        `That's it. The installer does **everything else by itself** — no clicking, no pasting.\n\n` +
+        `⚠️  **${ticket.game.name} must already be installed on Steam.**\n\n` +
+        `When it finishes, **launch the game** and press **Confirm Working** below. ❤️`,
     )
-    .setColor(0x5865f2)
-    .addFields({ name: '📦 Installer', value: `[Download here](${installer.url})` })
-    .setFooter({ text: 'Install the game via Steam first • Link valid for 3 hours' })
+    .setColor(0x57f287)
+    .addFields({ name: '⬇️ Download', value: `**[⬇️  CLICK HERE TO DOWNLOAD](${installer.url})**` })
+    .setFooter({ text: '① Download  ②  Extract the ZIP  ③  Run installer.exe  •  Link valid 3 hours' })
     .setTimestamp();
 
   await channel.send({ embeds: [embed] });
@@ -346,17 +349,27 @@ export async function handleUbisoftTokenReq(message: Message, ticket: any): Prom
         ? `Our Ubisoft account doesn’t own **${ticket.game.name}** on the configured AppID. Staff has been notified.`
         : result.code === 'InvalidRequest'
         ? `The submitted file could not be processed. Please launch **${ticket.game.name}** again and attach the updated **\`token_req.txt\`** to this ticket.`
+        : result.code === 'LoginCooldown'
+        ? `${result.error}\n\nJust re-attach your **\`token_req.txt\`** once the cooldown passes — no need to redo anything.`
         : result.code === 'LoginFailed'
-        ? `Ubisoft login failed on our side. Staff has been notified.`
+        ? `Ubisoft sign-in is temporarily unavailable on our side. Staff has been notified — please try again in a few minutes.`
         : `Token generation failed. Staff has been notified.`;
 
+    const isTransient = result.code === 'LoginCooldown';
     await genMsg.edit({
-      embeds: [new EmbedBuilder().setTitle('⚠️ Generation Failed').setDescription(friendly).setColor(0xed4245).setTimestamp()],
+      embeds: [
+        new EmbedBuilder()
+          .setTitle(isTransient ? '⏳ Temporarily Unavailable' : '⚠️ Generation Failed')
+          .setDescription(friendly)
+          .setColor(isTransient ? 0xfee75c : 0xed4245)
+          .setTimestamp(),
+      ],
     });
 
-    // InvalidRequest is the user's to fix (bad paste) — keep waiting. Others
-    // need staff, so ping them.
-    if (result.code !== 'InvalidRequest') {
+    // InvalidRequest is the user's to fix (bad paste) — keep waiting. LoginCooldown
+    // is a known transient back-off (staff already pinged on the first failure).
+    // Everything else needs staff, so ping them.
+    if (result.code !== 'InvalidRequest' && result.code !== 'LoginCooldown') {
       await channel.send({ content: `${staffPing} Ubisoft token gen failed for **${ticket.game.name}** — \`${result.code}\`. Manual handling needed.` });
       if (hg) {
         await logAction(hg, '⚠️ Ubisoft Token Failed', `**${ticket.game.name}** (appId \`${resolved.ubisoftAppId}\`) failed: \`${result.code}\` — ${result.error}\n\`\`\`\n${(result.logs || '').slice(-600)}\n\`\`\``, 0xed4245);
@@ -392,6 +405,14 @@ export async function handleUbisoftTokenReq(message: Message, ticket: any): Prom
     where: { id: ticket.id },
     data: { ubisoftStage: UBISOFT_STAGE_DONE, deliveryMessageId: deliveryMsg.id, staffId: client.user!.id } as any,
   });
+
+  // Each successful Ubisoft mint is a real activation spent right now — decrement
+  // stock at delivery, not on vouch (the vouch path skips Ubisoft/EA to avoid
+  // double-counting). Otherwise delivered-but-unvouched tokens never drop the
+  // count and the panel overstates availability.
+  await consumeStock(ticket.gameId, guildId, !!ticket.fromQueue).catch((e) =>
+    console.error('[UbisoftFlow] consumeStock failed:', (e as Error).message),
+  );
 
   if (hg) {
     const via = result.accountId ? `account #${result.accountId}` : 'env default account';

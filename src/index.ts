@@ -1815,9 +1815,12 @@ client.on(Events.MessageCreate, async (message) => {
             await logAction(guild, '📦 Token Delivered', `Staff ${message.author} delivered a token zip for **${ticket.game.name}** in <#${message.channelId}>.`, 0x5865F2);
           }
 
-          await manualConsumeStock(ticket.gameId, ticket.guildId || message.guildId || '').catch((e) =>
-            console.error('[StaffDelivery] manualConsumeStock failed:', e),
-          );
+          // Ubisoft/EA already consumed at mint — don't double-deduct here.
+          if (!isUbisoftGame(ticket.game) && !isEaGame(ticket.game)) {
+            await manualConsumeStock(ticket.gameId, ticket.guildId || message.guildId || '').catch((e) =>
+              console.error('[StaffDelivery] manualConsumeStock failed:', e),
+            );
+          }
           refreshAllPanels();
         }
       }
@@ -1919,8 +1922,12 @@ client.on(Events.MessageCreate, async (message) => {
             create: { userId: vouchTicket.userId, guildId: cdGuildId, until }
           });
 
-          // Deduct one token from stock
-          await consumeStock(vouchTicket.gameId, vouchTicket.guildId || message.guildId || '', vouchTicket.fromQueue).catch((e) => console.error('[VouchAuto] consumeStock failed:', e));
+          // Deduct one token from stock — EXCEPT Ubisoft/EA, which already
+          // consumed at mint time (their activation is spent on delivery, not
+          // vouch). Skipping here avoids double-counting.
+          if (!isUbisoftGame(vouchTicket.game) && !isEaGame(vouchTicket.game)) {
+            await consumeStock(vouchTicket.gameId, vouchTicket.guildId || message.guildId || '', vouchTicket.fromQueue).catch((e) => console.error('[VouchAuto] consumeStock failed:', e));
+          }
 
           // Close ticket
           await prisma.ticket.update({
