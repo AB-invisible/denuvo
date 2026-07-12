@@ -12,6 +12,7 @@ import { logAction } from '../utils/logging';
  *
  *   /ubisoftaccount add email:<e> password:<pw> [label]
  *   /ubisoftaccount list
+ *   /ubisoftaccount markfull id:<row id>  — set today's usage to cap (5/5)
  *   /ubisoftaccount remove id:<row id>
  */
 export async function execute(interaction: any): Promise<void> {
@@ -51,6 +52,26 @@ export async function execute(interaction: any): Promise<void> {
     return;
   }
 
+  if (sub === 'markfull') {
+    const id = interaction.options.getInteger('id', true);
+    const cap = CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
+    try {
+      const acct = await (prisma as any).ubisoftAccount.findUnique({ where: { id } }).catch(() => null);
+      if (!acct) return interaction.editReply({ content: `❌ No Ubisoft account with ID \`${id}\`.` });
+      const { setPlatformAccountUsageToday, syncUbisoftGamesStock } = await import('../utils/accountCapacity');
+      await setPlatformAccountUsageToday('ubisoft', id, cap);
+      await syncUbisoftGamesStock(CONFIG.OWNER_GUILD_ID);
+      const { refreshAllPanels } = await import('../utils/panelManager');
+      await refreshAllPanels();
+      await interaction.editReply({
+        content: `✅ Marked **#${id}** \`${acct.email}\` as **${cap}/${cap}** used today. Panel refreshed.`,
+      });
+    } catch (e) {
+      return interaction.editReply({ content: `❌ Failed: ${(e as Error).message}` });
+    }
+    return;
+  }
+
   if (sub === 'remove') {
     const id = interaction.options.getInteger('id', true);
     try {
@@ -68,6 +89,12 @@ export async function execute(interaction: any): Promise<void> {
   }
 
   // ── list ──
+  const { reconcileOrphanEnvUsage, syncUbisoftGamesStock } = await import('../utils/accountCapacity');
+  const merged = await reconcileOrphanEnvUsage('ubisoft');
+  if (merged > 0) {
+    await syncUbisoftGamesStock(CONFIG.OWNER_GUILD_ID).catch(() => {});
+  }
+
   let accounts: any[] = [];
   try {
     accounts = await (prisma as any).ubisoftAccount.findMany({ orderBy: [{ priority: 'asc' }, { id: 'asc' }] });
@@ -98,7 +125,11 @@ export async function execute(interaction: any): Promise<void> {
     .setTitle('🎮 Ubisoft Accounts')
     .setDescription(lines)
     .setColor(0x5865F2)
-    .setFooter({ text: `Rotated in priority order (${cap}/day each), then the service's default account` })
+    .setFooter({
+      text:
+        `Rotated in priority order (${cap}/day each), then the service's default account` +
+        (merged > 0 ? ` · merged ${merged} orphan env-fallback use(s)` : ''),
+    })
     .setTimestamp();
   await interaction.editReply({ embeds: [embed] });
 }

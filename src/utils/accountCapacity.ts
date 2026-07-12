@@ -72,6 +72,85 @@ export async function markEnvPlatformExhaustedToday(platform: 'ubisoft' | 'ea'):
   }
 }
 
+/**
+ * Older mints via the service env-default path stored usage in Metadata instead
+ * of UbisoftUsage/EaUsage when BYO accounts existed — panel showed 4/5 while
+ * 5 activations actually ran. Merge orphan env counts into account rows.
+ */
+export async function reconcileOrphanEnvUsage(platform: 'ubisoft' | 'ea'): Promise<number> {
+  let orphan = await getEnvPlatformUsageToday(platform);
+  if (orphan <= 0) return 0;
+
+  const accountTable = platform === 'ubisoft' ? 'ubisoftAccount' : 'eaAccount';
+  const usageTable = platform === 'ubisoft' ? 'ubisoftUsage' : 'eaUsage';
+  const cap = CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
+  const today = utcDateKey();
+  let applied = 0;
+
+  try {
+    const rows = await (prisma as any)[accountTable].findMany({
+      where: { active: true, guildId: '' },
+      orderBy: [{ priority: 'asc' }, { id: 'asc' }],
+    });
+
+    for (const acct of rows) {
+      while (orphan > 0) {
+        let used = 0;
+        try {
+          const u = await (prisma as any)[usageTable].findUnique({
+            where: { accountId_usageDate: { accountId: acct.id, usageDate: today } },
+          });
+          used = u?.count ?? 0;
+        } catch {
+          used = 0;
+        }
+        if (used >= cap) break;
+
+        await (prisma as any)[usageTable].upsert({
+          where: { accountId_usageDate: { accountId: acct.id, usageDate: today } },
+          update: { count: { increment: 1 } },
+          create: { accountId: acct.id, usageDate: today, count: used + 1 },
+        });
+        orphan -= 1;
+        applied += 1;
+      }
+      if (orphan <= 0) break;
+    }
+
+    const key = envUsageKey(platform, today);
+    if (orphan <= 0) {
+      await prisma.metadata.delete({ where: { key } }).catch(() => {});
+    } else {
+      await prisma.metadata.upsert({
+        where: { key },
+        update: { value: String(orphan) },
+        create: { key, value: String(orphan) },
+      });
+    }
+  } catch {
+    return applied;
+  }
+
+  return applied;
+}
+
+/** Set today's usage for one platform account (staff correction). */
+export async function setPlatformAccountUsageToday(
+  platform: 'ubisoft' | 'ea',
+  accountId: number,
+  count: number,
+): Promise<void> {
+  const usageTable = platform === 'ubisoft' ? 'ubisoftUsage' : 'eaUsage';
+  const today = utcDateKey();
+  const cap = CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
+  const clamped = Math.max(0, Math.min(cap, count));
+  await (prisma as any)[usageTable].upsert({
+    where: { accountId_usageDate: { accountId, usageDate: today } },
+    update: { count: clamped },
+    create: { accountId, usageDate: today, count: clamped },
+  });
+}
+
 async function sumAccountPoolRemaining(
   table: 'ubisoftAccount' | 'eaAccount',
   usageTable: 'ubisoftUsage' | 'eaUsage',
@@ -424,6 +503,7 @@ export async function syncAllOwnerGameStock(
 /** Push live Ubisoft pool quota into ServerStock for every Ubisoft game. */
 export async function syncUbisoftGamesStock(guildId: string = CONFIG.OWNER_GUILD_ID): Promise<void> {
   if (!usesAccountSyncedStock(guildId)) return;
+  await reconcileOrphanEnvUsage('ubisoft');
   const remaining = await computeUbisoftRemaining(guildId);
   const games = await prisma.game.findMany({ where: { disabled: false } });
   for (const g of games) {
@@ -439,6 +519,7 @@ export async function syncUbisoftGamesStock(guildId: string = CONFIG.OWNER_GUILD
 /** Push live EA pool quota into ServerStock for every EA game. */
 export async function syncEaGamesStock(guildId: string = CONFIG.OWNER_GUILD_ID): Promise<void> {
   if (!usesAccountSyncedStock(guildId)) return;
+  await reconcileOrphanEnvUsage('ea');
   const remaining = await computeEaRemaining(guildId);
   const games = await prisma.game.findMany({ where: { disabled: false } });
   for (const g of games) {

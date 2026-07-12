@@ -213,6 +213,10 @@ const commands = [
       .setName('list')
       .setDescription('List registered Ubisoft accounts + today\'s usage'))
     .addSubcommand(sub => sub
+      .setName('markfull')
+      .setDescription('Mark an account as fully used today (5/5) — fixes counter drift')
+      .addIntegerOption(o => o.setName('id').setDescription('Account ID (from /ubisoftaccount list)').setRequired(true)))
+    .addSubcommand(sub => sub
       .setName('remove')
       .setDescription('Remove a registered Ubisoft account by its ID')
       .addIntegerOption(o => o.setName('id').setDescription('Account ID (from /ubisoftaccount list)').setRequired(true)))
