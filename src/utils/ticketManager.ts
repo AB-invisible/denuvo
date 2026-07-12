@@ -566,8 +566,11 @@ function ticketTokenAlreadyConsumed(ticket: { deliveryMessageId?: string | null;
 async function applyStockDeduction(ticket: { gameId: number; game: { appId?: number | null; ubisoftAppId?: number | null; eaContentId?: number | null }; deliveryMessageId?: string | null; ubisoftStage?: string | null; eaStage?: string | null; fromQueue?: boolean }, guildId: string): Promise<void> {
   if (isUbisoftGame(ticket.game)) {
     if (!ticketTokenAlreadyConsumed(ticket)) {
-      await consumeUbisoftPoolSlot();
-      await consumeStock(ticket.gameId, guildId, !!ticket.fromQueue);
+      const appId = ticket.game.ubisoftAppId;
+      if (appId) {
+        await consumeUbisoftPoolSlot(appId);
+        await consumeStock(ticket.gameId, guildId, !!ticket.fromQueue);
+      }
     }
     return;
   }

@@ -16,8 +16,15 @@
 
 import prisma from '../lib/prisma';
 import { CONFIG } from '../config';
-import { utcDateKey } from './steampassPool';
-import { syncUbisoftGamesStock, incrementEnvPlatformUsage, markEnvPlatformExhaustedToday } from './accountCapacity';
+import {
+  incrementEnvPlatformUsage,
+  markEnvPlatformExhaustedToday,
+} from './accountCapacity';
+import {
+  getUbisoftGameUsageToday,
+  incrementUbisoftGameUsage,
+  markUbisoftGameExhaustedToday,
+} from './ubisoftUsage';
 
 export interface UbisoftMintSuccess {
   ok: true;
@@ -121,15 +128,16 @@ async function callService(
   }
 }
 
-/** Active Ubisoft accounts with daily quota left, priority order. */
-async function getAvailableUbisoftAccounts(guildId: string): Promise<Array<{ id: number; email: string; password: string }>> {
+/** Active Ubisoft accounts with daily quota left for one title, priority order. */
+async function getAvailableUbisoftAccounts(
+  guildId: string,
+  ubisoftAppId: number,
+): Promise<Array<{ id: number; email: string; password: string }>> {
   const cap = CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
-  const today = utcDateKey();
 
   let accounts: any[] = [];
   try {
     const where: Record<string, unknown> = { active: true };
-    // Owner pool lives under guildId "". Tenant tickets should still use it.
     if (guildId) {
       where.OR = [{ guildId: '' }, { guildId }];
     } else {
@@ -146,15 +154,7 @@ async function getAvailableUbisoftAccounts(guildId: string): Promise<Array<{ id:
 
   const available: Array<{ id: number; email: string; password: string }> = [];
   for (const acct of accounts) {
-    let used = 0;
-    try {
-      const usage = await (prisma as any).ubisoftUsage.findUnique({
-        where: { accountId_usageDate: { accountId: acct.id, usageDate: today } },
-      });
-      used = usage?.count ?? 0;
-    } catch {
-      used = 0;
-    }
+    const used = await getUbisoftGameUsageToday(acct.id, ubisoftAppId);
     if (used < cap) {
       available.push({ id: acct.id, email: acct.email, password: acct.password });
     }
@@ -162,14 +162,9 @@ async function getAvailableUbisoftAccounts(guildId: string): Promise<Array<{ id:
   return available;
 }
 
-async function recordUbisoftUsage(accountId: number): Promise<void> {
-  const today = utcDateKey();
+async function recordUbisoftUsage(accountId: number, ubisoftAppId: number): Promise<void> {
   try {
-    await (prisma as any).ubisoftUsage.upsert({
-      where: { accountId_usageDate: { accountId, usageDate: today } },
-      update: { count: { increment: 1 } },
-      create: { accountId, usageDate: today, count: 1 },
-    });
+    await incrementUbisoftGameUsage(accountId, ubisoftAppId);
     await (prisma as any).ubisoftAccount.update({
       where: { id: accountId },
       data: { lastUsedAt: new Date(), failureCount: 0, lastFailureAt: null },
@@ -179,32 +174,23 @@ async function recordUbisoftUsage(accountId: number): Promise<void> {
   }
 }
 
-/** Env-default mint — attribute usage to the first BYO account under cap, else metadata. */
-async function recordUbisoftMintUsage(accountId: number | null): Promise<void> {
+/** Attribute one activation to an account (or env fallback) for a specific title. */
+async function recordUbisoftMintUsage(accountId: number | null, ubisoftAppId: number): Promise<void> {
   if (accountId) {
-    await recordUbisoftUsage(accountId);
+    await recordUbisoftUsage(accountId, ubisoftAppId);
     return;
   }
 
   const cap = CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
-  const today = utcDateKey();
   try {
     const rows = await (prisma as any).ubisoftAccount.findMany({
       where: { active: true, guildId: '' },
       orderBy: [{ priority: 'asc' }, { id: 'asc' }],
     });
     for (const acct of rows) {
-      let used = 0;
-      try {
-        const u = await (prisma as any).ubisoftUsage.findUnique({
-          where: { accountId_usageDate: { accountId: acct.id, usageDate: today } },
-        });
-        used = u?.count ?? 0;
-      } catch {
-        used = 0;
-      }
+      const used = await getUbisoftGameUsageToday(acct.id, ubisoftAppId);
       if (used < cap) {
-        await recordUbisoftUsage(acct.id);
+        await recordUbisoftUsage(acct.id, ubisoftAppId);
         return;
       }
     }
@@ -212,24 +198,22 @@ async function recordUbisoftMintUsage(accountId: number | null): Promise<void> {
     /* fall through */
   }
 
-  // All BYO accounts at cap — mark exhausted so panel reads 0 (env metadata
-  // is ignored when BYO rows exist).
   try {
     const rows = await (prisma as any).ubisoftAccount.findMany({
       where: { active: true, guildId: '' },
       select: { id: true },
     });
     for (const acct of rows) {
-      await markAccountExhaustedToday(acct.id);
+      await markAccountExhaustedToday(acct.id, ubisoftAppId);
     }
   } catch {
-    await incrementEnvPlatformUsage('ubisoft');
+    await incrementEnvPlatformUsage('ubisoft', ubisoftAppId);
   }
 }
 
-/** Staff close / manual deduct — burn one Ubisoft activation slot without minting. */
-export async function consumeUbisoftPoolSlot(): Promise<void> {
-  await recordUbisoftMintUsage(null);
+/** Staff close / manual deduct — burn one slot for this Ubisoft title without minting. */
+export async function consumeUbisoftPoolSlot(ubisoftAppId: number): Promise<void> {
+  await recordUbisoftMintUsage(null, ubisoftAppId);
 }
 
 async function recordUbisoftFailure(accountId: number): Promise<void> {
@@ -243,16 +227,10 @@ async function recordUbisoftFailure(accountId: number): Promise<void> {
   }
 }
 
-/** Force an account's daily counter to the cap so rotation skips it today. */
-async function markAccountExhaustedToday(accountId: number): Promise<void> {
-  const today = utcDateKey();
-  const cap = CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
+/** Force an account's daily counter to the cap for one title so rotation skips it today. */
+async function markAccountExhaustedToday(accountId: number, ubisoftAppId: number): Promise<void> {
   try {
-    await (prisma as any).ubisoftUsage.upsert({
-      where: { accountId_usageDate: { accountId, usageDate: today } },
-      update: { count: cap },
-      create: { accountId, usageDate: today, count: cap },
-    });
+    await markUbisoftGameExhaustedToday(accountId, ubisoftAppId);
   } catch {
     /* non-fatal */
   }
@@ -311,7 +289,7 @@ export async function mintUbisoftToken(
   const appIds = altAppId && altAppId !== ubisoftAppId ? [ubisoftAppId, altAppId] : [ubisoftAppId];
   const ownerGuildKey = !guildId || guildId === CONFIG.OWNER_GUILD_ID ? '' : guildId;
 
-  const accounts = await getAvailableUbisoftAccounts(ownerGuildKey);
+  const accounts = await getAvailableUbisoftAccounts(ownerGuildKey, ubisoftAppId);
   const poolQuotaAtStart = accounts.length;
 
   // Build the attempt list: BYO accounts first, then the env-default account
@@ -339,7 +317,7 @@ export async function mintUbisoftToken(
 
       const result = mapResult(resp.status, resp.body, attempt.id, appId);
       if (result.ok) {
-        await recordUbisoftMintUsage(attempt.id);
+        await recordUbisoftMintUsage(attempt.id, result.usedAppId);
         return result;
       }
 
@@ -355,8 +333,8 @@ export async function mintUbisoftToken(
         sawExceededOnThisAccount = true;
         const appIdx = appIds.indexOf(appId);
         if (appIdx >= 0 && appIdx < appIds.length - 1) continue;
-        if (attempt.id) await markAccountExhaustedToday(attempt.id);
-        else await markEnvPlatformExhaustedToday('ubisoft');
+        if (attempt.id) await markAccountExhaustedToday(attempt.id, appId);
+        else await markEnvPlatformExhaustedToday('ubisoft', appId);
         break;
       }
 

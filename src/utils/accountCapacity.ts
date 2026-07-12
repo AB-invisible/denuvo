@@ -27,13 +27,16 @@ function eaEnvConfigured(): boolean {
   return Boolean((CONFIG.EA_SERVICE_URL || '').trim() && (CONFIG.EA_SERVICE_KEY || '').trim());
 }
 
-function envUsageKey(platform: 'ubisoft' | 'ea', day: string): string {
+function envUsageKey(platform: 'ubisoft' | 'ea', day: string, appId?: number): string {
+  if (platform === 'ubisoft' && appId != null) {
+    return `ubisoft_env_usage_${appId}_${day}`;
+  }
   return `${platform}_env_usage_${day}`;
 }
 
 /** Mints via the service env-default account (no BYO row) — tracked in Metadata. */
-export async function getEnvPlatformUsageToday(platform: 'ubisoft' | 'ea'): Promise<number> {
-  const key = envUsageKey(platform, utcDateKey());
+export async function getEnvPlatformUsageToday(platform: 'ubisoft' | 'ea', appId?: number): Promise<number> {
+  const key = envUsageKey(platform, utcDateKey(), appId);
   try {
     const row = await prisma.metadata.findUnique({ where: { key } });
     return row ? Math.max(0, parseInt(row.value, 10) || 0) : 0;
@@ -42,9 +45,9 @@ export async function getEnvPlatformUsageToday(platform: 'ubisoft' | 'ea'): Prom
   }
 }
 
-export async function incrementEnvPlatformUsage(platform: 'ubisoft' | 'ea'): Promise<void> {
+export async function incrementEnvPlatformUsage(platform: 'ubisoft' | 'ea', appId?: number): Promise<void> {
   const today = utcDateKey();
-  const key = envUsageKey(platform, today);
+  const key = envUsageKey(platform, today, appId);
   try {
     const row = await prisma.metadata.findUnique({ where: { key } });
     const next = (row ? parseInt(row.value, 10) || 0 : 0) + 1;
@@ -58,8 +61,8 @@ export async function incrementEnvPlatformUsage(platform: 'ubisoft' | 'ea'): Pro
   }
 }
 
-export async function markEnvPlatformExhaustedToday(platform: 'ubisoft' | 'ea'): Promise<void> {
-  const key = envUsageKey(platform, utcDateKey());
+export async function markEnvPlatformExhaustedToday(platform: 'ubisoft' | 'ea', appId?: number): Promise<void> {
+  const key = envUsageKey(platform, utcDateKey(), appId);
   const cap = String(CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY);
   try {
     await prisma.metadata.upsert({
@@ -77,8 +80,13 @@ export async function markEnvPlatformExhaustedToday(platform: 'ubisoft' | 'ea'):
  * of UbisoftUsage/EaUsage when BYO accounts existed — panel showed 4/5 while
  * 5 activations actually ran. Merge orphan env counts into account rows.
  */
-export async function reconcileOrphanEnvUsage(platform: 'ubisoft' | 'ea'): Promise<number> {
-  let orphan = await getEnvPlatformUsageToday(platform);
+export async function reconcileOrphanEnvUsage(platform: 'ubisoft' | 'ea', ubisoftAppId = 0): Promise<number> {
+  let orphan = platform === 'ubisoft'
+    ? await getEnvPlatformUsageToday('ubisoft', ubisoftAppId || undefined)
+    : await getEnvPlatformUsageToday('ea');
+  if (orphan <= 0 && platform === 'ubisoft' && ubisoftAppId === 0) {
+    orphan = await getEnvPlatformUsageToday('ubisoft');
+  }
   if (orphan <= 0) return 0;
 
   const accountTable = platform === 'ubisoft' ? 'ubisoftAccount' : 'eaAccount';
@@ -97,29 +105,44 @@ export async function reconcileOrphanEnvUsage(platform: 'ubisoft' | 'ea'): Promi
       while (orphan > 0) {
         let used = 0;
         try {
-          const u = await (prisma as any)[usageTable].findUnique({
-            where: { accountId_usageDate: { accountId: acct.id, usageDate: today } },
-          });
-          used = u?.count ?? 0;
+          if (platform === 'ubisoft') {
+            const { getUbisoftGameUsageToday } = await import('./ubisoftUsage');
+            used = await getUbisoftGameUsageToday(acct.id, ubisoftAppId);
+          } else {
+            const u = await (prisma as any)[usageTable].findUnique({
+              where: { accountId_usageDate: { accountId: acct.id, usageDate: today } },
+            });
+            used = u?.count ?? 0;
+          }
         } catch {
           used = 0;
         }
         if (used >= cap) break;
 
-        await (prisma as any)[usageTable].upsert({
-          where: { accountId_usageDate: { accountId: acct.id, usageDate: today } },
-          update: { count: { increment: 1 } },
-          create: { accountId: acct.id, usageDate: today, count: used + 1 },
-        });
+        if (platform === 'ubisoft') {
+          const { incrementUbisoftGameUsage } = await import('./ubisoftUsage');
+          await incrementUbisoftGameUsage(acct.id, ubisoftAppId);
+        } else {
+          await (prisma as any)[usageTable].upsert({
+            where: { accountId_usageDate: { accountId: acct.id, usageDate: today } },
+            update: { count: { increment: 1 } },
+            create: { accountId: acct.id, usageDate: today, count: used + 1 },
+          });
+        }
         orphan -= 1;
         applied += 1;
       }
       if (orphan <= 0) break;
     }
 
-    const key = envUsageKey(platform, today);
+    const key = platform === 'ubisoft'
+      ? envUsageKey('ubisoft', today, ubisoftAppId || undefined)
+      : envUsageKey('ea', today);
     if (orphan <= 0) {
       await prisma.metadata.delete({ where: { key } }).catch(() => {});
+      if (platform === 'ubisoft' && ubisoftAppId === 0) {
+        await prisma.metadata.delete({ where: { key: envUsageKey('ubisoft', today) } }).catch(() => {});
+      }
     } else {
       await prisma.metadata.upsert({
         where: { key },
@@ -139,8 +162,14 @@ export async function setPlatformAccountUsageToday(
   platform: 'ubisoft' | 'ea',
   accountId: number,
   count: number,
+  ubisoftAppId?: number,
 ): Promise<void> {
-  const usageTable = platform === 'ubisoft' ? 'ubisoftUsage' : 'eaUsage';
+  if (platform === 'ubisoft') {
+    const { setUbisoftGameUsageToday } = await import('./ubisoftUsage');
+    await setUbisoftGameUsageToday(accountId, ubisoftAppId ?? 0, count);
+    return;
+  }
+  const usageTable = 'eaUsage';
   const today = utcDateKey();
   const cap = CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
   const clamped = Math.max(0, Math.min(cap, count));
@@ -312,21 +341,31 @@ export async function computeRemainingDailyTokens(
   return breakdown.totalRemaining;
 }
 
-/** Remaining Ubisoft activations today (shared pool across all Ubisoft games). */
-export async function computeUbisoftRemaining(guildId: string = CONFIG.OWNER_GUILD_ID): Promise<number> {
+/** Remaining Ubisoft activations today for one title (shared accounts, per-game quota). */
+export async function computeUbisoftRemaining(
+  guildId: string = CONFIG.OWNER_GUILD_ID,
+  ubisoftAppId?: number,
+): Promise<number> {
   if (!usesAccountSyncedStock(guildId)) return CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
 
   const cap = CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
-  const { remaining, accountCount } = await sumAccountPoolRemaining('ubisoftAccount', 'ubisoftUsage', guildId);
 
-  // Env-default is a fallback slot only when no BYO accounts are registered.
-  // Never stack it on top of DB accounts — that inflated the panel (e.g. 1 + 5 = 6).
-  if (accountCount === 0 && ubisoftEnvConfigured()) {
-    const envUsed = await getEnvPlatformUsageToday('ubisoft');
-    return Math.max(0, cap - envUsed);
+  if (ubisoftAppId != null) {
+    const { computeUbisoftRemainingForGame } = await import('./ubisoftUsage');
+    let remaining = await computeUbisoftRemainingForGame(ubisoftAppId, guildId);
+    const accountCount = await (prisma as any).ubisoftAccount.count({
+      where: guildId && guildId !== CONFIG.OWNER_GUILD_ID
+        ? { active: true, OR: [{ guildId: '' }, { guildId }] }
+        : { active: true, guildId: '' },
+    }).catch(() => 0);
+    if (accountCount === 0 && ubisoftEnvConfigured()) {
+      const envUsed = await getEnvPlatformUsageToday('ubisoft', ubisoftAppId);
+      return Math.max(0, cap - envUsed);
+    }
+    return remaining;
   }
 
-  return remaining;
+  return CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
 }
 
 /** Remaining EA activations today (shared pool across all EA games). */
@@ -467,11 +506,19 @@ export async function alignPlatformUsageToStock(
   for (const acct of accounts) {
     const usedForAcct = Math.min(cap, usedTotal);
     usedTotal -= usedForAcct;
-    await (prisma as any)[usageTable].upsert({
-      where: { accountId_usageDate: { accountId: acct.id, usageDate: today } },
-      update: { count: usedForAcct },
-      create: { accountId: acct.id, usageDate: today, count: usedForAcct },
-    });
+    if (platform === 'ubisoft') {
+      await (prisma as any)[usageTable].upsert({
+        where: { accountId_ubisoftAppId_usageDate: { accountId: acct.id, ubisoftAppId: 0, usageDate: today } },
+        update: { count: usedForAcct },
+        create: { accountId: acct.id, ubisoftAppId: 0, usageDate: today, count: usedForAcct },
+      });
+    } else {
+      await (prisma as any)[usageTable].upsert({
+        where: { accountId_usageDate: { accountId: acct.id, usageDate: today } },
+        update: { count: usedForAcct },
+        create: { accountId: acct.id, usageDate: today, count: usedForAcct },
+      });
+    }
   }
 }
 

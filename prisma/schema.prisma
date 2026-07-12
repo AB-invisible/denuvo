@@ -560,18 +560,20 @@ model UbisoftAccount {
   @@unique([guildId, email])
 }
 
-// Per-account, per-day token counter for Ubisoft accounts. usageDate is a
-// "YYYY-MM-DD" UTC string; count is capped in code at the Denuvo daily
-// limit (OWNER_TOKENS_PER_ACCOUNT_PER_DAY).
+// Per-account, per-title, per-day token counter for Ubisoft accounts.
+// usageDate is a "YYYY-MM-DD" UTC string; count is capped in code at the
+// Denuvo daily limit (OWNER_TOKENS_PER_ACCOUNT_PER_DAY) **per Ubisoft title**.
 model UbisoftUsage {
-  id        Int      @id @default(autoincrement())
-  accountId Int
-  account   UbisoftAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  usageDate String   // "YYYY-MM-DD" UTC
-  count     Int      @default(0)
-  updatedAt DateTime @default(now()) @updatedAt
+  id           Int      @id @default(autoincrement())
+  accountId    Int
+  account      UbisoftAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  ubisoftAppId Int
+  usageDate    String   // "YYYY-MM-DD" UTC
+  count        Int      @default(0)
+  updatedAt    DateTime @default(now()) @updatedAt
 
-  @@unique([accountId, usageDate])
+  @@unique([accountId, ubisoftAppId, usageDate])
+  @@index([ubisoftAppId, usageDate])
 }
 
 // ─── EA accounts (BYO) for token minting ────────────────────────────

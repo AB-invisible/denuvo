@@ -1,14 +1,15 @@
 import { EmbedBuilder } from 'discord.js';
 import prisma from '../lib/prisma';
 import { CONFIG } from '../config';
-import { utcDateKey } from '../utils/steampassPool';
 import { logAction } from '../utils/logging';
+import { isUbisoftGame } from '../utils/ubisoftCatalog';
+import { getUbisoftGameUsageToday, setUbisoftGameUsageToday } from '../utils/ubisoftUsage';
 
 /**
  * /ubisoftaccount — owner-only management of BYO Ubisoft accounts used to
  * mint Denuvo tokens via ubisoft-service. Each account is good for up to the
- * Denuvo daily cap (OWNER_TOKENS_PER_ACCOUNT_PER_DAY) tokens/day; gen rotates
- * to the next account when spent, then to the service's env-default account.
+ * Denuvo daily cap (OWNER_TOKENS_PER_ACCOUNT_PER_DAY) tokens **per title** per day;
+ * gen rotates to the next account when spent, then to the service's env-default account.
  *
  *   /ubisoftaccount add email:<e> password:<pw> [label]
  *   /ubisoftaccount list
@@ -40,7 +41,7 @@ export async function execute(interaction: any): Promise<void> {
         content:
           `✅ **Ubisoft account saved** (#${acct.id}).\n` +
           `• Email: \`${email}\`\n\n` +
-          `The bot uses this account to mint Ubisoft tokens — up to \`${cap}\` per day — then rotates to the next account and finally the service's default account. ` +
+          `The bot uses this account to mint Ubisoft tokens — up to \`${cap}\` **per title per day** — then rotates to the next account and finally the service's default account. ` +
           `First login may need a trusted device (\`LoginStore.dat\`) seeded on the service.`,
       });
       if (interaction.guild) {
@@ -58,13 +59,19 @@ export async function execute(interaction: any): Promise<void> {
     try {
       const acct = await (prisma as any).ubisoftAccount.findUnique({ where: { id } }).catch(() => null);
       if (!acct) return interaction.editReply({ content: `❌ No Ubisoft account with ID \`${id}\`.` });
-      const { setPlatformAccountUsageToday, syncUbisoftGamesStock } = await import('../utils/accountCapacity');
-      await setPlatformAccountUsageToday('ubisoft', id, cap);
-      await syncUbisoftGamesStock(CONFIG.OWNER_GUILD_ID);
+      const games = await prisma.game.findMany({
+        where: { disabled: false },
+        select: { name: true, ubisoftAppId: true },
+      });
+      const titles = games.filter((g) => isUbisoftGame(g) && g.ubisoftAppId);
+      for (const g of titles) {
+        await setUbisoftGameUsageToday(id, g.ubisoftAppId!, cap);
+      }
       const { refreshAllPanels } = await import('../utils/panelManager');
       await refreshAllPanels();
       await interaction.editReply({
-        content: `✅ Marked **#${id}** \`${acct.email}\` as **${cap}/${cap}** used today. Panel refreshed.`,
+        content:
+          `✅ Marked **#${id}** \`${acct.email}\` as **${cap}/${cap}** used today on **${titles.length}** Ubisoft title(s). Panel refreshed.`,
       });
     } catch (e) {
       return interaction.editReply({ content: `❌ Failed: ${(e as Error).message}` });
@@ -89,11 +96,8 @@ export async function execute(interaction: any): Promise<void> {
   }
 
   // ── list ──
-  const { reconcileOrphanEnvUsage, syncUbisoftGamesStock } = await import('../utils/accountCapacity');
-  const merged = await reconcileOrphanEnvUsage('ubisoft');
-  if (merged > 0) {
-    await syncUbisoftGamesStock(CONFIG.OWNER_GUILD_ID).catch(() => {});
-  }
+  const { reconcileOrphanEnvUsage } = await import('../utils/accountCapacity');
+  const merged = await reconcileOrphanEnvUsage('ubisoft', 0);
 
   let accounts: any[] = [];
   try {
@@ -105,20 +109,28 @@ export async function execute(interaction: any): Promise<void> {
     return interaction.editReply({ content: '📭 No Ubisoft accounts registered yet. Add one with `/ubisoftaccount add`.' });
   }
 
-  const today = utcDateKey();
   const cap = CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
+  const games = await prisma.game.findMany({
+    where: { disabled: false },
+    select: { name: true, ubisoftAppId: true },
+    orderBy: { name: 'asc' },
+  });
+  const titles = games.filter((g) => isUbisoftGame(g) && g.ubisoftAppId);
 
   let lines = '';
   for (const a of accounts) {
-    let used = 0;
-    try {
-      const u = await (prisma as any).ubisoftUsage.findUnique({ where: { accountId_usageDate: { accountId: a.id, usageDate: today } } });
-      used = u?.count ?? 0;
-    } catch { used = 0; }
     const state = a.active ? '' : ' · ⏸️ inactive';
     const fails = a.failureCount ? ` · ⚠️${a.failureCount} fail(s)` : '';
     const lbl = a.label ? ` — ${a.label}` : '';
-    lines += `**#${a.id}** \`${a.email}\`${lbl}\n╰─ ${used}/${cap} today${state}${fails}\n`;
+    lines += `**#${a.id}** \`${a.email}\`${lbl}${state}${fails}\n`;
+    if (titles.length === 0) {
+      lines += `╰─ ${cap}/day per title (no Ubisoft games in catalog yet)\n`;
+    } else {
+      for (const g of titles) {
+        const used = await getUbisoftGameUsageToday(a.id, g.ubisoftAppId!);
+        lines += `╰─ **${g.name}:** ${used}/${cap}\n`;
+      }
+    }
   }
 
   const embed = new EmbedBuilder()
@@ -127,8 +139,8 @@ export async function execute(interaction: any): Promise<void> {
     .setColor(0x5865F2)
     .setFooter({
       text:
-        `Rotated in priority order (${cap}/day each), then the service's default account` +
-        (merged > 0 ? ` · merged ${merged} orphan env-fallback use(s)` : ''),
+        `${cap}/day per title · rotated in priority order, then the service default account` +
+        (merged > 0 ? ` · merged ${merged} legacy env use(s)` : ''),
     })
     .setTimestamp();
   await interaction.editReply({ embeds: [embed] });
