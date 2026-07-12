@@ -16,16 +16,17 @@ export async function execute(interaction: any): Promise<void> {
     return interaction.editReply({
       content:
         '**How to import a session (bypasses captcha):**\n' +
-        '1. Open https://signin.ea.com in Chrome and log in normally\n' +
-        '2. F12 → Application → Cookies → `https://signin.ea.com` → copy the **remid** value\n' +
-        '3. Run `/easession action:import remid:<paste here>`',
+        '1. Open **https://www.ea.com/login** in Chrome (works when signin.ea.com hangs)\n' +
+        '2. Log in → F12 → **Application** → **Cookies** → check `www.ea.com`, `accounts.ea.com`, or `signin.ea.com`\n' +
+        '3. Copy the **remid** value → `/easession action:import remid:<paste>`\n\n' +
+        '**Or run locally:** `python ea-service/import_browser_session.py` (opens browser, grabs remid, uploads automatically)',
     });
   }
 
   const remid = (interaction.options.getString('remid', true) || '').trim();
   if (remid.length < 8) {
     return interaction.editReply({
-      content: '❌ Paste the full **remid** cookie from your browser (F12 → Application → Cookies → signin.ea.com).',
+      content: '❌ Paste the full **remid** cookie (F12 → Application → Cookies → `www.ea.com` or `accounts.ea.com`).',
     });
   }
 
@@ -40,7 +41,7 @@ export async function execute(interaction: any): Promise<void> {
   } else {
     const hint =
       result.code === 'AuthError'
-        ? '\n\nThe remid may be expired — log in again at https://signin.ea.com and copy a fresh remid.'
+        ? '\n\nThe remid may be expired — log in at https://www.ea.com/login and copy a fresh remid.'
         : '';
     await interaction.editReply({
       content: `❌ Session import failed${result.code ? ` (\`${result.code}\`)` : ''}: ${result.message || result.error || 'unknown error'}${hint}`,

@@ -63,7 +63,7 @@ class EaLoginError(Exception):
         self.code = code
 
 
-EA_LOGIN_BUILD = "4"
+EA_LOGIN_BUILD = "5"
 
 
 def _http_session():
