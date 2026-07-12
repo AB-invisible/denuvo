@@ -567,7 +567,7 @@ model UbisoftUsage {
   id           Int      @id @default(autoincrement())
   accountId    Int
   account      UbisoftAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  ubisoftAppId Int
+  ubisoftAppId Int      @default(0)
   usageDate    String   // "YYYY-MM-DD" UTC
   count        Int      @default(0)
   updatedAt    DateTime @default(now()) @updatedAt
