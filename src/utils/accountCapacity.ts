@@ -27,6 +27,89 @@ function eaEnvConfigured(): boolean {
   return Boolean((CONFIG.EA_SERVICE_URL || '').trim() && (CONFIG.EA_SERVICE_KEY || '').trim());
 }
 
+function envUsageKey(platform: 'ubisoft' | 'ea', day: string): string {
+  return `${platform}_env_usage_${day}`;
+}
+
+/** Mints via the service env-default account (no BYO row) — tracked in Metadata. */
+export async function getEnvPlatformUsageToday(platform: 'ubisoft' | 'ea'): Promise<number> {
+  const key = envUsageKey(platform, utcDateKey());
+  try {
+    const row = await prisma.metadata.findUnique({ where: { key } });
+    return row ? Math.max(0, parseInt(row.value, 10) || 0) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export async function incrementEnvPlatformUsage(platform: 'ubisoft' | 'ea'): Promise<void> {
+  const today = utcDateKey();
+  const key = envUsageKey(platform, today);
+  try {
+    const row = await prisma.metadata.findUnique({ where: { key } });
+    const next = (row ? parseInt(row.value, 10) || 0 : 0) + 1;
+    await prisma.metadata.upsert({
+      where: { key },
+      update: { value: String(next) },
+      create: { key, value: String(next) },
+    });
+  } catch {
+    /* non-fatal */
+  }
+}
+
+export async function markEnvPlatformExhaustedToday(platform: 'ubisoft' | 'ea'): Promise<void> {
+  const key = envUsageKey(platform, utcDateKey());
+  const cap = String(CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY);
+  try {
+    await prisma.metadata.upsert({
+      where: { key },
+      update: { value: cap },
+      create: { key, value: cap },
+    });
+  } catch {
+    /* non-fatal */
+  }
+}
+
+async function sumAccountPoolRemaining(
+  table: 'ubisoftAccount' | 'eaAccount',
+  usageTable: 'ubisoftUsage' | 'eaUsage',
+  guildId: string,
+): Promise<{ remaining: number; accountCount: number }> {
+  const cap = CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
+  const today = utcDateKey();
+  let remaining = 0;
+  let accountCount = 0;
+
+  try {
+    const where: Record<string, unknown> = { active: true };
+    if (guildId) {
+      where.OR = [{ guildId: '' }, { guildId }];
+    } else {
+      where.guildId = '';
+    }
+    const accounts = await (prisma as any)[table].findMany({ where });
+    accountCount = accounts.length;
+    for (const acct of accounts) {
+      let used = 0;
+      try {
+        const usage = await (prisma as any)[usageTable].findUnique({
+          where: { accountId_usageDate: { accountId: acct.id, usageDate: today } },
+        });
+        used = usage?.count ?? 0;
+      } catch {
+        used = 0;
+      }
+      remaining += Math.max(0, cap - used);
+    }
+  } catch {
+    /* table may not exist */
+  }
+
+  return { remaining, accountCount };
+}
+
 export function usesAccountSyncedStock(guildId: string): boolean {
   return !guildId || guildId === CONFIG.OWNER_GUILD_ID;
 }
@@ -155,35 +238,13 @@ export async function computeUbisoftRemaining(guildId: string = CONFIG.OWNER_GUI
   if (!usesAccountSyncedStock(guildId)) return CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
 
   const cap = CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
-  const today = utcDateKey();
-  let remaining = 0;
+  const { remaining, accountCount } = await sumAccountPoolRemaining('ubisoftAccount', 'ubisoftUsage', guildId);
 
-  try {
-    const where: Record<string, unknown> = { active: true };
-    if (guildId) {
-      where.OR = [{ guildId: '' }, { guildId }];
-    } else {
-      where.guildId = '';
-    }
-    const accounts = await (prisma as any).ubisoftAccount.findMany({ where });
-    for (const acct of accounts) {
-      let used = 0;
-      try {
-        const usage = await (prisma as any).ubisoftUsage.findUnique({
-          where: { accountId_usageDate: { accountId: acct.id, usageDate: today } },
-        });
-        used = usage?.count ?? 0;
-      } catch {
-        used = 0;
-      }
-      remaining += Math.max(0, cap - used);
-    }
-  } catch {
-    /* table may not exist */
-  }
-
-  if (ubisoftEnvConfigured()) {
-    remaining += cap;
+  // Env-default is a fallback slot only when no BYO accounts are registered.
+  // Never stack it on top of DB accounts — that inflated the panel (e.g. 1 + 5 = 6).
+  if (accountCount === 0 && ubisoftEnvConfigured()) {
+    const envUsed = await getEnvPlatformUsageToday('ubisoft');
+    return Math.max(0, cap - envUsed);
   }
 
   return remaining;
@@ -194,38 +255,40 @@ export async function computeEaRemaining(guildId: string = CONFIG.OWNER_GUILD_ID
   if (!usesAccountSyncedStock(guildId)) return CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
 
   const cap = CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
-  const today = utcDateKey();
-  let remaining = 0;
+  const { remaining, accountCount } = await sumAccountPoolRemaining('eaAccount', 'eaUsage', guildId);
 
-  try {
-    const where: Record<string, unknown> = { active: true };
-    if (guildId) {
-      where.OR = [{ guildId: '' }, { guildId }];
-    } else {
-      where.guildId = '';
-    }
-    const accounts = await (prisma as any).eaAccount.findMany({ where });
-    for (const acct of accounts) {
-      let used = 0;
-      try {
-        const usage = await (prisma as any).eaUsage.findUnique({
-          where: { accountId_usageDate: { accountId: acct.id, usageDate: today } },
-        });
-        used = usage?.count ?? 0;
-      } catch {
-        used = 0;
-      }
-      remaining += Math.max(0, cap - used);
-    }
-  } catch {
-    /* table may not exist */
-  }
-
-  if (eaEnvConfigured()) {
-    remaining += cap;
+  if (accountCount === 0 && eaEnvConfigured()) {
+    const envUsed = await getEnvPlatformUsageToday('ea');
+    return Math.max(0, cap - envUsed);
   }
 
   return remaining;
+}
+
+/** OPEN/CLAIMED tickets across all games in a shared platform pool. */
+export async function countSharedPoolTickets(
+  platform: 'ubisoft' | 'ea',
+  guildId: string,
+): Promise<number> {
+  const games = await prisma.game.findMany({
+    where: { disabled: false },
+    select: { id: true, appId: true, ubisoftAppId: true, eaContentId: true },
+  });
+  const gameIds = games
+    .filter((g) => (platform === 'ubisoft' ? isUbisoftGame(g) : isEaGame(g)))
+    .map((g) => g.id);
+  if (gameIds.length === 0) return 0;
+
+  const statusFilter = { in: ['OPEN', 'CLAIMED'] as const };
+  const where = usesAccountSyncedStock(guildId)
+    ? {
+        gameId: { in: gameIds },
+        status: statusFilter,
+        OR: [{ guildId }, { guildId: '' }, { guildId: null }],
+      }
+    : { gameId: { in: gameIds }, guildId, status: statusFilter };
+
+  return prisma.ticket.count({ where: where as any });
 }
 
 /** Default stock when seeding ServerStock for a game on the owner server. */

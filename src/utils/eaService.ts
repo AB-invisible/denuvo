@@ -10,7 +10,7 @@
 import prisma from '../lib/prisma';
 import { CONFIG } from '../config';
 import { utcDateKey } from './steampassPool';
-import { syncEaGamesStock } from './accountCapacity';
+import { syncEaGamesStock, incrementEnvPlatformUsage, markEnvPlatformExhaustedToday } from './accountCapacity';
 
 export interface EaMintSuccess {
   ok: true;
@@ -149,6 +149,42 @@ async function recordEaUsage(accountId: number): Promise<void> {
   }
 }
 
+async function recordEaMintUsage(accountId: number | null): Promise<void> {
+  if (accountId) {
+    await recordEaUsage(accountId);
+    return;
+  }
+
+  const cap = CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
+  const today = utcDateKey();
+  try {
+    const rows = await (prisma as any).eaAccount.findMany({
+      where: { active: true, guildId: '' },
+      orderBy: [{ priority: 'asc' }, { id: 'asc' }],
+    });
+    for (const acct of rows) {
+      let used = 0;
+      try {
+        const u = await (prisma as any).eaUsage.findUnique({
+          where: { accountId_usageDate: { accountId: acct.id, usageDate: today } },
+        });
+        used = u?.count ?? 0;
+      } catch {
+        used = 0;
+      }
+      if (used < cap) {
+        await recordEaUsage(acct.id);
+        return;
+      }
+    }
+  } catch {
+    /* fall through */
+  }
+
+  await incrementEnvPlatformUsage('ea');
+  await syncEaGamesStock(CONFIG.OWNER_GUILD_ID).catch(() => {});
+}
+
 async function recordEaFailure(accountId: number): Promise<void> {
   try {
     await (prisma as any).eaAccount.update({
@@ -230,7 +266,7 @@ export async function mintEaToken(
 
     const result = mapResult(resp.status, resp.body, attempt.id, contentId, engine);
     if (result.ok) {
-      if (attempt.id) await recordEaUsage(attempt.id);
+      await recordEaMintUsage(attempt.id);
       return result;
     }
 
@@ -239,6 +275,7 @@ export async function mintEaToken(
     if (result.code === 'LimitExceeded') {
       sawLimit = true;
       if (attempt.id) await markEaAccountExhaustedToday(attempt.id);
+      else await markEnvPlatformExhaustedToday('ea');
       continue;
     }
 

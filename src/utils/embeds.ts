@@ -147,8 +147,19 @@ export async function createMainPanel(guildId?: string) {
 
   // Per-server stock: read cached ServerStock (synced by scheduler / account link commands).
   let serverStockMap = new Map<number, { stock: number; lastDepletedAt: Date | null }>();
+  let ubisoftPoolRemaining = 0;
+  let eaPoolRemaining = 0;
+  let ubisoftPoolReserved = 0;
+  let eaPoolReserved = 0;
   if (guildId) {
     serverStockMap = await getServerStockMapForGuild(guildId);
+    if (accountSynced) {
+      const cap = await import('./accountCapacity');
+      ubisoftPoolRemaining = await cap.computeUbisoftRemaining(guildId);
+      eaPoolRemaining = await cap.computeEaRemaining(guildId);
+      ubisoftPoolReserved = await cap.countSharedPoolTickets('ubisoft', guildId);
+      eaPoolReserved = await cap.countSharedPoolTickets('ea', guildId);
+    }
   }
 
   const restockCycleLine = accountSynced
@@ -217,9 +228,23 @@ export async function createMainPanel(guildId?: string) {
         chunk.map((game: GameWithCount) => {
           const ss = serverStockMap.get(game.id);
           const authoritative = accountSynced && !!game.appId && !isUbisoftGame(game) && !isEaGame(game);
-          const gameStock = ss ? ss.stock : (authoritative ? 0 : isUbisoftGame(game) || isEaGame(game) ? 0 : 5);
+          const isUbi = isUbisoftGame(game);
+          const isEa = isEaGame(game);
+
+          let gameStock: number;
+          let reserved: number;
+          if (accountSynced && isUbi) {
+            gameStock = ubisoftPoolRemaining;
+            reserved = ubisoftPoolReserved;
+          } else if (accountSynced && isEa) {
+            gameStock = eaPoolRemaining;
+            reserved = eaPoolReserved;
+          } else {
+            gameStock = ss ? ss.stock : (authoritative ? 0 : 5);
+            reserved = serverReservedMap.get(game.id) || 0;
+          }
+
           const gameLastDepleted = ss ? ss.lastDepletedAt : null;
-          const reserved = serverReservedMap.get(game.id) || 0;
           const availableStock = Math.max(0, gameStock - reserved);
           const queueCount = waitlistMap.get(game.id) || 0;
 

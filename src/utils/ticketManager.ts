@@ -28,7 +28,7 @@ import { isStaff, getTier, getTierForGuild } from './permissions';
 import { canBypassQueue, checkQueueAccess, removeFromQueue } from './queueManager';
 import { computeCooldownHours } from './cooldown';
 import { resolveServerConfig } from './tenant';
-import { usesAccountSyncedStock, syncStockForGame } from './accountCapacity';
+import { usesAccountSyncedStock, syncStockForGame, computeUbisoftRemaining, computeEaRemaining, countSharedPoolTickets } from './accountCapacity';
 import { isUbisoftGame } from './ubisoftCatalog';
 import { isEaGame } from './eaCatalog';
 import { isUserBlacklisted, BLACKLIST_TICKET_MESSAGE } from './blacklistManager';
@@ -216,10 +216,23 @@ export async function createTicket(interaction: StringSelectMenuInteraction, sel
         where: { gameId_guildId: { gameId: game.id, guildId: ticketGuildId } },
       });
       const authoritative = usesAccountSyncedStock(ticketGuildId) && !!game.appId && !isUbisoftGame(game) && !isEaGame(game);
-      const currentStock = serverStock?.stock ?? (authoritative ? 0 : 5);
-      const serverReservations = await tx.ticket.count({
-        where: { gameId: game.id, guildId: ticketGuildId, status: { in: ['OPEN', 'CLAIMED'] } },
-      });
+      const isUbi = isUbisoftGame(game);
+      const isEa = isEaGame(game);
+
+      let currentStock: number;
+      let serverReservations: number;
+      if (usesAccountSyncedStock(ticketGuildId) && isUbi) {
+        currentStock = await computeUbisoftRemaining(ticketGuildId);
+        serverReservations = await countSharedPoolTickets('ubisoft', ticketGuildId);
+      } else if (usesAccountSyncedStock(ticketGuildId) && isEa) {
+        currentStock = await computeEaRemaining(ticketGuildId);
+        serverReservations = await countSharedPoolTickets('ea', ticketGuildId);
+      } else {
+        currentStock = serverStock?.stock ?? (authoritative ? 0 : 5);
+        serverReservations = await tx.ticket.count({
+          where: { gameId: game.id, guildId: ticketGuildId, status: { in: ['OPEN', 'CLAIMED'] } },
+        });
+      }
       const availableResources = currentStock - serverReservations;
 
       if (availableResources <= 0) {

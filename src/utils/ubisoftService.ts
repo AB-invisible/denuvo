@@ -17,7 +17,7 @@
 import prisma from '../lib/prisma';
 import { CONFIG } from '../config';
 import { utcDateKey } from './steampassPool';
-import { syncUbisoftGamesStock } from './accountCapacity';
+import { syncUbisoftGamesStock, incrementEnvPlatformUsage, markEnvPlatformExhaustedToday } from './accountCapacity';
 
 export interface UbisoftMintSuccess {
   ok: true;
@@ -180,6 +180,43 @@ async function recordUbisoftUsage(accountId: number): Promise<void> {
   }
 }
 
+/** Env-default mint — attribute usage to the first BYO account under cap, else metadata. */
+async function recordUbisoftMintUsage(accountId: number | null): Promise<void> {
+  if (accountId) {
+    await recordUbisoftUsage(accountId);
+    return;
+  }
+
+  const cap = CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
+  const today = utcDateKey();
+  try {
+    const rows = await (prisma as any).ubisoftAccount.findMany({
+      where: { active: true, guildId: '' },
+      orderBy: [{ priority: 'asc' }, { id: 'asc' }],
+    });
+    for (const acct of rows) {
+      let used = 0;
+      try {
+        const u = await (prisma as any).ubisoftUsage.findUnique({
+          where: { accountId_usageDate: { accountId: acct.id, usageDate: today } },
+        });
+        used = u?.count ?? 0;
+      } catch {
+        used = 0;
+      }
+      if (used < cap) {
+        await recordUbisoftUsage(acct.id);
+        return;
+      }
+    }
+  } catch {
+    /* fall through */
+  }
+
+  await incrementEnvPlatformUsage('ubisoft');
+  await syncUbisoftGamesStock(CONFIG.OWNER_GUILD_ID).catch(() => {});
+}
+
 async function recordUbisoftFailure(accountId: number): Promise<void> {
   try {
     await (prisma as any).ubisoftAccount.update({
@@ -272,7 +309,7 @@ export async function mintUbisoftToken(
 
       const result = mapResult(resp.status, resp.body, attempt.id, appId);
       if (result.ok) {
-        if (attempt.id) await recordUbisoftUsage(attempt.id);
+        await recordUbisoftMintUsage(attempt.id);
         return result;
       }
 
@@ -289,6 +326,7 @@ export async function mintUbisoftToken(
         const appIdx = appIds.indexOf(appId);
         if (appIdx >= 0 && appIdx < appIds.length - 1) continue;
         if (attempt.id) await markAccountExhaustedToday(attempt.id);
+        else await markEnvPlatformExhaustedToday('ubisoft');
         break;
       }
 
