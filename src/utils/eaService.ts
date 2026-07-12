@@ -378,12 +378,18 @@ export async function eaSubmitCode(code: string): Promise<EaLoginActionResult> {
   return postEaLogin('/ea/verify-code', { code: code.trim() });
 }
 
+/** Import remid cookie from a browser login (bot /easession import). Bypasses captcha. */
+export async function eaImportSession(remid: string): Promise<EaLoginActionResult> {
+  return postEaLogin('/ea/session/import', { remid: remid.trim() });
+}
+
 export async function checkEaServiceHealth(): Promise<{
   ok: boolean;
   tool?: boolean;
   configured?: boolean;
   hasEmailPassword?: boolean;
   sessionEmail?: string | null;
+  loginBuild?: string | null;
   error?: string;
 }> {
   if (!eaServiceConfigured()) return { ok: false, error: 'not configured' };
@@ -396,6 +402,7 @@ export async function checkEaServiceHealth(): Promise<{
       configured: body?.configured,
       hasEmailPassword: body?.has_email_password,
       sessionEmail: body?.session_email ?? null,
+      loginBuild: body?.login_build ?? null,
     };
   } catch (e) {
     return { ok: false, error: (e as Error).message };

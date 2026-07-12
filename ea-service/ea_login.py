@@ -63,8 +63,23 @@ class EaLoginError(Exception):
         self.code = code
 
 
-def _browser_session() -> requests.Session:
-    http = requests.Session()
+EA_LOGIN_BUILD = "4"
+
+
+def _http_session():
+    """Chrome TLS fingerprint — plain requests is flagged as a bot on Railway."""
+    try:
+        from curl_cffi import requests as curl_requests
+
+        return curl_requests.Session(impersonate="chrome131")
+    except Exception:
+        import requests as fallback
+
+        return fallback.Session()
+
+
+def _browser_session() -> "requests.Session":
+    http = _http_session()
     http.headers.update(
         {
             "User-Agent": UA,
@@ -222,6 +237,63 @@ def _otp_flow_needed(body: str) -> bool:
     )
 
 
+def _discover_flow_events(html: str) -> list[str]:
+    found: list[str] = []
+    seen: set[str] = set()
+    for pattern in (
+        r'(?i)name="_eventId_([a-zA-Z0-9]+)"',
+        r'(?i)_eventId=([a-zA-Z0-9]+)',
+        r'(?i)_eventId["\']\s*:\s*["\']([a-zA-Z0-9]+)["\']',
+        r'(?i)data-eventid=["\']([a-zA-Z0-9]+)["\']',
+    ):
+        for m in re.finditer(pattern, html or ""):
+            ev = m.group(1)
+            if ev not in seen:
+                seen.add(ev)
+                found.append(ev)
+    priority = (
+        "loginWithOTP",
+        "oneTimeCode",
+        "sendCode",
+        "loginFromOTP",
+        "sendOTC",
+        "getOneTimeCode",
+        "otp",
+        "submit",
+    )
+    ordered = [e for e in priority if e in seen]
+    ordered.extend(e for e in found if e not in ordered)
+    return ordered
+
+
+def _try_flow_get_transitions(
+    http: requests.Session,
+    page_url: str,
+    page_html: str,
+    email: str,
+    seed: str,
+    pc_sign: str,
+    base: EaSession,
+    timeout: int,
+    stage_prefix: str,
+) -> Optional[EaSession]:
+    """Spring Web Flow links use GET ?...&_eventId=eventName (e.g. Get one-time code)."""
+    for ev in _discover_flow_events(page_html):
+        sep = "&" if "?" in page_url else "?"
+        target = f"{page_url}{sep}_eventId={ev}"
+        http.headers["Referer"] = page_url
+        r = http.get(target, timeout=timeout, allow_redirects=True)
+        body = r.text or ""
+        _diag(f"{stage_prefix}-get-{ev}", r)
+        if VERIFY_CODE_RE.search(body):
+            _save_pending_code_flow(http, email, seed, pc_sign, base, r.url)
+        if EMAIL_CODE_RADIO_RE.search(body) or SEND_CODE_RE.search(body):
+            return _send_email_code_and_pending(http, r.url, body, email, seed, pc_sign, base, timeout)
+        if WINDOW_LOCATION_RE.search(body.replace(" ", "")):
+            return _finish_login(http, body, r.url, email, pc_sign, base, seed, timeout)
+    return None
+
+
 def _otp_payloads(hidden: dict[str, str], email: str) -> list[dict[str, str]]:
     """Spring Web Flow event payloads seen on signin.ea.com for email OTP."""
     base = {**hidden, "email": email.strip()}
@@ -248,6 +320,10 @@ def _run_otp_attempts(
     timeout: int,
     stage_prefix: str = "otp",
 ) -> EaSession:
+    got = _try_flow_get_transitions(http, page_url, page_html, email, seed, pc_sign, base, timeout, stage_prefix)
+    if got is not None:
+        return got
+
     hidden = _extract_hidden_fields(page_html)
     for idx, payload in enumerate(_otp_payloads(hidden, email)):
         http.headers["Referer"] = page_url

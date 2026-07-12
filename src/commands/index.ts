@@ -42,6 +42,7 @@ import { execute as eatest } from './eatest';
 import { execute as installertest } from './installertest';
 import { execute as ealogin } from './ealogin';
 import { execute as eacode } from './eacode';
+import { execute as easession } from './easession';
 
 export const commandHandlers: Record<string, (interaction: any) => Promise<void>> = {
   postpanel,
@@ -88,4 +89,5 @@ export const commandHandlers: Record<string, (interaction: any) => Promise<void>
   installertest,
   ealogin,
   eacode,
+  easession,
 };

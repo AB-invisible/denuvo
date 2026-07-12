@@ -153,6 +153,59 @@ def resolve_config(
     )
 
 
+def import_remid_session(remid: str, email: str = "", password: str = "") -> EaSession:
+    """
+    Import a remid cookie copied from a normal browser login at signin.ea.com.
+    Bypasses Railway captcha entirely — the reliable fix when automated login is blocked.
+    """
+    remid = remid.strip()
+    if not remid:
+        raise EaMintError("InvalidRequest", "remid cookie value is required")
+
+    email = (email or os.environ.get("EA_EMAIL", "")).strip()
+    password = password or os.environ.get("EA_PASSWORD", "")
+    seed = _account_seed(email, password) if email and password else (email or "imported")
+    machine_hash = generate_machine_hash(seed)
+    signature = generate_pc_sign(seed)
+
+    from ea_login import _browser_session, _juno_auth_start_url
+
+    http = _browser_session()
+    http.cookies.set("remid", remid, domain=".ea.com")
+    start = _juno_auth_start_url(signature)
+    r = http.get(start, allow_redirects=False, timeout=30)
+    loc = r.headers.get("Location", "")
+    if r.status_code not in (301, 302, 303, 307, 308):
+        raise EaMintError("AuthError", "remid validation failed — EA did not redirect", logs=r.text[:300])
+    if "signin.ea.com" in loc:
+        raise EaMintError(
+            "AuthError",
+            "remid is expired or invalid — log in at https://signin.ea.com in Chrome, "
+            "then copy the fresh remid cookie (F12 → Application → Cookies).",
+        )
+    if "code=" not in loc and "#code=" not in loc:
+        raise EaMintError("AuthError", "remid did not yield an auth code", logs=f"location={loc[:300]}")
+
+    new_remid = remid
+    for c in r.cookies:
+        if c.name == "remid" and c.value:
+            new_remid = c.value
+
+    out = EaSession(
+        email=email,
+        remid=new_remid,
+        login_signature=signature,
+        login_sv="v2",
+        machine_hash=machine_hash,
+        trust_cookies={"remid": new_remid},
+        updated_at=time.time(),
+    )
+    save_session(out)
+    if email:
+        _ACCOUNT_CACHE[_cache_key(email)] = time.time()
+    return out
+
+
 def ensure_default_account_configured() -> EaSession:
     """Called on startup / health to warm the default env account session."""
     email = os.environ.get("EA_EMAIL", "").strip()

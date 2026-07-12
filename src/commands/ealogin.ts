@@ -34,9 +34,10 @@ export async function execute(interaction: any): Promise<void> {
   } else if (result.code === 'AuthError') {
     await interaction.editReply({
       content:
-        `📧 **EA blocked automated login** on the server IP (your password is probably fine).\n\n` +
-        `Run \`/ealogin\` again — it should email a **one-time code**. Then finish with \`/eacode code:XXXXXX\`.\n` +
-        `If you already got a code, skip straight to \`/eacode\`.`,
+        `📧 **EA blocked automated login** on Railway's IP (password is probably fine).\n\n` +
+        `**Reliable fix:** log in at https://signin.ea.com in Chrome, copy the **remid** cookie (F12 → Application → Cookies), then run:\n` +
+        `\`/easession action:import remid:<paste>\`\n\n` +
+        `**Or** try email OTP: run \`/ealogin\` again, check your inbox, then \`/eacode code:XXXXXX\`.`,
     });
   } else {
     await interaction.editReply({
