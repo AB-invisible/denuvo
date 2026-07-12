@@ -24,6 +24,13 @@ export async function execute(interaction: any): Promise<void> {
         `📧 EA emailed a verification code to **${result.email || 'your email'}**.\n\n` +
         `Check the inbox, then run \`/eacode code:123456\` to finish. This is a **one-time** step — after it, EA remembers the machine and stops asking.`,
     });
+  } else if (result.code === 'EmailCodePending') {
+    await interaction.editReply({
+      content:
+        `📧 **EA blocked automated password login** (captcha from Railway's IP).\n\n` +
+        `Check **${result.email || 'your EA email'}** for a one-time code, then run \`/eacode code:XXXXXX\`.\n` +
+        `If no email arrived, run \`/ealogin\` once more to resend.`,
+    });
   } else {
     await interaction.editReply({
       content: `❌ EA login failed${result.code ? ` (\`${result.code}\`)` : ''}: ${result.message || result.error || 'unknown error'}`,

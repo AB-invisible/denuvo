@@ -345,6 +345,16 @@ async function postEaLogin(path: string, payload?: Record<string, unknown>): Pro
       raw = { error: text.slice(0, 300) };
     }
     const b = unwrapBody(raw) as typeof raw;
+    if (res.status === 409 && (b?.status === 'code_pending' || b?.code === 'EmailCodePending')) {
+      return {
+        ok: false,
+        status: 'code_pending',
+        email: (b?.email as string) ?? null,
+        message: b?.message || b?.error,
+        code: b?.code,
+        error: b?.error,
+      };
+    }
     return {
       ok: res.ok && b?.ok === true,
       status: b?.status,

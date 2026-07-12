@@ -182,7 +182,14 @@ def ea_login(x_api_key: Optional[str] = Header(default=None)):
             if e.code == "EmailCodePending":
                 return JSONResponse(
                     status_code=409,
-                    content={"ok": False, "status": "code_pending", "email": masked_email(email), "message": str(e)},
+                    content={
+                        "ok": False,
+                        "status": "code_pending",
+                        "code": "EmailCodePending",
+                        "email": masked_email(email),
+                        "message": str(e),
+                        "error": str(e),
+                    },
                 )
             return _mint_error_response(e)
 
