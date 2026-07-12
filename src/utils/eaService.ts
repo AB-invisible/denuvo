@@ -262,6 +262,58 @@ export async function mintEaToken(
   return { ok: false, code: 'Failure', error: 'no attempt produced a result', poolQuotaAtStart, usedContentId: contentId, usedEngine: engine };
 }
 
+export interface EaLoginActionResult {
+  ok: boolean;
+  status?: string; // 'logged_in' | 'code_pending' | ...
+  email?: string | null;
+  message?: string;
+  code?: string;
+  error?: string;
+}
+
+async function postEaLogin(path: string, payload?: Record<string, unknown>): Promise<EaLoginActionResult> {
+  if (!eaServiceConfigured()) return { ok: false, error: 'EA service not configured (EA_SERVICE_URL / EA_SERVICE_KEY).' };
+  try {
+    const res = await fetch(`${serviceBase()}${path}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        'X-Api-Key': (CONFIG.EA_SERVICE_KEY || '').trim(),
+      },
+      body: payload ? JSON.stringify(payload) : undefined,
+    });
+    const text = await res.text();
+    let raw: RawServiceResponse & { status?: string; email?: string; message?: string; ok?: boolean } = {};
+    try {
+      raw = text ? JSON.parse(text) : {};
+    } catch {
+      raw = { error: text.slice(0, 300) };
+    }
+    const b = unwrapBody(raw) as typeof raw;
+    return {
+      ok: res.ok && b?.ok === true,
+      status: b?.status,
+      email: (b?.email as string) ?? null,
+      message: b?.message,
+      code: b?.code,
+      error: b?.error,
+    };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
+/** Trigger a fresh login of the env EA account (bot /ealogin). May return code_pending. */
+export async function eaLoginStart(): Promise<EaLoginActionResult> {
+  return postEaLogin('/ea/login');
+}
+
+/** Submit the emailed verification code to finish a pending login (bot /eacode). */
+export async function eaSubmitCode(code: string): Promise<EaLoginActionResult> {
+  return postEaLogin('/ea/verify-code', { code: code.trim() });
+}
+
 export async function checkEaServiceHealth(): Promise<{
   ok: boolean;
   tool?: boolean;

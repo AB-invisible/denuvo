@@ -17,6 +17,7 @@ import requests
 
 from ea_pc_sign import generate_pc_sign, random_cid
 from ea_session import EaSession, save_session
+from ea_pending import clear_pending, load_pending, masked_email, save_pending
 
 AUTH_URL = "https://accounts.ea.com/connect/auth"
 CLIENT_ID = "JUNO_PC_CLIENT"
@@ -33,6 +34,19 @@ EMAIL_CODE_RADIO_RE = re.compile(
     re.I,
 )
 READ_ACCEPT_RE = re.compile(r'<input[^>]+id="readAccept"[^>]+name="readAccept"', re.I)
+INVALID_CREDS_RE = re.compile(
+    r"(?i)(credentials you entered are incorrect|email or password is incorrect|incorrect or have expired)",
+)
+CAPTCHA_RE = re.compile(r"(?i)(captcha|recaptcha|hcaptcha|arkose|funcaptcha)")
+# "Verify your identity / Send Code" page (dynamicchallenge/sendCode). Current EA
+# uses a hidden name="codeType" value="EMAIL" + a Send Code button — not the old
+# _codeType radios — so match either.
+SEND_CODE_RE = re.compile(
+    r'(?i)(id="btnSendCode"|dynamicchallenge/sendCode|name="codeType"[^>]*value="EMAIL")',
+)
+# "Enter your code" page (dynamicchallenge/verifyCode) with the oneTimeCode box.
+VERIFY_CODE_RE = re.compile(r'(?i)(name="oneTimeCode"|dynamicchallenge/verifyCode|id="twoFactorCode")')
+INVALID_CODE_RE = re.compile(r"(?i)(security code you entered is invalid|code you entered is (?:invalid|incorrect))")
 
 
 class EaLoginError(Exception):
@@ -120,24 +134,67 @@ def login_with_email_password(
     r2 = http.post(post_url, data=data, timeout=timeout, allow_redirects=True)
     body = r2.text or ""
 
-    if EMAIL_CODE_RADIO_RE.search(body):
+    if INVALID_CREDS_RE.search(body):
         raise EaLoginError(
-            "EmailVerificationRequired",
-            "EA requires email verification on first login — open EA once in a browser, "
-            "complete verification, then retry (or seed trust cookies on the service volume).",
+            "AuthError",
+            "EA rejected the email or password — verify credentials in a browser at signin.ea.com",
         )
 
+    if CAPTCHA_RE.search(body) and "thirdPartyCaptchaResponse" not in body:
+        raise EaLoginError(
+            "AuthError",
+            "EA sign-in requires captcha from this IP — log in once in EA App or a browser, then retry",
+        )
+
+    # EA wants an email code. Click "Send Code" (codeType=EMAIL + _eventId=submit),
+    # stash the flow state, and hand off to /eacode. The trust cookie we set on
+    # the verify step means EA won't ask again after this.
+    if EMAIL_CODE_RADIO_RE.search(body) or SEND_CODE_RE.search(body):
+        r_send = http.post(
+            r2.url,
+            data={"codeType": "EMAIL", "_eventId": "submit"},
+            timeout=timeout,
+            allow_redirects=True,
+        )
+        verify_body = r_send.text or ""
+        if not VERIFY_CODE_RE.search(verify_body):
+            raise EaLoginError("LoginFailed", "EA did not return the code-entry page after requesting a code")
+        save_pending({
+            "email": email.strip(),
+            "seed": seed,
+            "pc_sign": pc_sign,
+            "machine_hash": base.machine_hash or "",
+            "verify_url": r_send.url,
+            "cookies": requests.utils.dict_from_cookiejar(http.cookies),
+        })
+        raise EaLoginError(
+            "EmailCodePending",
+            f"EA emailed a verification code to {masked_email(email)} — submit it with /eacode <code>.",
+        )
+
+    return _finish_login(http, body, r2.url, email, pc_sign, base, seed, timeout)
+
+
+def _finish_login(
+    http: requests.Session,
+    body: str,
+    post_url: str,
+    email: str,
+    pc_sign: str,
+    base: EaSession,
+    seed: str,
+    timeout: int = 45,
+) -> EaSession:
+    """Shared tail: accept terms, follow the redirect for remid + trust cookies, persist."""
     if READ_ACCEPT_RE.search(body):
         r3 = http.post(
-            r2.url,
+            post_url,
             data={"_readAccept": "on", "readAccept": "on", "_eventId": "accept"},
             timeout=timeout,
             allow_redirects=True,
         )
         body = r3.text or ""
         post_url = r3.url
-    else:
-        post_url = r2.url
 
     redirect_url = _extract_redirect(body)
     if redirect_url.startswith("/"):
@@ -173,4 +230,51 @@ def login_with_email_password(
         updated_at=time.time(),
     )
     save_session(out)
+    return out
+
+
+def submit_verification_code(code: str, timeout: int = 45) -> EaSession:
+    """
+    Resume a pending email verification: POST the code EA emailed (+ trust device)
+    and finish the login. Raises EaLoginError on no-pending / bad code.
+    """
+    pending = load_pending()
+    if not pending:
+        raise EaLoginError("NoPendingVerification", "No EA verification is waiting — trigger a login first, then use /eacode.")
+
+    digits = re.sub(r"\D", "", str(code or ""))
+    if len(digits) < 4:
+        raise EaLoginError("InvalidRequest", "Enter the numeric code EA emailed you.")
+
+    http = requests.Session()
+    http.headers.update({"User-Agent": UA, "Accept-Language": "en-US,en;q=0.9"})
+    http.cookies = requests.utils.cookiejar_from_dict(pending.get("cookies") or {})
+
+    r = http.post(
+        pending["verify_url"],
+        data={
+            "oneTimeCode": digits,
+            "trustThisDevice": "on",
+            "_trustThisDevice": "on",
+            "_eventId": "submit",
+        },
+        timeout=timeout,
+        allow_redirects=True,
+    )
+    body = r.text or ""
+    if INVALID_CODE_RE.search(body):
+        raise EaLoginError("InvalidCode", "EA rejected that code — check it and run /eacode again, or request a new one.")
+
+    base = EaSession(machine_hash=pending.get("machine_hash", "") or "")
+    out = _finish_login(
+        http,
+        body,
+        r.url,
+        pending.get("email", ""),
+        pending.get("pc_sign", ""),
+        base,
+        pending.get("seed", ""),
+        timeout,
+    )
+    clear_pending()
     return out

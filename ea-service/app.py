@@ -17,7 +17,9 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from ea_auth import bootstrap_session, ensure_default_account_configured, resolve_config
+from ea_login import EaLoginError, submit_verification_code
 from ea_minter import EaConfig, EaMintError, mint_ticket
+from ea_pending import has_pending, load_pending, masked_email
 from ea_session import load_session, merge_env_session
 
 app = FastAPI(title="EaTokenService", version="2.0.0")
@@ -45,6 +47,10 @@ class TokenRequest(BaseModel):
 
 class TokenResponse(BaseModel):
     token: str
+
+
+class VerifyCodeRequest(BaseModel):
+    code: str = Field(..., min_length=4, max_length=12)
 
 
 class ErrorResponse(BaseModel):
@@ -101,10 +107,35 @@ def health() -> dict:
     }
 
 
+def _mint_error_response(e: EaMintError):
+    status = {
+        "LimitExceeded": 429,
+        "NotEntitled": 502,
+        "InvalidRequest": 400,
+        "AuthError": 401,
+        "LoginFailed": 401,
+        "EmailVerificationRequired": 401,
+        # EA emailed a code; owner must submit it via /eacode. 409 = needs action.
+        "EmailCodePending": 409,
+        "InvalidCode": 400,
+        "NoPendingVerification": 409,
+        "NotConfigured": 503,
+        "Timeout": 504,
+        "ServiceUnavailable": 503,
+    }.get(e.code, 502)
+    return JSONResponse(
+        status_code=status,
+        content=ErrorResponse(error=str(e), code=e.code, logs=e.logs or None).model_dump(),
+    )
+
+
 @app.post("/ea/token", response_model=None)
 def mint_token(body: TokenRequest, x_api_key: Optional[str] = Header(default=None)):
     require_api_key(x_api_key)
-    cfg = build_config(body)
+    try:
+        cfg = build_config(body)
+    except EaMintError as e:
+        return _mint_error_response(e)
 
     with RUN_LOCK:
         try:
@@ -120,20 +151,52 @@ def mint_token(body: TokenRequest, x_api_key: Optional[str] = Header(default=Non
                     return TokenResponse(token=token)
                 except EaMintError as e2:
                     e = e2
-            status = {
-                "LimitExceeded": 429,
-                "NotEntitled": 502,
-                "InvalidRequest": 400,
-                "AuthError": 401,
-                "EmailVerificationRequired": 401,
-                "NotConfigured": 503,
-                "Timeout": 504,
-                "ServiceUnavailable": 503,
-            }.get(e.code, 502)
-            return JSONResponse(
-                status_code=status,
-                content=ErrorResponse(error=str(e), code=e.code, logs=e.logs or None).model_dump(),
-            )
+            return _mint_error_response(e)
+
+
+@app.post("/ea/login", response_model=None)
+def ea_login(x_api_key: Optional[str] = Header(default=None)):
+    """
+    Owner-triggered login (via bot /ealogin). Forces a fresh sign-in of the env
+    EA account. If EA wants an email code, this emails it and returns
+    status=code_pending — the owner then submits it with /eacode.
+    """
+    require_api_key(x_api_key)
+    email = env("EA_EMAIL")
+    password = env("EA_PASSWORD")
+    if not (email and password):
+        return _mint_error_response(EaMintError("NotConfigured", "Set EA_EMAIL / EA_PASSWORD on the ea-service first."))
+    with RUN_LOCK:
+        try:
+            sess = bootstrap_session(email, password, force=True)
+            return {"ok": True, "status": "logged_in", "email": sess.email or email}
+        except EaMintError as e:
+            if e.code == "EmailCodePending":
+                return JSONResponse(
+                    status_code=409,
+                    content={"ok": False, "status": "code_pending", "email": masked_email(email), "message": str(e)},
+                )
+            return _mint_error_response(e)
+
+
+@app.post("/ea/verify-code", response_model=None)
+def ea_verify_code(body: VerifyCodeRequest, x_api_key: Optional[str] = Header(default=None)):
+    """Owner submits the emailed code (bot /eacode) to finish a pending verification."""
+    require_api_key(x_api_key)
+    with RUN_LOCK:
+        try:
+            sess = submit_verification_code(body.code)
+            return {"ok": True, "status": "logged_in", "email": sess.email}
+        except EaLoginError as e:
+            return _mint_error_response(EaMintError(e.code, str(e)))
+
+
+@app.get("/ea/verify-status")
+def ea_verify_status(x_api_key: Optional[str] = Header(default=None)):
+    """Whether a code is currently awaited (bot can poll / show state)."""
+    require_api_key(x_api_key)
+    pending = load_pending()
+    return {"ok": True, "pending": bool(pending), "email": masked_email(pending.get("email", "")) if pending else None}
 
 
 if __name__ == "__main__":

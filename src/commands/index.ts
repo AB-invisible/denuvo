@@ -39,6 +39,8 @@ import { execute as eagame } from './eagame';
 import { execute as eahealth } from './eahealth';
 import { execute as eatest } from './eatest';
 import { execute as installertest } from './installertest';
+import { execute as ealogin } from './ealogin';
+import { execute as eacode } from './eacode';
 
 export const commandHandlers: Record<string, (interaction: any) => Promise<void>> = {
   postpanel,
@@ -82,4 +84,6 @@ export const commandHandlers: Record<string, (interaction: any) => Promise<void>
   eahealth,
   eatest,
   installertest,
+  ealogin,
+  eacode,
 };

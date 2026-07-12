@@ -390,6 +390,8 @@ export async function handleEaTicket(message: Message, ticket: any): Promise<boo
         ? `Our EA account doesn't own **${ticket.game.name}** on content ID \`${parsed.contentId}\`. Staff has been notified.`
         : result.code === 'InvalidRequest'
         ? `The submitted file could not be processed. Please launch **${ticket.game.name}** again and attach the updated **\`token_req.txt\`**.`
+        : result.code === 'EmailCodePending'
+        ? `Our EA account needs a quick one-time verification. Staff has been notified — it'll be sorted in a minute, then just resubmit your **\`token_req.txt\`**.`
         : result.code === 'AuthError'
         ? `EA login failed on our side. Staff has been notified — session cookies may need refreshing.`
         : `Token generation failed. Staff has been notified.`;
@@ -399,7 +401,11 @@ export async function handleEaTicket(message: Message, ticket: any): Promise<boo
     });
 
     if (result.code !== 'InvalidRequest') {
-      await channel.send({ content: `${staffPing} EA token gen failed for **${ticket.game.name}** — \`${result.code}\`. Manual handling needed.` });
+      const ping =
+        result.code === 'EmailCodePending'
+          ? `${staffPing} EA emailed a verification code for our account. Run \`/eacode code:<digits>\` (check the inbox), then have <@${ticket.userId}> resubmit their \`token_req.txt\`.`
+          : `${staffPing} EA token gen failed for **${ticket.game.name}** — \`${result.code}\`. Manual handling needed.`;
+      await channel.send({ content: ping });
       if (hg) {
         await logAction(
           hg,

@@ -277,6 +277,17 @@ const commands = [
     )
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
+    .setName('ealogin')
+    .setDescription('Log the EA account in (emails a code if EA asks) — owner only')
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+  new SlashCommandBuilder()
+    .setName('eacode')
+    .setDescription('Submit the EA email verification code — owner only')
+    .addStringOption((o) =>
+      o.setName('code').setDescription('The 6-digit code EA emailed you').setRequired(true),
+    )
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+  new SlashCommandBuilder()
     .setName('installertest')
     .setDescription('Test-deliver a self-driving EA/Ubisoft installer (no token consumed) — owner only')
     .addStringOption((o) =>
@@ -436,7 +447,7 @@ async function registerCommands(targetGuildId?: string) {
     const addsupport = ADDSUPPORT_COMMAND.toJSON();
 
     const tenantCommands = [
-      ...commands.filter((c: any) => c.name !== 'test' && c.name !== 'simulate' && c.name !== 'deplet' && c.name !== 'lowstock' && c.name !== 'setsteampass' && c.name !== 'game' && c.name !== 'removegame' && c.name !== 'autogen' && c.name !== 'stock' && c.name !== 'settokens' && c.name !== 'exclude-auto' && c.name !== 'setmode' && c.name !== 'getmode' && c.name !== 'promo' && c.name !== 'requests' && c.name !== 'staffstats' && c.name !== 'restockall' && c.name !== 'steamhealth' && c.name !== 'steamaccount' && c.name !== 'steamauth' && c.name !== 'export' && c.name !== 'ubisoftaccount' && c.name !== 'ubisoftgame' && c.name !== 'ubisofthealth' && c.name !== 'eaaccount' && c.name !== 'eagame' && c.name !== 'eahealth' && c.name !== 'eatest' && c.name !== 'installertest'),
+      ...commands.filter((c: any) => c.name !== 'test' && c.name !== 'simulate' && c.name !== 'deplet' && c.name !== 'lowstock' && c.name !== 'setsteampass' && c.name !== 'game' && c.name !== 'removegame' && c.name !== 'autogen' && c.name !== 'stock' && c.name !== 'settokens' && c.name !== 'exclude-auto' && c.name !== 'setmode' && c.name !== 'getmode' && c.name !== 'promo' && c.name !== 'requests' && c.name !== 'staffstats' && c.name !== 'restockall' && c.name !== 'steamhealth' && c.name !== 'steamaccount' && c.name !== 'steamauth' && c.name !== 'export' && c.name !== 'ubisoftaccount' && c.name !== 'ubisoftgame' && c.name !== 'ubisofthealth' && c.name !== 'eaaccount' && c.name !== 'eagame' && c.name !== 'eahealth' && c.name !== 'eatest' && c.name !== 'installertest' && c.name !== 'ealogin' && c.name !== 'eacode'),
       setlogs,
       setvouch,
       addsupport,
@@ -871,6 +882,12 @@ async function handleChatCommand(interaction: any) {
     }).catch(() => {});
   }
   if (interaction.commandName === 'installertest' && interaction.guildId !== CONFIG.OWNER_GUILD_ID) {
+    return interaction.reply({
+      content: '❌ This command is not available in this server.',
+      flags: [MessageFlags.Ephemeral],
+    }).catch(() => {});
+  }
+  if ((interaction.commandName === 'ealogin' || interaction.commandName === 'eacode') && interaction.guildId !== CONFIG.OWNER_GUILD_ID) {
     return interaction.reply({
       content: '❌ This command is not available in this server.',
       flags: [MessageFlags.Ephemeral],
