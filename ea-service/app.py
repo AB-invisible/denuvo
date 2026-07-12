@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from ea_auth import (
+    auto_refresh_session,
     bootstrap_session,
     ensure_default_account_configured,
     import_remid_session,
@@ -66,6 +67,7 @@ class SessionImportRequest(BaseModel):
     remid: str = Field(..., min_length=8)
     email: Optional[str] = None
     cookies: Optional[dict[str, str]] = None
+    prevalidated: bool = False
 
 
 class ErrorResponse(BaseModel):
@@ -140,6 +142,7 @@ def health() -> dict:
         "has_email_password": has_env_creds,
         "session_email": stored.email or None,
         "login_build": EA_LOGIN_BUILD,
+        "imap_auto_login": bool(env("EA_GMAIL_APP_PASSWORD")),
     }
 
 
@@ -178,17 +181,20 @@ def mint_token(body: TokenRequest, x_api_key: Optional[str] = Header(default=Non
             token = mint_ticket(body.ticket, body.contentId, body.engine, cfg)
             return TokenResponse(token=token)
         except EaMintError as e:
-            # Never force Railway password/OTP bootstrap — it fails captcha and can
-            # wipe a valid imported session. Session keeper refreshes remid locally.
             if e.code == "AuthError":
-                return _mint_error_response(
-                    EaMintError(
-                        "AuthError",
-                        "EA session expired — auto-refresh should fix this within 48h, "
-                        "or run: python ea-service/import_browser_session.py",
-                        logs=e.logs or "",
-                    )
-                )
+                email = env("EA_EMAIL")
+                password = env("EA_PASSWORD")
+                if email and password:
+                    try:
+                        auto_refresh_session(email, password)
+                        cfg = build_config(body)
+                        token = mint_ticket(body.ticket, body.contentId, body.engine, cfg)
+                        _SESSION_VALID_CACHE["ok"] = True
+                        _SESSION_VALID_CACHE["at"] = time.time()
+                        return TokenResponse(token=token)
+                    except EaMintError as e2:
+                        e = e2
+                return _mint_error_response(e)
             return _mint_error_response(e)
 
 
@@ -240,6 +246,7 @@ def ea_session_import(body: SessionImportRequest, x_api_key: Optional[str] = Hea
                 body.remid,
                 email=body.email or env("EA_EMAIL"),
                 extra_cookies=body.cookies,
+                skip_validate=body.prevalidated,
             )
             _SESSION_VALID_CACHE["ok"] = True
             _SESSION_VALID_CACHE["at"] = time.time()

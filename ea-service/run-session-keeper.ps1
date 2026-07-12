@@ -18,7 +18,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "railway variables failed: $varsJson" }
     $vars = $varsJson | ConvertFrom-Json
 
-    $env:EA_SERVICE_URL = 'https://ea-service-production.up.railway.app'
+    # Local ea-service (remid only works on the PC that logged in — not Railway)
+    $env:EA_SERVICE_URL = 'http://127.0.0.1:8081'
     $env:EA_SERVICE_KEY = $vars.EA_SERVICE_KEY
     $env:EA_EMAIL = $vars.EA_EMAIL
     $env:EA_PASSWORD = $vars.EA_PASSWORD

@@ -63,19 +63,10 @@ class EaLoginError(Exception):
         self.code = code
 
 
-EA_LOGIN_BUILD = "7"
+EA_LOGIN_BUILD = "8"
 
 
-def _http_session():
-    """Chrome TLS fingerprint — plain requests is flagged as a bot on Railway."""
-    try:
-        from curl_cffi import requests as curl_requests
-
-        return curl_requests.Session(impersonate="chrome131")
-    except Exception:
-        import requests as fallback
-
-        return fallback.Session()
+from ea_http import http_session as _http_session
 
 
 def _browser_session() -> "requests.Session":

@@ -24,6 +24,7 @@ from typing import Optional
 
 import requests
 
+from ea_http import http_session as _http_session
 from ea_pc_sign import refresh_pc_sign as _refresh_pc_sign_impl
 
 LICENSE_URL = "https://proxy.novafusion.ea.com/licenses"
@@ -130,13 +131,7 @@ def _auth_cookie_header(cfg: EaConfig) -> str:
     return "; ".join(f"{k}={v}" for k, v in jar.items())
 
 
-def _http_session() -> requests.Session:
-    try:
-        from curl_cffi import requests as curl_requests
-
-        return curl_requests.Session(impersonate="chrome131")
-    except Exception:
-        return requests.Session()
+from ea_http import http_session as _http_session
 
 
 def login_automatic(cfg: EaConfig, sess: requests.Session | None = None) -> str:

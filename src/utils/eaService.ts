@@ -390,6 +390,7 @@ export async function checkEaServiceHealth(): Promise<{
   hasEmailPassword?: boolean;
   sessionEmail?: string | null;
   sessionValid?: boolean;
+  imapAutoLogin?: boolean;
   loginBuild?: string | null;
   error?: string;
 }> {
@@ -405,6 +406,7 @@ export async function checkEaServiceHealth(): Promise<{
       sessionEmail: body?.session_email ?? null,
       loginBuild: body?.login_build ?? null,
       sessionValid: body?.session_valid ?? undefined,
+      imapAutoLogin: body?.imap_auto_login ?? undefined,
     };
   } catch (e) {
     return { ok: false, error: (e as Error).message };

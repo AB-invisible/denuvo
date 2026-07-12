@@ -146,7 +146,9 @@ def grab_session_interactive(timeout_sec: int = 300) -> tuple[str, dict[str, str
 
     with sync_playwright() as p:
         os.makedirs(PROFILE_DIR, exist_ok=True)
-        headless = headless and os.path.isdir(PROFILE_DIR)  # first login must be visible
+        # Always show browser when refreshing a stale profile
+        if os.path.isdir(PROFILE_DIR):
+            headless = False
         context = p.chromium.launch_persistent_context(
             PROFILE_DIR,
             headless=headless,
@@ -172,30 +174,42 @@ def grab_session_interactive(timeout_sec: int = 300) -> tuple[str, dict[str, str
             raise RuntimeError("Could not load any EA login page.")
 
         _try_autofill(page, email, password)
+
+        # Drop stale cookies so EA forces a fresh login instead of reusing expired remid
+        try:
+            context.clear_cookies()
+            page.goto(login_urls[0], wait_until="domcontentloaded", timeout=60000)
+            _try_autofill(page, email, password)
+        except Exception:
+            pass
+
         print(
-            f"[import] If you see a login page, sign in now — waiting up to {timeout_sec}s "
-            f"for a fresh JUNO remid...",
+            f"\n>>> LOG IN in the Chrome window that just opened (up to {timeout_sec}s).\n"
+            f">>> Complete any 2FA — the script uploads automatically when login succeeds.\n",
             flush=True,
         )
 
         deadline = time.time() + timeout_sec
         trust: dict[str, str] = {}
         remid = ""
+        last_remid = ""
+        validated = False
         while time.time() < deadline:
             trust = _collect_trust(context)
             remid = trust.get("remid", "")
-            if remid and validate_local(remid, trust):
-                break
-            if headless and remid:
-                break
-            time.sleep(3)
+            if remid and remid != last_remid:
+                last_remid = remid
+                if validate_local(remid, trust):
+                    print("[import] fresh remid validated OK", flush=True)
+                    validated = True
+                    break
+            time.sleep(2)
 
         context.close()
-        remid = trust.get("remid", "")
-        if not remid or not validate_local(remid, trust):
+        if not validated or not remid:
             raise RuntimeError(
                 "Could not get a working JUNO remid — log in when the browser opens, "
-                f"then re-run with EA_IMPORT_HEADLESS=0. Profile: {PROFILE_DIR}"
+                f"then re-run. Profile: {PROFILE_DIR}"
             )
         return remid, trust
 
@@ -209,7 +223,7 @@ def upload_session(remid: str, cookies: dict[str, str]) -> dict:
     r = requests.post(
         f"{base}/ea/session/import",
         headers={"X-Api-Key": key, "Content-Type": "application/json"},
-        json={"remid": remid, "email": _env("EA_EMAIL") or None, "cookies": cookies},
+        json={"remid": remid, "email": _env("EA_EMAIL") or None, "cookies": cookies, "prevalidated": True},
         timeout=60,
     )
     try:

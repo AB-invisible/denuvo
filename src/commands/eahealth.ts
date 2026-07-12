@@ -18,7 +18,7 @@ export async function execute(interaction: any): Promise<void> {
   const svcLine = !configured
     ? '🔴 Not configured — set `EA_SERVICE_URL` + `EA_SERVICE_KEY`.'
     : health.ok
-    ? `🟢 Reachable · python minter ${health.tool ? 'ready ✅' : 'MISSING ⚠️'}${health.loginBuild ? ` · build \`${health.loginBuild}\`` : ''}${health.sessionValid === true ? ' · session **valid** ✅' : health.sessionValid === false ? ' · session **stale** ⚠️ (keeper will refresh)' : ''}${health.configured === false ? ' · not configured' : health.sessionEmail ? ` · \`${health.sessionEmail}\`` : ''}`
+    ? `🟢 Reachable · python minter ${health.tool ? 'ready ✅' : 'MISSING ⚠️'}${health.loginBuild ? ` · build \`${health.loginBuild}\`` : ''}${health.sessionValid === true ? ' · session **valid** ✅' : health.sessionValid === false ? ' · session stale (auto-fixes on mint)' : ''}${health.imapAutoLogin ? ' · **auto-login** ✅' : ' · set `EA_GMAIL_APP_PASSWORD` on ea-service for zero-touch login'}${health.configured === false ? ' · not configured' : health.sessionEmail ? ` · \`${health.sessionEmail}\`` : ''}`
     : `🔴 Unreachable — ${health.error ?? 'unknown error'}`;
 
   const magicLine = [
