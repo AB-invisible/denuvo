@@ -346,17 +346,27 @@ export async function handleUbisoftTokenReq(message: Message, ticket: any): Prom
         ? `Our Ubisoft account doesn’t own **${ticket.game.name}** on the configured AppID. Staff has been notified.`
         : result.code === 'InvalidRequest'
         ? `The submitted file could not be processed. Please launch **${ticket.game.name}** again and attach the updated **\`token_req.txt\`** to this ticket.`
+        : result.code === 'LoginCooldown'
+        ? `${result.error}\n\nJust re-attach your **\`token_req.txt\`** once the cooldown passes — no need to redo anything.`
         : result.code === 'LoginFailed'
-        ? `Ubisoft login failed on our side. Staff has been notified.`
+        ? `Ubisoft sign-in is temporarily unavailable on our side. Staff has been notified — please try again in a few minutes.`
         : `Token generation failed. Staff has been notified.`;
 
+    const isTransient = result.code === 'LoginCooldown';
     await genMsg.edit({
-      embeds: [new EmbedBuilder().setTitle('⚠️ Generation Failed').setDescription(friendly).setColor(0xed4245).setTimestamp()],
+      embeds: [
+        new EmbedBuilder()
+          .setTitle(isTransient ? '⏳ Temporarily Unavailable' : '⚠️ Generation Failed')
+          .setDescription(friendly)
+          .setColor(isTransient ? 0xfee75c : 0xed4245)
+          .setTimestamp(),
+      ],
     });
 
-    // InvalidRequest is the user's to fix (bad paste) — keep waiting. Others
-    // need staff, so ping them.
-    if (result.code !== 'InvalidRequest') {
+    // InvalidRequest is the user's to fix (bad paste) — keep waiting. LoginCooldown
+    // is a known transient back-off (staff already pinged on the first failure).
+    // Everything else needs staff, so ping them.
+    if (result.code !== 'InvalidRequest' && result.code !== 'LoginCooldown') {
       await channel.send({ content: `${staffPing} Ubisoft token gen failed for **${ticket.game.name}** — \`${result.code}\`. Manual handling needed.` });
       if (hg) {
         await logAction(hg, '⚠️ Ubisoft Token Failed', `**${ticket.game.name}** (appId \`${resolved.ubisoftAppId}\`) failed: \`${result.code}\` — ${result.error}\n\`\`\`\n${(result.logs || '').slice(-600)}\n\`\`\``, 0xed4245);

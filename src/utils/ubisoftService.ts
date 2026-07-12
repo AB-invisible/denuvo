@@ -45,6 +45,24 @@ export function ubisoftServiceConfigured(): boolean {
   return Boolean((CONFIG.UBISOFT_SERVICE_URL || '').trim() && (CONFIG.UBISOFT_SERVICE_KEY || '').trim());
 }
 
+// ── Login-failure cooldown ────────────────────────────────────────────────
+// The service does a FULL Ubisoft sign-in on every mint. When Ubisoft starts
+// rejecting logins ("too many login attempts"), each retry only renews the
+// rate-limit, so it never recovers while users keep submitting. After a
+// LoginFailed we pause all Ubisoft mints for a cooldown so the account can
+// recover, and short-circuit new mints with a clear "try again shortly".
+const UBI_LOGIN_COOLDOWN_MS = Number(process.env.UBISOFT_LOGIN_COOLDOWN_MS || 15 * 60 * 1000);
+let ubisoftLoginCooldownUntil = 0;
+
+/** Remaining login cooldown in ms (0 = none). Used by /ubisofthealth and the flow. */
+export function ubisoftLoginCooldownRemainingMs(): number {
+  return Math.max(0, ubisoftLoginCooldownUntil - Date.now());
+}
+
+function tripUbisoftLoginCooldown(): void {
+  ubisoftLoginCooldownUntil = Date.now() + UBI_LOGIN_COOLDOWN_MS;
+}
+
 function serviceBase(): string {
   return (CONFIG.UBISOFT_SERVICE_URL || '').trim().replace(/\/+$/, '');
 }
@@ -210,6 +228,17 @@ export async function mintUbisoftToken(
     return { ok: false, code: 'NotConfigured', error: 'UBISOFT_SERVICE_URL / UBISOFT_SERVICE_KEY not set' };
   }
 
+  // Back off while Ubisoft is rate-limiting our sign-in — don't hammer it.
+  const cooldownMs = ubisoftLoginCooldownRemainingMs();
+  if (cooldownMs > 0) {
+    const mins = Math.max(1, Math.ceil(cooldownMs / 60000));
+    return {
+      ok: false,
+      code: 'LoginCooldown',
+      error: `Ubisoft sign-in is temporarily rate-limited on our side. Try again in ~${mins} min.`,
+    };
+  }
+
   const appIds = altAppId && altAppId !== ubisoftAppId ? [ubisoftAppId, altAppId] : [ubisoftAppId];
   const ownerGuildKey = !guildId || guildId === CONFIG.OWNER_GUILD_ID ? '' : guildId;
 
@@ -280,6 +309,10 @@ export async function mintUbisoftToken(
       poolQuotaAtStart,
     };
   }
+
+  // A login failure means Ubisoft is rejecting our sign-in (rate-limit / creds /
+  // device trust). Trip the cooldown so we stop hammering until it recovers.
+  if (lastFailure?.code === 'LoginFailed') tripUbisoftLoginCooldown();
 
   if (lastFailure) return { ...lastFailure, poolQuotaAtStart };
   return { ok: false, code: 'Failure', error: 'no attempt produced a result', poolQuotaAtStart };
