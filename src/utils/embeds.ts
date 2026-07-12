@@ -21,6 +21,29 @@ function truncateDiscordText(text: string, max: number): string {
   return chars.slice(0, max).join('');
 }
 
+/** Count OPEN/CLAIMED tickets per game for this panel's guild. */
+async function getServerReservedMap(guildId: string): Promise<Map<number, number>> {
+  const statusFilter = { in: ['OPEN', 'CLAIMED'] };
+  const where = usesAccountSyncedStock(guildId)
+    ? {
+        status: statusFilter,
+        // Legacy owner tickets may have null/empty guildId.
+        OR: [{ guildId }, { guildId: '' }, { guildId: null }],
+      }
+    : { guildId, status: statusFilter };
+
+  const serverCounts = await prisma.ticket.groupBy({
+    by: ['gameId'],
+    where,
+    _count: { _all: true },
+  });
+  return new Map(serverCounts.map((c) => [c.gameId, c._count._all]));
+}
+
+function reservedSuffix(reserved: number): string {
+  return reserved > 0 ? ` · ${reserved} res` : '';
+}
+
 /** Select option text must be plain — emoji in descriptions caused Discord 500s. */
 type GameSelectStatusInput = {
   availableStock: number;
@@ -46,33 +69,32 @@ function gameSelectStatusTone(input: GameSelectStatusInput): GameSelectStatusTon
 function formatGameSelectDescription(input: GameSelectStatusInput): string {
   const { availableStock, totalStock, reserved, queueCount, gameLastDepleted, now, accountSynced } = input;
   const parts: string[] = [];
+  const res = reservedSuffix(reserved);
 
   if (availableStock >= 10) {
-    parts.push(`${availableStock} available`);
+    parts.push(`${availableStock} available${res}`);
   } else if (availableStock > 0) {
-    parts.push(`Only ${availableStock} left`);
+    parts.push(`Only ${availableStock} left${res}`);
   } else if (totalStock > 0 && reserved >= totalStock) {
     parts.push(`All ${totalStock} reserved`);
+  } else if (totalStock > 0 && reserved > 0) {
+    parts.push(`${totalStock} total${res}`);
   } else if (accountSynced) {
-    parts.push('Out for today');
+    parts.push(reserved > 0 ? `Out for today${res}` : 'Out for today');
   } else if (gameLastDepleted) {
     const timeDiff = now.getTime() - gameLastDepleted.getTime();
     const remaining = Math.max(0, REGEN_TIME - timeDiff);
     const hours = Math.floor(remaining / (1000 * 60 * 60));
     const minutes = Math.floor((remaining % (1000 * 60 * 60)) / (1000 * 60));
     if (remaining <= 0) {
-      parts.push('Restocking soon');
+      parts.push(`Restocking soon${res}`);
     } else {
-      parts.push(hours > 0 ? `Restocks ${hours}h ${minutes}m` : `Restocks ${minutes}m`);
+      parts.push((hours > 0 ? `Restocks ${hours}h ${minutes}m` : `Restocks ${minutes}m`) + res);
     }
   } else if (reserved > 0) {
     parts.push(`${reserved} in progress`);
   } else {
     parts.push('Out of stock');
-  }
-
-  if (reserved > 0 && !(totalStock > 0 && reserved >= totalStock)) {
-    parts.push(`${reserved} reserved`);
   }
 
   if (queueCount > 0) parts.push(`${queueCount} waiting`);
@@ -83,13 +105,20 @@ function formatGameSelectDescription(input: GameSelectStatusInput): string {
   return truncateDiscordText(parts.join(' | '), 100);
 }
 
-function buildGameSelectOption(game: GameWithCount, description: string, tone: GameSelectStatusTone, highDemand = false) {
+function buildGameSelectOption(
+  game: GameWithCount,
+  description: string,
+  tone: GameSelectStatusTone,
+  reserved: number,
+  highDemand = false,
+) {
   let statusEmoji = tone === 'ok' ? '🟢' : tone === 'low' ? '🟡' : '🔴';
   // High-demand games fly a 🔥 flag so they stand out — but only while they
   // still have stock; keep 🔴 when out so availability still reads correctly.
   if (highDemand && tone !== 'out') statusEmoji = '🔥';
   const cleanName = game.name.replace(/[^\x20-\x7E]/g, '').trim() || `Game ${game.id}`;
-  const safeLabel = truncateDiscordText(`${statusEmoji} ${cleanName}`, 100);
+  const resTag = reserved > 0 ? ` [${reserved}r]` : '';
+  const safeLabel = truncateDiscordText(`${statusEmoji} ${cleanName}${resTag}`, 100);
   return new StringSelectMenuOptionBuilder()
     .setLabel(safeLabel)
     .setDescription(description)
@@ -118,15 +147,10 @@ export async function createMainPanel(guildId?: string) {
   });
   const waitlistMap = new Map(waitlistCounts.map(w => [w.gameId, w._count]));
 
-  // Per-server reserved counts: only count tickets from this server
+  // Per-server reserved counts: OPEN/CLAIMED tickets holding stock slots
   let serverReservedMap = new Map<number, number>();
   if (guildId) {
-    const serverCounts = await prisma.ticket.groupBy({
-      by: ['gameId'],
-      where: { guildId, status: { in: ['OPEN', 'CLAIMED'] } },
-      _count: true,
-    });
-    serverReservedMap = new Map(serverCounts.map(c => [c.gameId, c._count]));
+    serverReservedMap = await getServerReservedMap(guildId);
   }
 
   // Per-server stock: read cached ServerStock (synced by scheduler / account link commands).
@@ -223,7 +247,7 @@ export async function createMainPanel(guildId?: string) {
           const description = formatGameSelectDescription(statusInput);
           const tone = gameSelectStatusTone(statusInput);
 
-          return buildGameSelectOption(game, description, tone, !!game.highDemand);
+          return buildGameSelectOption(game, description, tone, reserved, !!game.highDemand);
         })
       );
 
