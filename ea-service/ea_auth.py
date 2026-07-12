@@ -10,7 +10,7 @@ from typing import Optional
 
 import requests
 
-from ea_login import EaLoginError, login_with_email_password
+from ea_login import EaLoginError, login_with_email_password, login_with_one_time_code
 from ea_minter import EaConfig, EaMintError, refresh_pc_sign
 from ea_pc_sign import generate_machine_hash, generate_pc_sign
 from ea_session import EaSession, load_session, merge_env_session, save_session
@@ -38,6 +38,18 @@ def session_from_stored(stored: EaSession) -> EaConfig:
     )
 
 
+def _use_otp_first(force: bool = False) -> bool:
+    """Railway/datacenter IPs hit FunCaptcha on password login — use email OTP instead."""
+    if force:
+        return True
+    v = os.environ.get("EA_LOGIN_OTP_FIRST", "").strip().lower()
+    if v in ("0", "false", "no"):
+        return False
+    if v in ("1", "true", "yes"):
+        return True
+    return bool(os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID"))
+
+
 def bootstrap_session(email: str, password: str, force: bool = False) -> EaSession:
     email = email.strip()
     key = _cache_key(email)
@@ -63,9 +75,19 @@ def bootstrap_session(email: str, password: str, force: bool = False) -> EaSessi
         stored.login_signature = generate_pc_sign(seed)
 
     try:
-        stored = login_with_email_password(email, password, seed, existing=stored)
+        if _use_otp_first(force):
+            stored = login_with_one_time_code(email, password, seed, existing=stored)
+        else:
+            stored = login_with_email_password(email, password, seed, existing=stored)
     except EaLoginError as e:
-        raise EaMintError(e.code, str(e)) from e
+        # Password rejected on bot IP — fall back to emailed one-time code.
+        if e.code == "AuthError" and not _use_otp_first(force):
+            try:
+                stored = login_with_one_time_code(email, password, seed, existing=stored)
+            except EaLoginError as e2:
+                raise EaMintError(e2.code, str(e2)) from e2
+        else:
+            raise EaMintError(e.code, str(e)) from e
 
     _ACCOUNT_CACHE[key] = time.time()
     return stored

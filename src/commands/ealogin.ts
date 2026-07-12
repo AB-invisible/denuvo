@@ -31,6 +31,13 @@ export async function execute(interaction: any): Promise<void> {
         `Check **${result.email || 'your EA email'}** for a one-time code, then run \`/eacode code:XXXXXX\`.\n` +
         `If no email arrived, run \`/ealogin\` once more to resend.`,
     });
+  } else if (result.code === 'AuthError') {
+    await interaction.editReply({
+      content:
+        `📧 **EA blocked automated login** on the server IP (your password is probably fine).\n\n` +
+        `Run \`/ealogin\` again — it should email a **one-time code**. Then finish with \`/eacode code:XXXXXX\`.\n` +
+        `If you already got a code, skip straight to \`/eacode\`.`,
+    });
   } else {
     await interaction.editReply({
       content: `❌ EA login failed${result.code ? ` (\`${result.code}\`)` : ''}: ${result.message || result.error || 'unknown error'}`,

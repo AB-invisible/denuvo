@@ -46,7 +46,15 @@ SEND_CODE_RE = re.compile(
 )
 VERIFY_CODE_RE = re.compile(r'(?i)(name="oneTimeCode"|dynamicchallenge/verifyCode|id="twoFactorCode")')
 INVALID_CODE_RE = re.compile(r"(?i)(security code you entered is invalid|code you entered is (?:invalid|incorrect))")
-ONE_TIME_HINT_RE = re.compile(r"(?i)(one.?time\s*code|get\s*one.?time\s*code|loginwithotp)")
+ONE_TIME_HINT_RE = re.compile(
+    r"(?i)(one[\s\-‑–—]?time\s*code|get\s*one[\s\-]?time|loginwithotp|loginWithOTP|btnSendCode|sign in with a one-time code)",
+)
+GET_ONE_TIME_LINK_RE = re.compile(
+    r'(?i)(?:href|data-href)\s*=\s*["\']([^"\']+)["\'][^>]{0,120}?(?:get\s*one[\s\-]?time|one[\s\-]?time\s*code)',
+)
+GET_ONE_TIME_ID_RE = re.compile(
+    r'(?i)id\s*=\s*["\']([^"\']*(?:otp|one.?time|sendcode)[^"\']*)["\']',
+)
 
 
 class EaLoginError(Exception):
@@ -204,7 +212,32 @@ def _send_email_code_and_pending(
     return base  # unreachable
 
 
-def _try_one_time_code_login(
+def _otp_flow_needed(body: str) -> bool:
+    """EA often shows fake 'wrong password' when captcha/bot checks fail on datacenter IPs."""
+    return bool(
+        CAPTCHA_RE.search(body)
+        or ONE_TIME_HINT_RE.search(body)
+        or SEND_CODE_RE.search(body)
+        or EMAIL_CODE_RADIO_RE.search(body)
+    )
+
+
+def _otp_payloads(hidden: dict[str, str], email: str) -> list[dict[str, str]]:
+    """Spring Web Flow event payloads seen on signin.ea.com for email OTP."""
+    base = {**hidden, "email": email.strip()}
+    return [
+        {**base, "_eventId": "submit", "loginMethod": "emailOtp"},
+        {**base, "_eventId": "oneTimeCode"},
+        {**base, "_eventId": "submit", "loginMethod": "oneTimeCode"},
+        {**base, "_eventId": "submit", "codeType": "EMAIL"},
+        {**base, "_eventId": "sendCode", "codeType": "EMAIL"},
+        {**base, "_eventId": "loginWithOTP"},
+        {**base, "_eventId": "submit", "loginMethod": "OTP"},
+        {**base, "_eventId": "submit", "rememberMe": "on", "_rememberMe": "on", "loginMethod": "emailOtp"},
+    ]
+
+
+def _run_otp_attempts(
     http: requests.Session,
     page_url: str,
     page_html: str,
@@ -213,22 +246,16 @@ def _try_one_time_code_login(
     pc_sign: str,
     base: EaSession,
     timeout: int,
+    stage_prefix: str = "otp",
 ) -> EaSession:
-    """Password+captcha blocked — switch to EA email one-time-code login."""
     hidden = _extract_hidden_fields(page_html)
-    attempts: list[dict[str, str]] = [
-        {**hidden, "email": email, "_eventId": "submit", "loginMethod": "emailOtp"},
-        {**hidden, "email": email, "_eventId": "oneTimeCode"},
-        {**hidden, "email": email, "_eventId": "submit", "loginMethod": "oneTimeCode"},
-        {**hidden, "_eventId": "submit", "codeType": "EMAIL", "email": email},
-    ]
-
-    for idx, payload in enumerate(attempts):
+    for idx, payload in enumerate(_otp_payloads(hidden, email)):
         http.headers["Referer"] = page_url
         http.headers["Origin"] = "https://signin.ea.com"
+        http.headers["Sec-Fetch-Site"] = "same-origin"
         r = http.post(page_url, data=payload, timeout=timeout, allow_redirects=True)
         body = r.text or ""
-        _diag(f"otp-attempt-{idx}", r)
+        _diag(f"{stage_prefix}-attempt-{idx}", r)
 
         if VERIFY_CODE_RE.search(body):
             _save_pending_code_flow(http, email, seed, pc_sign, base, r.url)
@@ -239,8 +266,8 @@ def _try_one_time_code_login(
 
     raise EaLoginError(
         "EmailCodePending",
-        f"EA blocked password login from this server (captcha). Check **{masked_email(email)}** for a one-time code, "
-        f"or run `/ealogin` again then `/eacode <code>`.",
+        f"EA blocked automated password login. Check **{masked_email(email)}** for a one-time code, "
+        f"then run `/eacode <code>`. If nothing arrived, run `/ealogin` again to resend.",
     )
 
 
@@ -257,6 +284,7 @@ def _handle_login_response(
 ) -> EaSession:
     has_captcha = bool(CAPTCHA_RE.search(body))
     has_invalid = bool(INVALID_CREDS_RE.search(body))
+    needs_otp = _otp_flow_needed(body)
 
     if EMAIL_CODE_RADIO_RE.search(body) or SEND_CODE_RE.search(body):
         return _send_email_code_and_pending(http, page_url, body, email, seed, pc_sign, base, timeout)
@@ -264,9 +292,9 @@ def _handle_login_response(
     if VERIFY_CODE_RE.search(body):
         _save_pending_code_flow(http, email, seed, pc_sign, base, page_url)
 
-    # Captcha often shows the generic "incorrect credentials" banner too — never treat that as wrong password.
-    if has_captcha:
-        return _try_one_time_code_login(http, page_url, body, email, seed, pc_sign, base, timeout)
+    # Captcha / bot checks show a fake "incorrect credentials" banner — never treat as wrong password.
+    if has_captcha or (has_invalid and needs_otp):
+        return _run_otp_attempts(http, page_url, body, email, seed, pc_sign, base, timeout, "otp-after-password")
 
     if has_invalid:
         raise EaLoginError(
@@ -275,6 +303,60 @@ def _handle_login_response(
         )
 
     return _finish_login(http, body, page_url, email, pc_sign, base, seed, timeout)
+
+
+def _open_signin_page(
+    email: str,
+    seed: str,
+    existing: Optional[EaSession] = None,
+    timeout: int = 45,
+) -> tuple[requests.Session, str, str, str, EaSession]:
+    """GET the juno sign-in page and return (http, html, post_url, pc_sign, base session)."""
+    pc_sign = generate_pc_sign(seed)
+    http = _browser_session()
+    base = existing or EaSession()
+    if base.trust_cookies:
+        _apply_trust_cookies(http, base.trust_cookies)
+
+    start = _juno_auth_start_url(pc_sign)
+    r1 = http.get(start, timeout=timeout, allow_redirects=True)
+    if "signin.ea.com" not in r1.url:
+        raise EaLoginError("LoginFailed", f"expected signin.ea.com, got {r1.url[:120]}")
+    return http, r1.text or "", r1.url, pc_sign, base
+
+
+def login_with_one_time_code(
+    email: str,
+    password: str,
+    seed: str,
+    existing: Optional[EaSession] = None,
+    timeout: int = 45,
+) -> EaSession:
+    """
+    Request EA email one-time code without posting the password.
+    Datacenter IPs (Railway) hit FunCaptcha on password login — this path works around it.
+    """
+    if not email:
+        raise EaLoginError("AuthError", "email is required")
+
+    http, login_html, post_url, pc_sign, base = _open_signin_page(email, seed, existing, timeout)
+
+    if ONE_TIME_HINT_RE.search(login_html) or SEND_CODE_RE.search(login_html):
+        return _run_otp_attempts(http, post_url, login_html, email, seed, pc_sign, base, timeout, "otp-first")
+
+    # Some flows need email submitted before the OTP option appears.
+    hidden = _extract_hidden_fields(login_html)
+    http.headers["Referer"] = post_url
+    http.headers["Origin"] = "https://signin.ea.com"
+    r_email = http.post(
+        post_url,
+        data={**hidden, "email": email.strip(), "regionCode": "US", "_eventId": "submit", "loginMethod": "emailOtp"},
+        timeout=timeout,
+        allow_redirects=True,
+    )
+    body = r_email.text or ""
+    _diag("otp-email-only", r_email)
+    return _run_otp_attempts(http, r_email.url, body, email, seed, pc_sign, base, timeout, "otp-after-email")
 
 
 def login_with_email_password(
@@ -287,20 +369,7 @@ def login_with_email_password(
     if not email or not password:
         raise EaLoginError("AuthError", "email and password are required")
 
-    pc_sign = generate_pc_sign(seed)
-    http = _browser_session()
-
-    base = existing or EaSession()
-    if base.trust_cookies:
-        _apply_trust_cookies(http, base.trust_cookies)
-
-    start = _juno_auth_start_url(pc_sign)
-    r1 = http.get(start, timeout=timeout, allow_redirects=True)
-    if "signin.ea.com" not in r1.url:
-        raise EaLoginError("LoginFailed", f"expected signin.ea.com, got {r1.url[:120]}")
-
-    login_html = r1.text or ""
-    post_url = r1.url
+    http, login_html, post_url, pc_sign, base = _open_signin_page(email, seed, existing, timeout)
     hidden = _extract_hidden_fields(login_html)
 
     data = {
@@ -321,6 +390,7 @@ def login_with_email_password(
     http.headers["Referer"] = post_url
     http.headers["Origin"] = "https://signin.ea.com"
     http.headers["Sec-Fetch-Site"] = "same-origin"
+    http.headers["Content-Type"] = "application/x-www-form-urlencoded"
 
     r2 = http.post(post_url, data=data, timeout=timeout, allow_redirects=True)
     body = r2.text or ""
