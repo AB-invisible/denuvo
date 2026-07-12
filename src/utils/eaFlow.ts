@@ -36,6 +36,7 @@ import {
 import { mintEaToken, eaServiceConfigured } from './eaService';
 import { resolvePublicBaseUrl } from './downloadHost';
 import { createCallhomeInstaller } from './installerPackage';
+import { consumeStock } from './gameManager';
 
 export const EA_STAGE_AWAITING = 'AWAITING_TICKET';
 export const EA_STAGE_DONE = 'DONE';
@@ -444,6 +445,12 @@ export async function handleEaTicket(message: Message, ticket: any): Promise<boo
     where: { id: ticket.id },
     data: { eaStage: EA_STAGE_DONE, deliveryMessageId: deliveryMsg.id, staffId: client.user!.id } as any,
   });
+
+  // Each EA mint is a real activation spent now — decrement stock at delivery,
+  // not on vouch (the vouch path skips EA/Ubisoft to avoid double-counting).
+  await consumeStock(ticket.gameId, guildId, !!ticket.fromQueue).catch((e) =>
+    console.error('[EaFlow] consumeStock failed:', (e as Error).message),
+  );
 
   if (hg) {
     await logAction(

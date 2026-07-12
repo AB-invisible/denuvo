@@ -38,6 +38,7 @@ import { resolveUbisoftForGame, catalogByMagicFile, resolveMagicDir, catalogBySt
 import { mintUbisoftToken, ubisoftServiceConfigured } from './ubisoftService';
 import { resolvePublicBaseUrl } from './downloadHost';
 import { createCallhomeInstaller } from './installerPackage';
+import { consumeStock } from './gameManager';
 
 export const UBISOFT_STAGE_AWAITING = 'AWAITING_TOKEN_REQ';
 export const UBISOFT_STAGE_DONE = 'DONE';
@@ -402,6 +403,14 @@ export async function handleUbisoftTokenReq(message: Message, ticket: any): Prom
     where: { id: ticket.id },
     data: { ubisoftStage: UBISOFT_STAGE_DONE, deliveryMessageId: deliveryMsg.id, staffId: client.user!.id } as any,
   });
+
+  // Each successful Ubisoft mint is a real activation spent right now — decrement
+  // stock at delivery, not on vouch (the vouch path skips Ubisoft/EA to avoid
+  // double-counting). Otherwise delivered-but-unvouched tokens never drop the
+  // count and the panel overstates availability.
+  await consumeStock(ticket.gameId, guildId, !!ticket.fromQueue).catch((e) =>
+    console.error('[UbisoftFlow] consumeStock failed:', (e as Error).message),
+  );
 
   if (hg) {
     const via = result.accountId ? `account #${result.accountId}` : 'env default account';
