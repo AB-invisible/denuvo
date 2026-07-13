@@ -36,6 +36,7 @@ import {
 import { mintEaToken, eaServiceConfigured } from './eaService';
 import { resolvePublicBaseUrl } from './downloadHost';
 import { createCallhomeInstaller } from './installerPackage';
+import { isInstallerCallhomeEnabled } from './installerSettings';
 import { consumeStock } from './gameManager';
 
 export const EA_STAGE_AWAITING = 'AWAITING_TICKET';
@@ -231,7 +232,7 @@ export async function startEaDelivery(channel: TextChannel, ticket: any, guild: 
   // runtime, so we need the magic zip servable (self-hosted URL) plus a built
   // installer.exe. If any piece is missing, fall back to the manual flow.
   const delivery = resolveMagicDelivery(resolved.eaContentId, resolved.magicFile, ticket.game.appId, resolved.magicUrl);
-  const installer = CONFIG.INSTALLER_CALLHOME && delivery?.url
+  const installer = (await isInstallerCallhomeEnabled('ea')) && delivery?.url
     ? await createCallhomeInstaller({
         ticketId: ticket.id,
         guildId,
@@ -343,7 +344,8 @@ export async function handleEaTicket(message: Message, ticket: any): Promise<boo
       },
       orderBy: { createdAt: 'desc' },
     });
-    const onCallhome = stage === EA_STAGE_CALLHOME || !!callhomeRow;
+    const onCallhome =
+      (stage === EA_STAGE_CALLHOME || !!callhomeRow) && (await isInstallerCallhomeEnabled('ea'));
 
     if (onCallhome) {
       await message.reply({

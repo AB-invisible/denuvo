@@ -38,6 +38,7 @@ import { resolveUbisoftForGame, catalogByMagicFile, resolveMagicDir, catalogBySt
 import { mintUbisoftToken, ubisoftServiceConfigured } from './ubisoftService';
 import { resolvePublicBaseUrl } from './downloadHost';
 import { createCallhomeInstaller } from './installerPackage';
+import { isInstallerCallhomeEnabled } from './installerSettings';
 import { consumeStock } from './gameManager';
 
 export const UBISOFT_STAGE_AWAITING = 'AWAITING_TOKEN_REQ';
@@ -179,7 +180,7 @@ export async function startUbisoftDelivery(channel: TextChannel, ticket: any, gu
   // so we need a servable magic zip (self-hosted URL) plus a built installer.exe.
   // Fall back to the manual flow if any piece is missing.
   const delivery = resolveMagicDelivery(resolved.ubisoftAppId, resolved.magicFile, ticket.game.appId);
-  const installer = CONFIG.INSTALLER_CALLHOME && delivery?.url
+  const installer = (await isInstallerCallhomeEnabled('ubisoft')) && delivery?.url
     ? await createCallhomeInstaller({
         ticketId: ticket.id,
         guildId,
@@ -281,7 +282,8 @@ export async function handleUbisoftTokenReq(message: Message, ticket: any): Prom
       },
       orderBy: { createdAt: 'desc' },
     });
-    const onCallhome = stage === UBISOFT_STAGE_CALLHOME || !!callhomeRow;
+    const onCallhome =
+      (stage === UBISOFT_STAGE_CALLHOME || !!callhomeRow) && (await isInstallerCallhomeEnabled('ubisoft'));
 
     if (onCallhome) {
       await message.reply({
