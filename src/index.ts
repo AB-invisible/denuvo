@@ -2119,6 +2119,7 @@ setInterval(() => checkDutyStatusReset(), 30 * 60 * 1000); // Duty Reset (Every 
 setInterval(() => checkStaleTickets(client), 10 * 60 * 1000); // Stale Tickets (Every 10m)
 setInterval(() => syncOwnerStockForNewUtcDay(), 15 * 60 * 1000); // UTC daily account quota reset
 setInterval(() => processAllRestocks(), 5 * 60 * 1000); // Apply due token restocks (every 5m)
+setInterval(() => refreshAllPanels(), 10 * 60 * 1000); // Keep per-game restock countdowns fresh (every 10m)
 setInterval(() => cleanupExpiredCooldowns(), 6 * 60 * 60 * 1000); // Bug #15: Cooldown Cleanup (Every 6h)
 // Token downloads have a 30-minute TTL; sweep every 5 minutes to delete
 // the stored zip file + DB row once the link expires.
