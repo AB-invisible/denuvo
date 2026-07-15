@@ -20,7 +20,7 @@ import { startUbisoftDelivery, handleUbisoftTokenReq, UBISOFT_STAGE_AWAITING, UB
 import { isEaGame } from './utils/eaCatalog';
 import { startEaDelivery, handleEaTicket, EA_STAGE_AWAITING, EA_STAGE_CALLHOME } from './utils/eaFlow';
 import { enqueueTokenGen } from './utils/tokenQueue';
-import { updateTicketWaitTimes, checkWeeklyStaffStats, checkDutyStatusReset, checkStaleTickets, cleanupExpiredCooldowns, syncOwnerStockForNewUtcDay } from './utils/scheduler';
+import { updateTicketWaitTimes, checkWeeklyStaffStats, checkDutyStatusReset, checkStaleTickets, cleanupExpiredCooldowns, syncOwnerStockForNewUtcDay, processAllRestocks } from './utils/scheduler';
 import { addSubscription } from './utils/subscriptionManager';
 import { logTenant } from './utils/logging';
 import { checkGuild, shouldLeaveGuild } from './utils/guildAccess';
@@ -1939,7 +1939,7 @@ client.on(Events.MessageCreate, async (message) => {
 
       // ─── FAST-PATH AUTO-CLOSE ───
       // If the user pings the bot AND attaches a screenshot, finalize immediately:
-      //   • cooldown based on game's tier (2h donor, 48h high, 24h normal/booster)
+      //   • cooldown: 48h on high-demand games (donors keep tier perks), else membership tier
       //   • token deducted
       //   • ticket closed and channel deleted
 
@@ -1960,7 +1960,7 @@ client.on(Events.MessageCreate, async (message) => {
           const cdMember = (message.member as GuildMember | null)
             ?? (await message.guild?.members.fetch(vouchTicket.userId).catch(() => null))
             ?? null;
-          const { hours: cooldownHours } = await computeCooldownHours(cdMember, vouchTicket.userId, cdGuildId);
+          const { hours: cooldownHours } = await computeCooldownHours(cdMember, vouchTicket.userId, cdGuildId, vouchTicket.game);
           const until = new Date(Date.now() + cooldownHours * 60 * 60 * 1000);
           await prisma.cooldown.upsert({
             where: { userId_guildId: { userId: vouchTicket.userId, guildId: cdGuildId } },
@@ -2039,7 +2039,8 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
         userId: vouchAuthorId,
         vouchExpiresAt: { not: null },
         status: { in: ['OPEN', 'CLAIMED'] }
-      }
+      },
+      include: { game: true },
     });
 
     if (ticket) {
@@ -2058,7 +2059,7 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
 
         const cdGuildId = ticket.guildId || reaction.message.guildId || '';
         const cdMember = (await message.guild?.members.fetch(ticket.userId).catch(() => null)) ?? null;
-        const { hours: cooldownHours } = await computeCooldownHours(cdMember, ticket.userId, cdGuildId);
+        const { hours: cooldownHours } = await computeCooldownHours(cdMember, ticket.userId, cdGuildId, ticket.game);
         const until = new Date(Date.now() + cooldownHours * 60 * 60 * 1000);
         await prisma.cooldown.upsert({ where: { userId_guildId: { userId: ticket.userId, guildId: cdGuildId } }, update: { until }, create: { userId: ticket.userId, guildId: cdGuildId, until } });
 
@@ -2117,6 +2118,7 @@ setInterval(() => checkWeeklyStaffStats(client), 15 * 60 * 1000); // Weekly Chec
 setInterval(() => checkDutyStatusReset(), 30 * 60 * 1000); // Duty Reset (Every 30m)
 setInterval(() => checkStaleTickets(client), 10 * 60 * 1000); // Stale Tickets (Every 10m)
 setInterval(() => syncOwnerStockForNewUtcDay(), 15 * 60 * 1000); // UTC daily account quota reset
+setInterval(() => processAllRestocks(), 5 * 60 * 1000); // Apply due token restocks (every 5m)
 setInterval(() => cleanupExpiredCooldowns(), 6 * 60 * 60 * 1000); // Bug #15: Cooldown Cleanup (Every 6h)
 // Token downloads have a 30-minute TTL; sweep every 5 minutes to delete
 // the stored zip file + DB row once the link expires.

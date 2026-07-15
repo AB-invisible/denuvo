@@ -365,3 +365,32 @@ export async function syncOwnerStockForNewUtcDay() {
     console.error('[Scheduler] Error syncing owner stock for new UTC day:', err);
   }
 }
+
+/**
+ * Apply any Restock rows that have come due, across every guild that has one.
+ * Runs on a timer so tokens actually regenerate on their own — previously
+ * restocks only processed when someone happened to open/refresh the panel.
+ * processGuildRestocks() refreshes panels + notifies when it restocks, so this
+ * is a cheap no-op when nothing is due.
+ */
+export async function processAllRestocks() {
+  try {
+    const due = await prisma.restock.findMany({
+      where: { restockAt: { lte: new Date() } },
+      distinct: ['guildId'],
+      select: { guildId: true },
+    });
+    const gm = await import('./gameManager');
+    for (const { guildId } of due) {
+      try {
+        await gm.processGuildRestocks(guildId);
+      } catch (e) {
+        console.error(`[Scheduler] Restock failed for guild "${guildId}":`, (e as Error).message);
+      }
+    }
+    // Recover games left stuck at 0 with no scheduled restock.
+    await gm.healStuckDepletedGames();
+  } catch (e) {
+    console.error('[Scheduler] processAllRestocks failed:', (e as Error).message);
+  }
+}

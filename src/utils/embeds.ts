@@ -170,6 +170,28 @@ export async function createMainPanel(guildId?: string) {
   const staffLine = staffCount > 0 ? `🟢 **${staffCount}** staff on duty` : '🌙 Staff away — delays likely';
   const cleanWait = waitTime.replace(/[^\x20-\x7E]/g, '');
 
+  // ── Next-restock countdown ──────────────────────────────────────────────
+  // Soonest of: the earliest pending Restock row (owner-managed + tenant games)
+  // and — for account-synced servers with a depleted game — the next 00:00 UTC
+  // quota reset. Rendered as a Discord relative timestamp so it live-counts-down
+  // in every client with no polling on our side.
+  let nextRestockLine = 'Nothing depleted';
+  if (guildId) {
+    const candidates: number[] = [];
+    const soonestRestock = await prisma.restock.findFirst({
+      where: { guildId, restockAt: { gt: now } },
+      orderBy: { restockAt: 'asc' },
+      select: { restockAt: true },
+    });
+    if (soonestRestock) candidates.push(soonestRestock.restockAt.getTime());
+    if (accountSynced && [...serverStockMap.values()].some((s) => s.stock <= 0)) {
+      candidates.push(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0));
+    }
+    if (candidates.length) {
+      nextRestockLine = `<t:${Math.floor(Math.min(...candidates) / 1000)}:R>`;
+    }
+  }
+
   const mainEmbed = new EmbedBuilder()
     .setTitle(`${CONFIG.NAME} — Game Selection`)
     .setDescription(
@@ -184,7 +206,7 @@ export async function createMainPanel(guildId?: string) {
       },
       {
         name: 'Restock cycle',
-        value: restockCycleLine,
+        value: `${restockCycleLine}\n⏳ **Next restock** ${nextRestockLine}`,
         inline: true,
       },
       { name: 'Staff', value: staffLine, inline: true },
