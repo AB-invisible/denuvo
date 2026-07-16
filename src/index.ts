@@ -201,6 +201,19 @@ const commands = [
       .addIntegerOption(o => o.setName('id').setDescription('Link ID (from /steamauth list)').setRequired(true)))
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
+    .setName('patreon')
+    .setDescription('Manage the Patreon → bronze/silver/gold Discord role sync — owner only')
+    .addSubcommand(sub => sub
+      .setName('status')
+      .setDescription('Check Patreon sync config, tier mapping, and last sync result'))
+    .addSubcommand(sub => sub
+      .setName('sync')
+      .setDescription('Run a full campaign reconciliation now'))
+    .addSubcommand(sub => sub
+      .setName('list')
+      .setDescription('List tiered patrons and patrons who still need to link Discord'))
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+  new SlashCommandBuilder()
     .setName('ubisoftaccount')
     .setDescription('Manage Ubisoft accounts used to mint Denuvo tokens — owner only')
     .addSubcommand(sub => sub
@@ -500,7 +513,7 @@ async function registerCommands(targetGuildId?: string) {
     const addsupport = ADDSUPPORT_COMMAND.toJSON();
 
     const tenantCommands = [
-      ...commands.filter((c: any) => c.name !== 'test' && c.name !== 'simulate' && c.name !== 'deplet' && c.name !== 'lowstock' && c.name !== 'setsteampass' && c.name !== 'game' && c.name !== 'removegame' && c.name !== 'autogen' && c.name !== 'stock' && c.name !== 'settokens' && c.name !== 'exclude-auto' && c.name !== 'setmode' && c.name !== 'getmode' && c.name !== 'promo' && c.name !== 'requests' && c.name !== 'staffstats' && c.name !== 'restockall' && c.name !== 'steamhealth' && c.name !== 'steamaccount' && c.name !== 'steamauth' && c.name !== 'export' && c.name !== 'ubisoftaccount' && c.name !== 'ubisoftgame' && c.name !== 'ubisofthealth' && c.name !== 'eaaccount' && c.name !== 'eagame' && c.name !== 'eahealth' && c.name !== 'eatest' && c.name !== 'installertest' && c.name !== 'setinstaller' && c.name !== 'ealogin' && c.name !== 'eacode' && c.name !== 'easession'),
+      ...commands.filter((c: any) => c.name !== 'test' && c.name !== 'simulate' && c.name !== 'deplet' && c.name !== 'lowstock' && c.name !== 'setsteampass' && c.name !== 'game' && c.name !== 'removegame' && c.name !== 'autogen' && c.name !== 'stock' && c.name !== 'settokens' && c.name !== 'exclude-auto' && c.name !== 'setmode' && c.name !== 'getmode' && c.name !== 'promo' && c.name !== 'requests' && c.name !== 'staffstats' && c.name !== 'restockall' && c.name !== 'steamhealth' && c.name !== 'steamaccount' && c.name !== 'steamauth' && c.name !== 'patreon' && c.name !== 'export' && c.name !== 'ubisoftaccount' && c.name !== 'ubisoftgame' && c.name !== 'ubisofthealth' && c.name !== 'eaaccount' && c.name !== 'eagame' && c.name !== 'eahealth' && c.name !== 'eatest' && c.name !== 'installertest' && c.name !== 'setinstaller' && c.name !== 'ealogin' && c.name !== 'eacode' && c.name !== 'easession'),
       setlogs,
       setvouch,
       addsupport,
@@ -578,6 +591,13 @@ client.once(Events.ClientReady, async () => {
   const guild = client.guilds.cache.get(CONFIG.GUILD_ID);
   if (guild) {
     await logAction(guild, '🚀 Bot Online', `**${CONFIG.NAME}** has been successfully initialized and is now active.`, 0x57F287);
+  }
+
+  try {
+    const { initPatreonSync } = await import('./utils/patreonRoles');
+    initPatreonSync(client);
+  } catch (e) {
+    console.warn('[Patreon] Failed to start role sync (non-fatal):', (e as Error).message);
   }
 });
 

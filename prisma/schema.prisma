@@ -605,3 +605,32 @@ model EaUsage {
 
   @@unique([accountId, usageDate])
 }
+
+// ─── Patreon → Discord role sync (bronze/silver/gold + donator) ────
+// One row per Patreon campaign member we've ever seen, keyed by Patreon's
+// own member UUID (stable across pledge changes, unlike tier/status).
+// discordId is resolved from the patron's Patreon "Connected Accounts"
+// (social_connections.discord.user_id) — null means the patron hasn't
+// linked Discord on patreon.com yet, so we can't role them and staff can
+// see them via `/patreon list` to nudge them to link it.
+//
+// This table is a cache/audit trail, NOT the source of truth — every sync
+// (webhook or periodic) re-fetches the live Patreon member + re-reads the
+// live Discord member's roles before deciding what to add/remove. That
+// means a row going stale (bot offline, role changed manually, etc.) can
+// never cause an incorrect grant — worst case is it just gets corrected on
+// the next sync.
+model PatreonMember {
+  id              Int      @id @default(autoincrement())
+  patreonMemberId String   @unique
+  discordId       String?
+  patronStatus    String?  // active_patron | declined_patron | former_patron | null
+  tier            String?  // "bronze" | "silver" | "gold" | null (none/unmapped)
+  tierAmountCents Int?
+  lastSyncedAt    DateTime @default(now())
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @default(now()) @updatedAt
+
+  @@index([discordId])
+  @@index([tier])
+}

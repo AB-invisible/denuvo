@@ -71,4 +71,24 @@ export const CONFIG = {
   // users get a broken installer. While off, the two-step flows deliver the
   // manual magic zip exactly as before.
   INSTALLER_CALLHOME: /^(1|true|yes|on)$/i.test((process.env.INSTALLER_CALLHOME || '').trim()),
+  // ── Patreon → Discord role sync (owner/home server only) ──
+  // Creator's Access Token from https://www.patreon.com/portal/registration/register-clients
+  // (Platform Portal → your client → "Creator's Access Token"). Needs the
+  // `campaigns` and `campaigns.members` scopes. No OAuth flow required —
+  // it's a static token tied to your own creator account.
+  PATREON_ACCESS_TOKEN: process.env.PATREON_ACCESS_TOKEN || '',
+  // Your campaign ID (GET /api/oauth2/v2/campaigns with the token above).
+  PATREON_CAMPAIGN_ID: process.env.PATREON_CAMPAIGN_ID || '',
+  // Secret shown on the webhook's page in the Platform Portal. Used to
+  // verify X-Patreon-Signature (hex HMAC-MD5 of the raw request body).
+  PATREON_WEBHOOK_SECRET: process.env.PATREON_WEBHOOK_SECRET || '',
+  // Map your actual Patreon Tier IDs (GET /campaigns/:id?include=tiers) to
+  // the bronze/silver/gold roles. Leave any of these blank to skip that tier.
+  PATREON_TIER_BRONZE_ID: process.env.PATREON_TIER_BRONZE_ID || '',
+  PATREON_TIER_SILVER_ID: process.env.PATREON_TIER_SILVER_ID || '',
+  PATREON_TIER_GOLD_ID: process.env.PATREON_TIER_GOLD_ID || '',
+  // Full-campaign reconciliation cadence (minutes). The webhook covers
+  // real-time updates; this periodic pass catches anything it missed
+  // (bot downtime, dropped webhook delivery, manual role edits, etc.).
+  PATREON_SYNC_INTERVAL_MINUTES: process.env.PATREON_SYNC_INTERVAL_MINUTES !== undefined ? Number(process.env.PATREON_SYNC_INTERVAL_MINUTES) : 30,
 };

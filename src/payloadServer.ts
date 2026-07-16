@@ -520,6 +520,79 @@ export function startPayloadServer(): void {
         return;
       }
 
+      // ── Patreon webhook: bronze/silver/gold role sync ──────────────
+      // POST /webhooks/patreon
+      //   Header: X-Patreon-Signature (hex HMAC-MD5 of the raw body, keyed
+      //           by PATREON_WEBHOOK_SECRET — set on the webhook's page in
+      //           the Platform Portal)
+      //   Header: X-Patreon-Event (e.g. members:pledge:update) — logged only
+      //
+      // Configure triggers: members:pledge:create, members:pledge:update,
+      // members:pledge:delete (members:create/update/delete also work fine
+      // since we ignore the body and just re-fetch the member fresh).
+      //
+      // We deliberately do NOT parse the role decision out of the webhook
+      // body — Patreon's included user.social_connections has been flaky
+      // inside webhook payloads in the wild. The body is only used to pull
+      // the member id; the actual sync re-fetches that member fresh via
+      // GET /members/:id (see patreonRoles.syncPatreonMemberById).
+      if (url.pathname === '/webhooks/patreon' && req.method === 'POST') {
+        const chunksPatreon: Buffer[] = [];
+        let totalPatreon = 0;
+        let abortedPatreon = false;
+        for await (const chunk of req) {
+          chunksPatreon.push(chunk as Buffer);
+          totalPatreon += (chunk as Buffer).length;
+          if (totalPatreon > 512 * 1024) { abortedPatreon = true; break; }
+        }
+        if (abortedPatreon) {
+          res.writeHead(413, { 'Content-Type': 'text/plain' });
+          res.end('Request body too large.');
+          return;
+        }
+        const rawBody = Buffer.concat(chunksPatreon);
+
+        try {
+          const { verifyPatreonWebhookSignature, parsePatreonWebhookMemberId } = await import('./utils/patreonClient');
+          const signature = req.headers['x-patreon-signature'] as string | undefined;
+          if (!verifyPatreonWebhookSignature(rawBody, signature)) {
+            res.writeHead(401, { 'Content-Type': 'text/plain' });
+            res.end('Invalid signature.');
+            return;
+          }
+
+          const memberId = parsePatreonWebhookMemberId(rawBody.toString('utf-8'));
+          if (!memberId) {
+            res.writeHead(400, { 'Content-Type': 'text/plain' });
+            res.end('No member id in payload.');
+            return;
+          }
+
+          // Ack immediately — Patreon retries on non-2xx/timeout, and the
+          // actual sync (guild fetch + role add/remove) can take a moment.
+          res.writeHead(200, { 'Content-Type': 'text/plain' });
+          res.end('ok');
+
+          const event = (req.headers['x-patreon-event'] as string) || 'unknown';
+          console.log(`[PayloadServer] Patreon webhook: ${event} for member ${memberId}`);
+
+          const { client } = await import('./client');
+          const { syncPatreonMemberById } = await import('./utils/patreonRoles');
+          const result = await syncPatreonMemberById(client, memberId);
+          console.log(
+            `[PayloadServer] Patreon sync (webhook) for ${memberId}: tier=${result.tier ?? 'none'} ` +
+            `applied=${result.applied}${result.reason ? ` reason="${result.reason}"` : ''}`,
+          );
+        } catch (e) {
+          console.error('[PayloadServer] /webhooks/patreon error', e);
+          if (!res.headersSent) {
+            res.writeHead(500, { 'Content-Type': 'text/plain' });
+            res.end('Internal error');
+          }
+        }
+        return;
+      }
+
       // ── Installer activation-key validation ──────────────
       // POST /installer-validate/<key>?th=<ticketHash>&hmac=<hmac>&app=<appId>
       //
