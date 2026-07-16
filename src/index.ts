@@ -20,7 +20,7 @@ import { startUbisoftDelivery, handleUbisoftTokenReq, UBISOFT_STAGE_AWAITING, UB
 import { isEaGame } from './utils/eaCatalog';
 import { startEaDelivery, handleEaTicket, EA_STAGE_AWAITING, EA_STAGE_CALLHOME } from './utils/eaFlow';
 import { enqueueTokenGen } from './utils/tokenQueue';
-import { updateTicketWaitTimes, checkWeeklyStaffStats, checkDutyStatusReset, checkStaleTickets, cleanupExpiredCooldowns, syncOwnerStockForNewUtcDay } from './utils/scheduler';
+import { updateTicketWaitTimes, checkWeeklyStaffStats, checkDutyStatusReset, checkStaleTickets, cleanupExpiredCooldowns, syncOwnerStockForNewUtcDay, processAllRestocks } from './utils/scheduler';
 import { addSubscription } from './utils/subscriptionManager';
 import { logTenant } from './utils/logging';
 import { checkGuild, shouldLeaveGuild } from './utils/guildAccess';
@@ -305,6 +305,20 @@ const commands = [
     )
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
+    .setName('easession')
+    .setDescription('Import EA remid cookie from browser login (bypasses captcha) — owner only')
+    .addStringOption((o) =>
+      o
+        .setName('action')
+        .setDescription('import = paste remid from browser')
+        .setRequired(true)
+        .addChoices({ name: 'import', value: 'import' }, { name: 'help', value: 'help' }),
+    )
+    .addStringOption((o) =>
+      o.setName('remid').setDescription('remid cookie value from signin.ea.com (required for import)').setRequired(false),
+    )
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+  new SlashCommandBuilder()
     .setName('installertest')
     .setDescription('Test-deliver a self-driving EA/Ubisoft installer (no token consumed) — owner only')
     .addStringOption((o) =>
@@ -313,6 +327,28 @@ const commands = [
         .setDescription(`EA or Ubisoft game name (default: ${'EA SPORTS FC 26'})`)
         .setRequired(false)
         .setAutocomplete(true),
+    )
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+  new SlashCommandBuilder()
+    .setName('setinstaller')
+    .setDescription('[OWNER] Toggle the self-driving EA/Ubisoft installer on or off')
+    .addStringOption((o) =>
+      o
+        .setName('state')
+        .setDescription('On = installer.exe flow; off = manual zip + paste token req in ticket')
+        .setRequired(false)
+        .addChoices({ name: 'On — deliver installer.exe', value: 'on' }, { name: 'Off — manual token req in ticket', value: 'off' }),
+    )
+    .addStringOption((o) =>
+      o
+        .setName('platform')
+        .setDescription('Which pipeline to toggle (default: both)')
+        .setRequired(false)
+        .addChoices(
+          { name: 'Both EA + Ubisoft', value: 'both' },
+          { name: 'EA only', value: 'ea' },
+          { name: 'Ubisoft only', value: 'ubisoft' },
+        ),
     )
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
@@ -464,7 +500,7 @@ async function registerCommands(targetGuildId?: string) {
     const addsupport = ADDSUPPORT_COMMAND.toJSON();
 
     const tenantCommands = [
-      ...commands.filter((c: any) => c.name !== 'test' && c.name !== 'simulate' && c.name !== 'deplet' && c.name !== 'lowstock' && c.name !== 'setsteampass' && c.name !== 'game' && c.name !== 'removegame' && c.name !== 'autogen' && c.name !== 'stock' && c.name !== 'settokens' && c.name !== 'exclude-auto' && c.name !== 'setmode' && c.name !== 'getmode' && c.name !== 'promo' && c.name !== 'requests' && c.name !== 'staffstats' && c.name !== 'restockall' && c.name !== 'steamhealth' && c.name !== 'steamaccount' && c.name !== 'steamauth' && c.name !== 'export' && c.name !== 'ubisoftaccount' && c.name !== 'ubisoftgame' && c.name !== 'ubisofthealth' && c.name !== 'eaaccount' && c.name !== 'eagame' && c.name !== 'eahealth' && c.name !== 'eatest' && c.name !== 'installertest' && c.name !== 'ealogin' && c.name !== 'eacode'),
+      ...commands.filter((c: any) => c.name !== 'test' && c.name !== 'simulate' && c.name !== 'deplet' && c.name !== 'lowstock' && c.name !== 'setsteampass' && c.name !== 'game' && c.name !== 'removegame' && c.name !== 'autogen' && c.name !== 'stock' && c.name !== 'settokens' && c.name !== 'exclude-auto' && c.name !== 'setmode' && c.name !== 'getmode' && c.name !== 'promo' && c.name !== 'requests' && c.name !== 'staffstats' && c.name !== 'restockall' && c.name !== 'steamhealth' && c.name !== 'steamaccount' && c.name !== 'steamauth' && c.name !== 'export' && c.name !== 'ubisoftaccount' && c.name !== 'ubisoftgame' && c.name !== 'ubisofthealth' && c.name !== 'eaaccount' && c.name !== 'eagame' && c.name !== 'eahealth' && c.name !== 'eatest' && c.name !== 'installertest' && c.name !== 'setinstaller' && c.name !== 'ealogin' && c.name !== 'eacode' && c.name !== 'easession'),
       setlogs,
       setvouch,
       addsupport,
@@ -857,7 +893,7 @@ if (interaction.guildId) {
 });
 
 async function handleAutocomplete(interaction: any) {
-  if (interaction.commandName === 'stock' || interaction.commandName === 'exclude-auto' || interaction.commandName === 'test' || interaction.commandName === 'tokengen' || interaction.commandName === 'setmode' || interaction.commandName === 'getmode' || interaction.commandName === 'game' || interaction.commandName === 'removegame' || interaction.commandName === 'settokens' || interaction.commandName === 'autogen' || interaction.commandName === 'simulate' || interaction.commandName === 'deplet' || interaction.commandName === 'waitlist' || interaction.commandName === 'queue' || interaction.commandName === 'ubisoftgame' || interaction.commandName === 'eagame' || interaction.commandName === 'eatest' || interaction.commandName === 'installertest' || interaction.commandName === 'steampass') {
+  if (interaction.commandName === 'stock' || interaction.commandName === 'exclude-auto' || interaction.commandName === 'test' || interaction.commandName === 'tokengen' || interaction.commandName === 'setmode' || interaction.commandName === 'getmode' || interaction.commandName === 'game' || interaction.commandName === 'removegame' || interaction.commandName === 'settokens' || interaction.commandName === 'autogen' || interaction.commandName === 'simulate' || interaction.commandName === 'deplet' || interaction.commandName === 'waitlist' || interaction.commandName === 'queue' || interaction.commandName === 'ubisoftgame' || interaction.commandName === 'eagame' || interaction.commandName === 'eatest' || interaction.commandName === 'installertest' || interaction.commandName === 'setinstaller' || interaction.commandName === 'steampass') {
     const focusedValue = interaction.options.getFocused();
     const games = await prisma.game.findMany({
       where: { name: { contains: focusedValue, mode: 'insensitive' } },
@@ -904,7 +940,13 @@ async function handleChatCommand(interaction: any) {
       flags: [MessageFlags.Ephemeral],
     }).catch(() => {});
   }
-  if ((interaction.commandName === 'ealogin' || interaction.commandName === 'eacode') && interaction.guildId !== CONFIG.OWNER_GUILD_ID) {
+  if (interaction.commandName === 'setinstaller' && interaction.guildId !== CONFIG.OWNER_GUILD_ID) {
+    return interaction.reply({
+      content: '❌ This command is not available in this server.',
+      flags: [MessageFlags.Ephemeral],
+    }).catch(() => {});
+  }
+  if ((interaction.commandName === 'ealogin' || interaction.commandName === 'eacode' || interaction.commandName === 'easession') && interaction.guildId !== CONFIG.OWNER_GUILD_ID) {
     return interaction.reply({
       content: '❌ This command is not available in this server.',
       flags: [MessageFlags.Ephemeral],
@@ -1897,7 +1939,7 @@ client.on(Events.MessageCreate, async (message) => {
 
       // ─── FAST-PATH AUTO-CLOSE ───
       // If the user pings the bot AND attaches a screenshot, finalize immediately:
-      //   • cooldown based on game's tier (2h donor, 48h high, 24h normal/booster)
+      //   • cooldown: 48h on high-demand games (donors keep tier perks), else membership tier
       //   • token deducted
       //   • ticket closed and channel deleted
 
@@ -1918,7 +1960,7 @@ client.on(Events.MessageCreate, async (message) => {
           const cdMember = (message.member as GuildMember | null)
             ?? (await message.guild?.members.fetch(vouchTicket.userId).catch(() => null))
             ?? null;
-          const { hours: cooldownHours } = await computeCooldownHours(cdMember, vouchTicket.userId, cdGuildId);
+          const { hours: cooldownHours } = await computeCooldownHours(cdMember, vouchTicket.userId, cdGuildId, vouchTicket.game);
           const until = new Date(Date.now() + cooldownHours * 60 * 60 * 1000);
           await prisma.cooldown.upsert({
             where: { userId_guildId: { userId: vouchTicket.userId, guildId: cdGuildId } },
@@ -1997,7 +2039,8 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
         userId: vouchAuthorId,
         vouchExpiresAt: { not: null },
         status: { in: ['OPEN', 'CLAIMED'] }
-      }
+      },
+      include: { game: true },
     });
 
     if (ticket) {
@@ -2016,7 +2059,7 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
 
         const cdGuildId = ticket.guildId || reaction.message.guildId || '';
         const cdMember = (await message.guild?.members.fetch(ticket.userId).catch(() => null)) ?? null;
-        const { hours: cooldownHours } = await computeCooldownHours(cdMember, ticket.userId, cdGuildId);
+        const { hours: cooldownHours } = await computeCooldownHours(cdMember, ticket.userId, cdGuildId, ticket.game);
         const until = new Date(Date.now() + cooldownHours * 60 * 60 * 1000);
         await prisma.cooldown.upsert({ where: { userId_guildId: { userId: ticket.userId, guildId: cdGuildId } }, update: { until }, create: { userId: ticket.userId, guildId: cdGuildId, until } });
 
@@ -2075,6 +2118,8 @@ setInterval(() => checkWeeklyStaffStats(client), 15 * 60 * 1000); // Weekly Chec
 setInterval(() => checkDutyStatusReset(), 30 * 60 * 1000); // Duty Reset (Every 30m)
 setInterval(() => checkStaleTickets(client), 10 * 60 * 1000); // Stale Tickets (Every 10m)
 setInterval(() => syncOwnerStockForNewUtcDay(), 15 * 60 * 1000); // UTC daily account quota reset
+setInterval(() => processAllRestocks(), 5 * 60 * 1000); // Apply due token restocks (every 5m)
+setInterval(() => refreshAllPanels(), 10 * 60 * 1000); // Keep per-game restock countdowns fresh (every 10m)
 setInterval(() => cleanupExpiredCooldowns(), 6 * 60 * 60 * 1000); // Bug #15: Cooldown Cleanup (Every 6h)
 // Token downloads have a 30-minute TTL; sweep every 5 minutes to delete
 // the stored zip file + DB row once the link expires.

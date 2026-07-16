@@ -345,6 +345,16 @@ async function postEaLogin(path: string, payload?: Record<string, unknown>): Pro
       raw = { error: text.slice(0, 300) };
     }
     const b = unwrapBody(raw) as typeof raw;
+    if (res.status === 409 && (b?.status === 'code_pending' || b?.code === 'EmailCodePending')) {
+      return {
+        ok: false,
+        status: 'code_pending',
+        email: (b?.email as string) ?? null,
+        message: b?.message || b?.error,
+        code: b?.code,
+        error: b?.error,
+      };
+    }
     return {
       ok: res.ok && b?.ok === true,
       status: b?.status,
@@ -368,12 +378,20 @@ export async function eaSubmitCode(code: string): Promise<EaLoginActionResult> {
   return postEaLogin('/ea/verify-code', { code: code.trim() });
 }
 
+/** Import remid cookie from a browser login (bot /easession import). Bypasses captcha. */
+export async function eaImportSession(remid: string): Promise<EaLoginActionResult> {
+  return postEaLogin('/ea/session/import', { remid: remid.trim() });
+}
+
 export async function checkEaServiceHealth(): Promise<{
   ok: boolean;
   tool?: boolean;
   configured?: boolean;
   hasEmailPassword?: boolean;
   sessionEmail?: string | null;
+  sessionValid?: boolean;
+  imapAutoLogin?: boolean;
+  loginBuild?: string | null;
   error?: string;
 }> {
   if (!eaServiceConfigured()) return { ok: false, error: 'not configured' };
@@ -386,6 +404,9 @@ export async function checkEaServiceHealth(): Promise<{
       configured: body?.configured,
       hasEmailPassword: body?.has_email_password,
       sessionEmail: body?.session_email ?? null,
+      loginBuild: body?.login_build ?? null,
+      sessionValid: body?.session_valid ?? undefined,
+      imapAutoLogin: body?.imap_auto_login ?? undefined,
     };
   } catch (e) {
     return { ok: false, error: (e as Error).message };

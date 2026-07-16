@@ -38,6 +38,7 @@ import { resolveUbisoftForGame, catalogByMagicFile, resolveMagicDir, catalogBySt
 import { mintUbisoftToken, ubisoftServiceConfigured } from './ubisoftService';
 import { resolvePublicBaseUrl } from './downloadHost';
 import { createCallhomeInstaller } from './installerPackage';
+import { isInstallerCallhomeEnabled } from './installerSettings';
 import { consumeStock } from './gameManager';
 
 export const UBISOFT_STAGE_AWAITING = 'AWAITING_TOKEN_REQ';
@@ -92,18 +93,18 @@ function resolveMagicDelivery(
 }
 
 function magicInstructions(gameName: string, layout: 'flat' | 'bin64'): string {
-  const dropTarget =
+  const installWhere =
     layout === 'bin64'
-      ? 'the `Bin/Win64/` directory (extract the archive at your game root)'
-      : 'your game directory, alongside the main executable';
+      ? 'the **`Bin/Win64`** folder inside your game folder'
+      : 'your **game folder** (same place as the game `.exe`)';
 
   return (
-    `**Install setup files**\n` +
-    `Download the package above, extract it, and copy the contents into ${dropTarget}. Overwrite existing files if prompted.\n\n` +
-    `**Generate request file**\n` +
-    `Launch **${gameName}** once. The game will not load fully at this stage — this is expected. A file named **\`token_req.txt\`** will be created in your game directory.\n\n` +
-    `**Submit for activation**\n` +
-    `Attach **\`token_req.txt\`** to this ticket. Your activation file, **\`token.ini\`**, will be delivered here once processing is complete.`
+    `**1️⃣ Download** the zip above.\n` +
+    `**2️⃣ Unzip** it into ${installWhere}. Tap **Replace** if Windows asks.\n` +
+    `**3️⃣ Open ${gameName} once.** It will not fully start — that is normal.\n` +
+    `A file called **\`token_req.txt\`** shows up in your game folder.\n\n` +
+    `**4️⃣ Drag \`token_req.txt\` into this chat** and send it.\n` +
+    `We reply with **\`token.ini\`** — put that in the same game folder and you are done.`
   );
 }
 
@@ -131,17 +132,17 @@ async function startUbisoftManualDelivery(channel: TextChannel, ticket: any, gui
   }
 
   const embed = new EmbedBuilder()
-    .setTitle(`🎮 ${ticket.game.name} — Activation Setup`)
+    .setTitle(`✅ ${ticket.game.name} — What to do`)
     .setDescription(
-      `Your screenshot has been verified. Please complete the steps below to proceed with activation.\n\n` +
+      `Screenshot approved. Follow these steps:\n\n` +
         magicInstructions(ticket.game.name, resolved.layout),
     )
     .setColor(0x5865f2)
-    .setFooter({ text: 'Awaiting token_req.txt' })
+    .setFooter({ text: 'Waiting for you to send token_req.txt' })
     .setTimestamp();
 
   if (delivery.url) {
-    embed.addFields({ name: '📦 Setup Package', value: `[Download here](${delivery.url})` });
+    embed.addFields({ name: '⬇️ Step 1 — Download', value: `**[CLICK HERE TO DOWNLOAD](${delivery.url})**` });
   }
 
   const files: AttachmentBuilder[] = [];
@@ -179,7 +180,7 @@ export async function startUbisoftDelivery(channel: TextChannel, ticket: any, gu
   // so we need a servable magic zip (self-hosted URL) plus a built installer.exe.
   // Fall back to the manual flow if any piece is missing.
   const delivery = resolveMagicDelivery(resolved.ubisoftAppId, resolved.magicFile, ticket.game.appId);
-  const installer = CONFIG.INSTALLER_CALLHOME && delivery?.url
+  const installer = (await isInstallerCallhomeEnabled('ubisoft')) && delivery?.url
     ? await createCallhomeInstaller({
         ticketId: ticket.id,
         guildId,
@@ -281,17 +282,18 @@ export async function handleUbisoftTokenReq(message: Message, ticket: any): Prom
       },
       orderBy: { createdAt: 'desc' },
     });
-    const onCallhome = stage === UBISOFT_STAGE_CALLHOME || !!callhomeRow;
+    const onCallhome =
+      (stage === UBISOFT_STAGE_CALLHOME || !!callhomeRow) && (await isInstallerCallhomeEnabled('ubisoft'));
 
     if (onCallhome) {
       await message.reply({
         embeds: [
           new EmbedBuilder()
-            .setTitle('⏳ Installer in progress')
+            .setTitle('⏳ Wait — installer is running')
             .setDescription(
-              `You already have the **installer** — run **\`installer.exe\`** from the download link above if you have not yet.\n\n` +
-                `It handles everything automatically. When it finishes, you will see **Activation Complete** here — **no need to attach \`token_req.txt\`.**\n\n` +
-                `Only paste **\`token_req.txt\`** if the installer popup explicitly tells you to.`,
+              `Run **\`installer.exe\`** from the download link above.\n\n` +
+                `**Do not send any files yet.** When it finishes, you will see **Activation Complete** here.\n\n` +
+                `Only upload a file if the installer popup tells you to.`,
             )
             .setColor(0x5865f2),
         ],
@@ -302,10 +304,11 @@ export async function handleUbisoftTokenReq(message: Message, ticket: any): Prom
     await message.reply({
       embeds: [
         new EmbedBuilder()
-          .setTitle('📎 Activation file required')
+          .setTitle('📎 Send your file')
           .setDescription(
-            `Please attach **\`token_req.txt\`** to this ticket to continue.\n\n` +
-              `This file is generated in your game directory after installing the setup files and launching **${ticket.game.name}** once.`,
+            `**Find \`token_req.txt\`** in your game folder → **drag it into this chat** → press Enter.\n\n` +
+              `Do not type a message. Just upload the file.\n\n` +
+              `No file yet? Open **${ticket.game.name}** once after installing the zip from above.`,
           )
           .setColor(0xfee75c),
       ],

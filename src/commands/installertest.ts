@@ -6,6 +6,7 @@ import { isEaGame } from '../utils/eaCatalog';
 import { isUbisoftGame } from '../utils/ubisoftCatalog';
 import { createEaTestInstaller } from '../utils/eaFlow';
 import { createUbisoftTestInstaller } from '../utils/ubisoftFlow';
+import { isInstallerCallhomeEnabled } from '../utils/installerSettings';
 
 const DEFAULT_GAME = 'EA SPORTS FC 26';
 
@@ -26,12 +27,6 @@ export async function execute(interaction: any): Promise<void> {
     return interaction.editReply({ content: '❌ Run this command in a text channel.' });
   }
 
-  if (!CONFIG.INSTALLER_CALLHOME) {
-    return interaction.editReply({
-      content: '⚠️ `INSTALLER_CALLHOME` is off — the self-driving installer is disabled. The test will still build, but enable the flag before using it with real tickets.',
-    });
-  }
-
   const gameName = (interaction.options.getString('game') || DEFAULT_GAME).trim();
   const game = await prisma.game.findFirst({ where: { name: { equals: gameName, mode: 'insensitive' } } });
   if (!game) {
@@ -43,6 +38,13 @@ export async function execute(interaction: any): Promise<void> {
   if (!ea && !ubi) {
     return interaction.editReply({
       content: `❌ **${game.name}** is neither an EA nor a Ubisoft title. The installer test only applies to those two pipelines.`,
+    });
+  }
+
+  const installerOn = await isInstallerCallhomeEnabled(ea ? 'ea' : 'ubisoft');
+  if (!installerOn) {
+    return interaction.editReply({
+      content: `⚠️ The **${ea ? 'EA' : 'Ubisoft'}** call-home installer is **off** (\`/setinstaller\`). Enable it first, or use the manual magic-zip flow in a real ticket.`,
     });
   }
 

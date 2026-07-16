@@ -60,6 +60,20 @@ GET /health → { "ok": true, "configured": true, "session_email": "..." }
    EA_SERVICE_KEY=<same secret>
    ```
 
+### CLI deploy (monorepo)
+
+**Do not** run `railway up` from the repo root or `denuvo/ea-service/` — Railway
+snapshots the whole git tree (~200MB) and the deploy hangs at "Taking a snapshot".
+
+From the repo root, use:
+
+```powershell
+.\ea-service\deploy.ps1
+```
+
+Or connect the service to GitHub with **Root Directory** = `ea-service` so pushes
+to `main` rebuild automatically.
+
 ## Bot commands
 
 - `/eaaccount add` — register EA accounts (rotated, 5/day each)

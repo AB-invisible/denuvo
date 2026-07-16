@@ -10,8 +10,8 @@ from typing import Optional
 
 import requests
 
-from ea_login import EaLoginError, login_with_email_password
-from ea_minter import EaConfig, EaMintError, refresh_pc_sign
+from ea_login import EaLoginError, login_with_email_password, login_with_one_time_code
+from ea_minter import EaConfig, EaMintError, login_automatic, refresh_pc_sign
 from ea_pc_sign import generate_machine_hash, generate_pc_sign
 from ea_session import EaSession, load_session, merge_env_session, save_session
 
@@ -29,13 +29,66 @@ def _cache_key(email: str) -> str:
 
 
 def session_from_stored(stored: EaSession) -> EaConfig:
-    sig = refresh_pc_sign(stored.login_signature, stored.login_sv or "v2")
     return EaConfig(
         remid=stored.remid,
-        login_signature=sig,
+        login_signature=stored.login_signature,
         login_sv=stored.login_sv or "v2",
         machine_hash=stored.machine_hash,
+        trust_cookies=dict(stored.trust_cookies or {}),
     )
+
+
+def _use_otp_first(force: bool = False) -> bool:
+    """Railway/datacenter IPs hit FunCaptcha on password login — use email OTP instead."""
+    if force:
+        return True
+    v = os.environ.get("EA_LOGIN_OTP_FIRST", "").strip().lower()
+    if v in ("0", "false", "no"):
+        return False
+    if v in ("1", "true", "yes"):
+        return True
+    return bool(os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID"))
+
+
+def auto_refresh_session(email: str, password: str) -> EaSession:
+    """
+    Fully automated re-login on Railway:
+    1. Request EA email OTP
+    2. Read code from Gmail IMAP (EA_GMAIL_APP_PASSWORD)
+    3. Finish login + save session — no /eacode, no browser, no local PC
+    """
+    from ea_imap import wait_for_ea_login_code
+    from ea_login import login_with_one_time_code, submit_verification_code
+
+    email = email.strip()
+    seed = _account_seed(email, password)
+    stored = EaSession(
+        email=email,
+        machine_hash=generate_machine_hash(seed),
+        login_signature=generate_pc_sign(seed),
+    )
+
+    try:
+        out = login_with_one_time_code(email, password, seed, existing=stored)
+        _ACCOUNT_CACHE[_cache_key(email)] = time.time()
+        return out
+    except EaLoginError as e:
+        if e.code != "EmailCodePending":
+            raise EaMintError(e.code, str(e)) from e
+
+    if not os.environ.get("EA_GMAIL_APP_PASSWORD", "").strip():
+        raise EaMintError(
+            "EmailCodePending",
+            "EA sent a login code — set EA_GMAIL_APP_PASSWORD on ea-service (Google App Password) "
+            "for fully automatic login, or run /eacode manually.",
+        )
+
+    print("[ea-service] waiting for EA code in Gmail...", flush=True)
+    code = wait_for_ea_login_code(email)
+    out = submit_verification_code(code)
+    _ACCOUNT_CACHE[_cache_key(email)] = time.time()
+    print("[ea-service] auto-login via Gmail IMAP succeeded", flush=True)
+    return out
 
 
 def bootstrap_session(email: str, password: str, force: bool = False) -> EaSession:
@@ -63,9 +116,31 @@ def bootstrap_session(email: str, password: str, force: bool = False) -> EaSessi
         stored.login_signature = generate_pc_sign(seed)
 
     try:
-        stored = login_with_email_password(email, password, seed, existing=stored)
+        if _use_otp_first(force):
+            stored = login_with_one_time_code(email, password, seed, existing=stored)
+        else:
+            stored = login_with_email_password(email, password, seed, existing=stored)
     except EaLoginError as e:
-        raise EaMintError(e.code, str(e)) from e
+        if e.code == "EmailCodePending" and os.environ.get("EA_GMAIL_APP_PASSWORD", "").strip():
+            from ea_login import submit_verification_code
+            from ea_imap import wait_for_ea_login_code
+
+            code = wait_for_ea_login_code(email)
+            stored = submit_verification_code(code)
+        elif e.code == "AuthError" and not _use_otp_first(force):
+            try:
+                stored = login_with_one_time_code(email, password, seed, existing=stored)
+            except EaLoginError as e2:
+                if e2.code == "EmailCodePending" and os.environ.get("EA_GMAIL_APP_PASSWORD", "").strip():
+                    from ea_login import submit_verification_code
+                    from ea_imap import wait_for_ea_login_code
+
+                    code = wait_for_ea_login_code(email)
+                    stored = submit_verification_code(code)
+                else:
+                    raise EaMintError(e2.code, str(e2)) from e2
+        else:
+            raise EaMintError(e.code, str(e)) from e
 
     _ACCOUNT_CACHE[key] = time.time()
     return stored
@@ -131,13 +206,112 @@ def resolve_config(
     )
 
 
+def import_remid_session(
+    remid: str,
+    email: str = "",
+    password: str = "",
+    extra_cookies: Optional[dict[str, str]] = None,
+    skip_validate: bool = False,
+) -> EaSession:
+    """
+    Import remid (+ optional sid/osc trust cookies) from a browser JUNO login.
+    Validates with the same OAuth+nonce flow used for token minting.
+    """
+    remid = remid.strip()
+    if not remid:
+        raise EaMintError("InvalidRequest", "remid cookie value is required")
+
+    email = (email or os.environ.get("EA_EMAIL", "")).strip()
+    password = password or os.environ.get("EA_PASSWORD", "")
+    seed = _account_seed(email, password) if email and password else (email or "imported")
+    machine_hash = generate_machine_hash(seed)
+    signature = generate_pc_sign(seed)
+
+    trust = {k: v.strip() for k, v in (extra_cookies or {}).items() if v and str(v).strip()}
+    trust["remid"] = remid
+
+    cfg = EaConfig(
+        remid=remid,
+        login_signature=signature,
+        login_sv="v2",
+        machine_hash=machine_hash,
+        trust_cookies=trust,
+    )
+    if not skip_validate:
+        from ea_http import http_session
+
+        http = http_session()
+        try:
+            login_automatic(cfg, http)
+        except EaMintError as e:
+            if e.code == "AuthError":
+                raise EaMintError(
+                    "AuthError",
+                    "remid is expired or not a JUNO session — log in via the JUNO link in "
+                    "import_browser_session.py (or www.ea.com/login), then re-import.",
+                    logs=e.logs or str(e),
+                ) from e
+            raise
+
+    out = EaSession(
+        email=email,
+        remid=remid,
+        login_signature=signature,
+        login_sv="v2",
+        machine_hash=machine_hash,
+        trust_cookies=trust,
+        updated_at=time.time(),
+    )
+    save_session(out)
+    if email:
+        _ACCOUNT_CACHE[_cache_key(email)] = time.time()
+    return out
+
+
+def validate_stored_session(stored: Optional[EaSession] = None, live: bool = False) -> bool:
+    """Check session. live=False for /health (don't burn OAuth every ping)."""
+    stored = stored or merge_env_session(load_session())
+    if not stored.is_complete():
+        return False
+    if not live:
+        if stored.updated_at and time.time() - stored.updated_at < 14 * 86400:
+            return True
+        return bool(stored.remid)
+    try:
+        from ea_http import http_session as _http_session
+
+        login_automatic(session_from_stored(stored), _http_session())
+        return True
+    except EaMintError:
+        return False
+
+
 def ensure_default_account_configured() -> EaSession:
-    """Called on startup / health to warm the default env account session."""
+    """
+    Startup hook: validate existing volume session — never overwrite a good
+    session with a failed Railway OTP/password bootstrap.
+    """
+    stored = merge_env_session(load_session())
+    if stored.is_complete():
+        if validate_stored_session(stored):
+            print("[ea-service] persisted EA session is valid", flush=True)
+        else:
+            print("[ea-service] session stale — auto-refresh on next mint", flush=True)
+            if os.environ.get("EA_GMAIL_APP_PASSWORD", "").strip():
+                email = os.environ.get("EA_EMAIL", "").strip()
+                password = os.environ.get("EA_PASSWORD", "")
+                if email and password:
+                    try:
+                        auto_refresh_session(email, password)
+                    except Exception as e:
+                        print(f"[ea-service] auto-refresh skipped: {e}", flush=True)
+        return stored
+
     email = os.environ.get("EA_EMAIL", "").strip()
     password = os.environ.get("EA_PASSWORD", "")
     if email and password:
-        return bootstrap_session(email, password)
-    stored = merge_env_session(load_session())
-    if stored.is_complete():
-        return stored
+        try:
+            return bootstrap_session(email, password)
+        except EaMintError as e:
+            print(f"[ea-service] auto-bootstrap skipped: {e}", flush=True)
     return stored

@@ -48,9 +48,21 @@ type GameSelectStatusInput = {
   boosterOnly: boolean;
   highDemand: boolean;
   accountSynced: boolean;
+  /** When this game next restocks (soonest Restock row / daily reset), if out. */
+  nextRestockAt: Date | null;
 };
 
 export type GameSelectStatusTone = 'ok' | 'low' | 'out';
+
+/** Plain-text "Restocks in Xh Ym" (select-menu descriptions can't use timestamps). */
+function restockPhrase(nextRestockAt: Date | null | undefined, now: Date): string {
+  if (!nextRestockAt) return '';
+  const remaining = nextRestockAt.getTime() - now.getTime();
+  if (remaining <= 60 * 1000) return 'Restocks soon';
+  const h = Math.floor(remaining / 3_600_000);
+  const m = Math.floor((remaining % 3_600_000) / 60_000);
+  return h > 0 ? `Restocks in ${h}h ${m}m` : `Restocks in ${m}m`;
+}
 
 function gameSelectStatusTone(input: GameSelectStatusInput): GameSelectStatusTone {
   if (input.availableStock >= 10) return 'ok';
@@ -59,7 +71,7 @@ function gameSelectStatusTone(input: GameSelectStatusInput): GameSelectStatusTon
 }
 
 function formatGameSelectDescription(input: GameSelectStatusInput): string {
-  const { availableStock, totalStock, reserved, queueCount, gameLastDepleted, now, accountSynced } = input;
+  const { availableStock, totalStock, reserved, queueCount, now, accountSynced, nextRestockAt } = input;
   const parts: string[] = [];
   const res = reservedSuffix(reserved);
 
@@ -71,22 +83,18 @@ function formatGameSelectDescription(input: GameSelectStatusInput): string {
     parts.push(`All ${totalStock} reserved`);
   } else if (totalStock > 0 && reserved > 0) {
     parts.push(`${totalStock} total${res}`);
-  } else if (accountSynced) {
-    parts.push(reserved > 0 ? `Out for today${res}` : 'Out for today');
-  } else if (gameLastDepleted) {
-    const timeDiff = now.getTime() - gameLastDepleted.getTime();
-    const remaining = Math.max(0, REGEN_TIME - timeDiff);
-    const hours = Math.floor(remaining / (1000 * 60 * 60));
-    const minutes = Math.floor((remaining % (1000 * 60 * 60)) / (1000 * 60));
-    if (remaining <= 0) {
-      parts.push(`Restocking soon${res}`);
-    } else {
-      parts.push((hours > 0 ? `Restocks ${hours}h ${minutes}m` : `Restocks ${minutes}m`) + res);
-    }
-  } else if (reserved > 0) {
-    parts.push(`${reserved} in progress`);
   } else {
-    parts.push('Out of stock');
+    // Fully out of stock — always show when it comes back if we know.
+    const rp = restockPhrase(nextRestockAt, now);
+    if (rp) {
+      parts.push(rp + res);
+    } else if (accountSynced) {
+      parts.push(reserved > 0 ? `Out for today${res}` : 'Out for today');
+    } else if (reserved > 0) {
+      parts.push(`${reserved} in progress`);
+    } else {
+      parts.push('Out of stock');
+    }
   }
 
   if (queueCount > 0) parts.push(`${queueCount} waiting`);
@@ -170,6 +178,28 @@ export async function createMainPanel(guildId?: string) {
   const staffLine = staffCount > 0 ? `🟢 **${staffCount}** staff on duty` : '🌙 Staff away — delays likely';
   const cleanWait = waitTime.replace(/[^\x20-\x7E]/g, '');
 
+  // ── Next-restock countdown ──────────────────────────────────────────────
+  // Soonest of: the earliest pending Restock row (owner-managed + tenant games)
+  // and — for account-synced servers with a depleted game — the next 00:00 UTC
+  // quota reset. Rendered as a Discord relative timestamp so it live-counts-down
+  // in every client with no polling on our side.
+  let nextRestockLine = 'Nothing depleted';
+  if (guildId) {
+    const candidates: number[] = [];
+    const soonestRestock = await prisma.restock.findFirst({
+      where: { guildId, restockAt: { gt: now } },
+      orderBy: { restockAt: 'asc' },
+      select: { restockAt: true },
+    });
+    if (soonestRestock) candidates.push(soonestRestock.restockAt.getTime());
+    if (accountSynced && [...serverStockMap.values()].some((s) => s.stock <= 0)) {
+      candidates.push(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0));
+    }
+    if (candidates.length) {
+      nextRestockLine = `<t:${Math.floor(Math.min(...candidates) / 1000)}:R>`;
+    }
+  }
+
   const mainEmbed = new EmbedBuilder()
     .setTitle(`${CONFIG.NAME} — Game Selection`)
     .setDescription(
@@ -184,7 +214,7 @@ export async function createMainPanel(guildId?: string) {
       },
       {
         name: 'Restock cycle',
-        value: restockCycleLine,
+        value: `${restockCycleLine}\n⏳ **Next restock** ${nextRestockLine}`,
         inline: true,
       },
       { name: 'Staff', value: staffLine, inline: true },
@@ -198,6 +228,22 @@ export async function createMainPanel(guildId?: string) {
     mainEmbed.setDescription(`Welcome to the **${CONFIG.NAME} Activation Lounge**.\n\n⚠️ **No games are currently available in the system.**\nIf you are an administrator, please run the seed script to populate the database.`);
     return { embeds: [mainEmbed], components: [] };
   }
+
+  // Per-game next restock: soonest pending Restock row (owner-managed Ubisoft/EA
+  // + tenant games). Account-synced Steam games regen at the 00:00 UTC quota
+  // reset instead. Shown as a plain-text countdown on each depleted entry.
+  const restockByGame = new Map<number, Date>();
+  if (guildId) {
+    const restockRows = await prisma.restock.findMany({
+      where: { guildId },
+      orderBy: { restockAt: 'asc' },
+      select: { gameId: true, restockAt: true },
+    });
+    for (const r of restockRows) {
+      if (!restockByGame.has(r.gameId)) restockByGame.set(r.gameId, r.restockAt);
+    }
+  }
+  const nextUtcMidnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0));
 
   // Create Select Menus
   const rows: ActionRowBuilder<StringSelectMenuBuilder>[] = [];
@@ -224,6 +270,19 @@ export async function createMainPanel(guildId?: string) {
           const availableStock = Math.max(0, gameStock - reserved);
           const queueCount = waitlistMap.get(game.id) || 0;
 
+          // When it comes back: soonest scheduled restock, else the daily reset
+          // (account-synced Steam), else lastDepleted + regen window.
+          let nextRestockAt: Date | null = null;
+          if (availableStock <= 0) {
+            nextRestockAt =
+              restockByGame.get(game.id) ??
+              (authoritative
+                ? nextUtcMidnight
+                : gameLastDepleted
+                ? new Date(gameLastDepleted.getTime() + REGEN_TIME)
+                : null);
+          }
+
           const statusInput: GameSelectStatusInput = {
             availableStock,
             totalStock: gameStock,
@@ -235,6 +294,7 @@ export async function createMainPanel(guildId?: string) {
             boosterOnly: !!game.boosterOnly,
             highDemand: !!game.highDemand,
             accountSynced,
+            nextRestockAt,
           };
 
           const description = formatGameSelectDescription(statusInput);

@@ -601,7 +601,7 @@ export async function handleDeductionChoice(interaction: ButtonInteraction, choi
   const effectiveGuildId = ticket.guildId || interaction.guildId || '';
 
   // Shared cooldown logic — membership tier + active temp_tier promo.
-  const { hours, tier: userTier, viaPromo } = await computeCooldownHours(member, ticket.userId, effectiveGuildId);
+  const { hours, tier: userTier, viaPromo } = await computeCooldownHours(member, ticket.userId, effectiveGuildId, ticket.game);
   const deduct = choice === 'yes';
 
   if (deduct) {

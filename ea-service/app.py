@@ -10,20 +10,30 @@ from __future__ import annotations
 import hmac
 import os
 import threading
+import time
 from typing import Optional
 
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from ea_auth import bootstrap_session, ensure_default_account_configured, resolve_config
-from ea_login import EaLoginError, submit_verification_code
+from ea_auth import (
+    auto_refresh_session,
+    bootstrap_session,
+    ensure_default_account_configured,
+    import_remid_session,
+    resolve_config,
+    validate_stored_session,
+)
+from ea_login import EA_LOGIN_BUILD, EaLoginError, submit_verification_code
 from ea_minter import EaConfig, EaMintError, mint_ticket
 from ea_pending import has_pending, load_pending, masked_email
 from ea_session import load_session, merge_env_session
 
 app = FastAPI(title="EaTokenService", version="2.0.0")
 RUN_LOCK = threading.Lock()
+_SESSION_VALID_CACHE: dict[str, object] = {"ok": None, "at": 0.0}
+_SESSION_VALID_TTL = 300  # don't hammer EA OAuth on every /health
 
 
 def env(key: str, default: str = "") -> str:
@@ -51,6 +61,13 @@ class TokenResponse(BaseModel):
 
 class VerifyCodeRequest(BaseModel):
     code: str = Field(..., min_length=4, max_length=12)
+
+
+class SessionImportRequest(BaseModel):
+    remid: str = Field(..., min_length=8)
+    email: Optional[str] = None
+    cookies: Optional[dict[str, str]] = None
+    prevalidated: bool = False
 
 
 class ErrorResponse(BaseModel):
@@ -89,9 +106,10 @@ def warm_default_session() -> None:
     # wants a code, it's emailed + saved as pending for /eacode.
     def _warm() -> None:
         try:
+            print(f"[ea-service] login build {EA_LOGIN_BUILD}", flush=True)
             ensure_default_account_configured()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[ea-service] warm login skipped: {e}", flush=True)
 
     threading.Thread(target=_warm, daemon=True).start()
 
@@ -102,16 +120,29 @@ def health() -> dict:
     has_env_creds = bool(env("EA_EMAIL") and env("EA_PASSWORD"))
     has_manual = bool(env("EA_LOGIN_REMID") and env("EA_LOGIN_SIGNATURE") and env("EA_MACHINE_HASH"))
     ready = stored.is_complete() or has_env_creds or has_manual
+    session_valid = False
+    if stored.is_complete():
+        now = time.time()
+        cached = _SESSION_VALID_CACHE.get("ok")
+        if cached is not None and now - float(_SESSION_VALID_CACHE.get("at", 0)) < _SESSION_VALID_TTL:
+            session_valid = bool(cached)
+        else:
+            session_valid = validate_stored_session(stored)
+            _SESSION_VALID_CACHE["ok"] = session_valid
+            _SESSION_VALID_CACHE["at"] = now
     return {
         "ok": True,
         "tool": True,
         "mode": "python",
         "configured": ready,
+        "session_valid": session_valid,
         "has_remind": bool(stored.remid or env("EA_LOGIN_REMID")),
         "has_signature": bool(stored.login_signature or env("EA_LOGIN_SIGNATURE")),
         "has_machine_hash": bool(stored.machine_hash or env("EA_MACHINE_HASH")),
         "has_email_password": has_env_creds,
         "session_email": stored.email or None,
+        "login_build": EA_LOGIN_BUILD,
+        "imap_auto_login": bool(env("EA_GMAIL_APP_PASSWORD")),
     }
 
 
@@ -150,24 +181,28 @@ def mint_token(body: TokenRequest, x_api_key: Optional[str] = Header(default=Non
             token = mint_ticket(body.ticket, body.contentId, body.engine, cfg)
             return TokenResponse(token=token)
         except EaMintError as e:
-            # Stale remid on volume — force re-login when creds are available.
-            if e.code == "AuthError" and (body.email and body.password):
-                try:
-                    bootstrap_session(body.email.strip(), body.password, force=True)
-                    cfg = build_config(body)
-                    token = mint_ticket(body.ticket, body.contentId, body.engine, cfg)
-                    return TokenResponse(token=token)
-                except EaMintError as e2:
-                    e = e2
+            if e.code == "AuthError":
+                email = env("EA_EMAIL")
+                password = env("EA_PASSWORD")
+                if email and password:
+                    try:
+                        auto_refresh_session(email, password)
+                        cfg = build_config(body)
+                        token = mint_ticket(body.ticket, body.contentId, body.engine, cfg)
+                        _SESSION_VALID_CACHE["ok"] = True
+                        _SESSION_VALID_CACHE["at"] = time.time()
+                        return TokenResponse(token=token)
+                    except EaMintError as e2:
+                        e = e2
+                return _mint_error_response(e)
             return _mint_error_response(e)
 
 
 @app.post("/ea/login", response_model=None)
 def ea_login(x_api_key: Optional[str] = Header(default=None)):
     """
-    Owner-triggered login (via bot /ealogin). Forces a fresh sign-in of the env
-    EA account. If EA wants an email code, this emails it and returns
-    status=code_pending — the owner then submits it with /eacode.
+    Owner-triggered login (via bot /ealogin). Uses email OTP on Railway — never
+    posts the password (EA blocks datacenter IPs with fake AuthError).
     """
     require_api_key(x_api_key)
     email = env("EA_EMAIL")
@@ -176,14 +211,47 @@ def ea_login(x_api_key: Optional[str] = Header(default=None)):
         return _mint_error_response(EaMintError("NotConfigured", "Set EA_EMAIL / EA_PASSWORD on the ea-service first."))
     with RUN_LOCK:
         try:
-            sess = bootstrap_session(email, password, force=True)
+            from ea_auth import _account_seed
+            from ea_login import login_with_one_time_code
+
+            seed = _account_seed(email, password)
+            stored = merge_env_session(load_session())
+            sess = login_with_one_time_code(email, password, seed, existing=stored)
             return {"ok": True, "status": "logged_in", "email": sess.email or email}
-        except EaMintError as e:
+        except EaLoginError as e:
             if e.code == "EmailCodePending":
                 return JSONResponse(
                     status_code=409,
-                    content={"ok": False, "status": "code_pending", "email": masked_email(email), "message": str(e)},
+                    content={
+                        "ok": False,
+                        "status": "code_pending",
+                        "code": "EmailCodePending",
+                        "email": masked_email(email),
+                        "message": str(e),
+                        "error": str(e),
+                    },
                 )
+            return _mint_error_response(EaMintError(e.code, str(e)))
+        except EaMintError as e:
+            return _mint_error_response(e)
+
+
+@app.post("/ea/session/import", response_model=None)
+def ea_session_import(body: SessionImportRequest, x_api_key: Optional[str] = Header(default=None)):
+    """Import remid cookie from a browser login — bypasses captcha permanently."""
+    require_api_key(x_api_key)
+    with RUN_LOCK:
+        try:
+            sess = import_remid_session(
+                body.remid,
+                email=body.email or env("EA_EMAIL"),
+                extra_cookies=body.cookies,
+                skip_validate=body.prevalidated,
+            )
+            _SESSION_VALID_CACHE["ok"] = True
+            _SESSION_VALID_CACHE["at"] = time.time()
+            return {"ok": True, "status": "imported", "email": sess.email or body.email}
+        except EaMintError as e:
             return _mint_error_response(e)
 
 

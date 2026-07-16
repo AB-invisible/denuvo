@@ -88,6 +88,38 @@ export async function processGuildRestocks(guildId: string): Promise<void> {
   }
 }
 
+/**
+ * Recover owner-managed games left depleted with no scheduled restock — e.g.
+ * depleted before restock-on-consume existed, or by a path that never wrote a
+ * Restock row. Once REGEN_TIME has elapsed, refill to the base amount and clear
+ * the flag. Account-synced Steam games are skipped: their stock is real account
+ * capacity, so faking it would let users open tickets that dead-end at gen time.
+ */
+export async function healStuckDepletedGames(): Promise<void> {
+  const cutoff = new Date(Date.now() - REGEN_TIME);
+  const stuck = await prisma.serverStock.findMany({
+    where: { stock: { lte: 0 }, lastDepletedAt: { not: null, lte: cutoff } },
+    include: { game: true },
+  });
+  if (stuck.length === 0) return;
+
+  for (const s of stuck) {
+    if (s.game.excludeRegen) continue;
+    const accountSynced = usesAccountSyncedStock(s.guildId) && !!s.game.appId && !isUbisoftGame(s.game) && !isEaGame(s.game);
+    if (accountSynced) continue;
+    const pending = await prisma.restock.findFirst({ where: { gameId: s.gameId, guildId: s.guildId } });
+    if (pending) continue;
+
+    const amount = CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
+    await prisma.serverStock.update({
+      where: { gameId_guildId: { gameId: s.gameId, guildId: s.guildId } },
+      data: { stock: amount, lastDepletedAt: null },
+    });
+    await logGlobal('✅ Auto-Restock', `**${amount} token(s)** restocked for **${s.game.name}**.`, 0x57F287);
+    await notifyStockRestocked(s.gameId, s.game.name, 0, amount);
+  }
+}
+
 export async function initServerStocksForGame(gameId: number): Promise<void> {
   const game = await prisma.game.findUnique({ where: { id: gameId } });
   const guildIds = await getAllowedGuildIds();
@@ -238,6 +270,15 @@ export async function consumeStock(gameId: number, guildId: string, _fromQueue =
           lastDepletedAt: newStock === 0 ? new Date() : null,
         },
       });
+
+      // Schedule this consumed activation to regenerate in REGEN_TIME. Owner-
+      // managed Ubisoft/EA titles have NO daily capacity reset to fall back on,
+      // so without a Restock row they deplete and never come back (the bug).
+      if (!game.excludeRegen) {
+        await prisma.restock.create({
+          data: { gameId, guildId, restockAt: new Date(Date.now() + REGEN_TIME) },
+        });
+      }
 
       if (newStock === 0) {
         await logGlobal('🚨 Game Depleted', `Stock for **${game.name}** has reached zero.`, 0xED4245);

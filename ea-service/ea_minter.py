@@ -24,6 +24,7 @@ from typing import Optional
 
 import requests
 
+from ea_http import http_session as _http_session
 from ea_pc_sign import refresh_pc_sign as _refresh_pc_sign_impl
 
 LICENSE_URL = "https://proxy.novafusion.ea.com/licenses"
@@ -82,6 +83,7 @@ class EaConfig:
     machine_hash: str = ""
     ea_app_version: str = DEFAULT_EA_APP_VERSION
     access_token: str = ""  # optional: skip login if pre-seeded
+    trust_cookies: dict[str, str] | None = None
 
     @classmethod
     def from_env(cls) -> "EaConfig":
@@ -118,9 +120,26 @@ def _pkce_pair() -> tuple[str, str]:
     return verifier, challenge
 
 
-def login_automatic(cfg: EaConfig, sess: requests.Session) -> str:
+def _auth_cookie_header(cfg: EaConfig) -> str:
+    jar: dict[str, str] = {}
+    if cfg.trust_cookies:
+        jar.update({k: v for k, v in cfg.trust_cookies.items() if v})
+    if cfg.remid:
+        jar["remid"] = cfg.remid
+    if not jar:
+        raise EaMintError("AuthError", "EA remid cookie is missing — run /easession import")
+    return "; ".join(f"{k}={v}" for k, v in jar.items())
+
+
+from ea_http import http_session as _http_session
+
+
+def login_automatic(cfg: EaConfig, sess: requests.Session | None = None) -> str:
     if not cfg.remid or not cfg.login_signature:
         raise EaMintError("AuthError", "EA_LOGIN_REMID and EA_LOGIN_SIGNATURE are required")
+
+    own_sess = sess is None
+    sess = sess or _http_session()
 
     version = cfg.ea_app_version
     pc_sign = refresh_pc_sign(cfg.login_signature, cfg.login_sv)
@@ -141,7 +160,7 @@ def login_automatic(cfg: EaConfig, sess: requests.Session) -> str:
     }
     headers = {
         "User-Agent": UA_AUTH + version,
-        "Cookie": f"remid={cfg.remid}",
+        "Cookie": _auth_cookie_header(cfg),
     }
 
     r1 = sess.get(AUTH_URL, params=params, headers=headers, allow_redirects=False, timeout=30)
@@ -151,6 +170,15 @@ def login_automatic(cfg: EaConfig, sess: requests.Session) -> str:
             "AuthError",
             "EA auth redirect failed — refresh remid/signature",
             logs=f"status={r1.status_code} body={r1.text[:500]}",
+        )
+
+    if "signin.ea.com" in location:
+        _token_cache["token"] = ""
+        _token_cache["at"] = 0.0
+        raise EaMintError(
+            "AuthError",
+            "EA session expired — re-import remid via /easession or run import_browser_session.py",
+            logs=f"location={location[:300]}",
         )
 
     if "#code=" in location:
@@ -183,6 +211,11 @@ def login_automatic(cfg: EaConfig, sess: requests.Session) -> str:
     token = body.get("access_token", "")
     if not token:
         raise EaMintError("AuthError", "EA access token missing in response", logs=str(body)[:300])
+    if own_sess:
+        try:
+            sess.close()
+        except Exception:
+            pass
     return token
 
 
@@ -315,4 +348,11 @@ def mint_ticket(
 ) -> str:
     cfg = cfg or EaConfig.from_env()
     blob, cid, eng = normalize_ticket(ticket, content_id, engine)
-    return generate_token(cfg, blob, cid, eng)
+    sess = _http_session()
+    try:
+        return generate_token(cfg, blob, cid, eng, sess)
+    finally:
+        try:
+            sess.close()
+        except Exception:
+            pass

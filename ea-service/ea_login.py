@@ -4,6 +4,9 @@ Headless EA email/password login for remid + trust cookies.
 Uses the signin.ea.com web flow (same pattern as public EA login helpers).
 First login on a fresh account may require email verification — trust cookies
 stored in ea_session.json skip that on later runs.
+
+Railway/datacenter IPs often hit FunCaptcha on password login. When that happens
+we fall back to EA's email one-time-code path (/eacode on the bot).
 """
 
 from __future__ import annotations
@@ -11,7 +14,7 @@ from __future__ import annotations
 import re
 import time
 from typing import Optional
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 
 import requests
 
@@ -25,7 +28,7 @@ REDIRECT_URI = "qrc:///html/login_successful.html"
 
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
 
 WINDOW_LOCATION_RE = re.compile(r'window\.location\s*=\s*"([^"]+)"', re.I)
@@ -37,16 +40,21 @@ READ_ACCEPT_RE = re.compile(r'<input[^>]+id="readAccept"[^>]+name="readAccept"',
 INVALID_CREDS_RE = re.compile(
     r"(?i)(credentials you entered are incorrect|email or password is incorrect|incorrect or have expired)",
 )
-CAPTCHA_RE = re.compile(r"(?i)(captcha|recaptcha|hcaptcha|arkose|funcaptcha)")
-# "Verify your identity / Send Code" page (dynamicchallenge/sendCode). Current EA
-# uses a hidden name="codeType" value="EMAIL" + a Send Code button — not the old
-# _codeType radios — so match either.
+CAPTCHA_RE = re.compile(r"(?i)(captcha|recaptcha|hcaptcha|arkose|funcaptcha|fc-token)")
 SEND_CODE_RE = re.compile(
     r'(?i)(id="btnSendCode"|dynamicchallenge/sendCode|name="codeType"[^>]*value="EMAIL")',
 )
-# "Enter your code" page (dynamicchallenge/verifyCode) with the oneTimeCode box.
 VERIFY_CODE_RE = re.compile(r'(?i)(name="oneTimeCode"|dynamicchallenge/verifyCode|id="twoFactorCode")')
 INVALID_CODE_RE = re.compile(r"(?i)(security code you entered is invalid|code you entered is (?:invalid|incorrect))")
+ONE_TIME_HINT_RE = re.compile(
+    r"(?i)(one[\s\-‑–—]?time\s*code|get\s*one[\s\-]?time|loginwithotp|loginWithOTP|btnSendCode|sign in with a one-time code)",
+)
+GET_ONE_TIME_LINK_RE = re.compile(
+    r'(?i)(?:href|data-href)\s*=\s*["\']([^"\']+)["\'][^>]{0,120}?(?:get\s*one[\s\-]?time|one[\s\-]?time\s*code)',
+)
+GET_ONE_TIME_ID_RE = re.compile(
+    r'(?i)id\s*=\s*["\']([^"\']*(?:otp|one.?time|sendcode)[^"\']*)["\']',
+)
 
 
 class EaLoginError(Exception):
@@ -55,12 +63,36 @@ class EaLoginError(Exception):
         self.code = code
 
 
+EA_LOGIN_BUILD = "8"
+
+
+from ea_http import http_session as _http_session
+
+
+def _browser_session() -> "requests.Session":
+    http = _http_session()
+    http.headers.update(
+        {
+            "User-Agent": UA,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "sec-ch-ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+        }
+    )
+    return http
+
+
 def _diag(stage: str, resp: "requests.Response") -> None:
-    """Print a password-free snippet of EA's response so headless-login failures
-    are debuggable from Railway logs (invalid-creds vs captcha vs challenge)."""
     try:
         raw = resp.text or ""
-        # Drop script/style so the visible page text (incl. the error) shows.
         stripped = re.sub(r"(?is)<script.*?</script>|<style.*?</style>", " ", raw)
         text = re.sub(r"<[^>]+>", " ", stripped)
         text = re.sub(r"\s+", " ", text).strip()
@@ -73,7 +105,8 @@ def _diag(stage: str, resp: "requests.Response") -> None:
             markers.append("SEND_CODE")
         if VERIFY_CODE_RE.search(raw):
             markers.append("VERIFY_CODE")
-        # Zoom in on the meaningful region rather than the page chrome.
+        if ONE_TIME_HINT_RE.search(raw):
+            markers.append("ONE_TIME")
         m = re.search(
             r"(?i)(incorrect|expired|verify|captcha|human|arkose|robot|too many|locked|disabled|unusual|suspicious)",
             text,
@@ -86,6 +119,19 @@ def _diag(stage: str, resp: "requests.Response") -> None:
         )
     except Exception:
         pass
+
+
+def _extract_hidden_fields(html: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for tag in re.findall(r"(?is)<input[^>]+>", html or ""):
+        if not re.search(r'type\s*=\s*["\']hidden["\']', tag, re.I):
+            continue
+        name_m = re.search(r'name\s*=\s*["\']([^"\']+)["\']', tag, re.I)
+        if not name_m:
+            continue
+        val_m = re.search(r'value\s*=\s*["\']([^"\']*)["\']', tag, re.I)
+        fields[name_m.group(1)] = val_m.group(1) if val_m else ""
+    return fields
 
 
 def _juno_auth_start_url(pc_sign: str) -> str:
@@ -123,24 +169,218 @@ def _apply_trust_cookies(sess: requests.Session, trust: dict[str, str]) -> None:
             sess.cookies.set(name, value, domain="signin.ea.com")
 
 
-def login_with_email_password(
+def _save_pending_code_flow(
+    http: requests.Session,
+    email: str,
+    seed: str,
+    pc_sign: str,
+    base: EaSession,
+    verify_url: str,
+) -> None:
+    save_pending(
+        {
+            "email": email.strip(),
+            "seed": seed,
+            "pc_sign": pc_sign,
+            "machine_hash": base.machine_hash or "",
+            "verify_url": verify_url,
+            "cookies": requests.utils.dict_from_cookiejar(http.cookies),
+        }
+    )
+    raise EaLoginError(
+        "EmailCodePending",
+        f"EA emailed a verification code to {masked_email(email)} — submit it with /eacode <code>.",
+    )
+
+
+def _send_email_code_and_pending(
+    http: requests.Session,
+    page_url: str,
+    page_html: str,
+    email: str,
+    seed: str,
+    pc_sign: str,
+    base: EaSession,
+    timeout: int,
+) -> EaSession:
+    hidden = _extract_hidden_fields(page_html)
+    r_send = http.post(
+        page_url,
+        data={**hidden, "codeType": "EMAIL", "_eventId": "submit"},
+        timeout=timeout,
+        allow_redirects=True,
+    )
+    verify_body = r_send.text or ""
+    _diag("send-email-code", r_send)
+    if not VERIFY_CODE_RE.search(verify_body):
+        raise EaLoginError("LoginFailed", "EA did not return the code-entry page after requesting a code")
+    _save_pending_code_flow(http, email, seed, pc_sign, base, r_send.url)
+    return base  # unreachable
+
+
+def _otp_flow_needed(body: str) -> bool:
+    """EA often shows fake 'wrong password' when captcha/bot checks fail on datacenter IPs."""
+    return bool(
+        CAPTCHA_RE.search(body)
+        or ONE_TIME_HINT_RE.search(body)
+        or SEND_CODE_RE.search(body)
+        or EMAIL_CODE_RADIO_RE.search(body)
+    )
+
+
+def _discover_flow_events(html: str) -> list[str]:
+    found: list[str] = []
+    seen: set[str] = set()
+    for pattern in (
+        r'(?i)name="_eventId_([a-zA-Z0-9]+)"',
+        r'(?i)_eventId=([a-zA-Z0-9]+)',
+        r'(?i)_eventId["\']\s*:\s*["\']([a-zA-Z0-9]+)["\']',
+        r'(?i)data-eventid=["\']([a-zA-Z0-9]+)["\']',
+    ):
+        for m in re.finditer(pattern, html or ""):
+            ev = m.group(1)
+            if ev not in seen:
+                seen.add(ev)
+                found.append(ev)
+    priority = (
+        "loginWithOTP",
+        "oneTimeCode",
+        "sendCode",
+        "loginFromOTP",
+        "sendOTC",
+        "getOneTimeCode",
+        "otp",
+        "submit",
+    )
+    ordered = [e for e in priority if e in seen]
+    ordered.extend(e for e in found if e not in ordered)
+    return ordered
+
+
+def _try_flow_get_transitions(
+    http: requests.Session,
+    page_url: str,
+    page_html: str,
+    email: str,
+    seed: str,
+    pc_sign: str,
+    base: EaSession,
+    timeout: int,
+    stage_prefix: str,
+) -> Optional[EaSession]:
+    """Spring Web Flow links use GET ?...&_eventId=eventName (e.g. Get one-time code)."""
+    for ev in _discover_flow_events(page_html):
+        sep = "&" if "?" in page_url else "?"
+        target = f"{page_url}{sep}_eventId={ev}"
+        http.headers["Referer"] = page_url
+        r = http.get(target, timeout=timeout, allow_redirects=True)
+        body = r.text or ""
+        _diag(f"{stage_prefix}-get-{ev}", r)
+        if VERIFY_CODE_RE.search(body):
+            _save_pending_code_flow(http, email, seed, pc_sign, base, r.url)
+        if EMAIL_CODE_RADIO_RE.search(body) or SEND_CODE_RE.search(body):
+            return _send_email_code_and_pending(http, r.url, body, email, seed, pc_sign, base, timeout)
+        if WINDOW_LOCATION_RE.search(body.replace(" ", "")):
+            return _finish_login(http, body, r.url, email, pc_sign, base, seed, timeout)
+    return None
+
+
+def _otp_payloads(hidden: dict[str, str], email: str) -> list[dict[str, str]]:
+    """Spring Web Flow event payloads seen on signin.ea.com for email OTP."""
+    base = {**hidden, "email": email.strip()}
+    return [
+        {**base, "_eventId": "submit", "loginMethod": "emailOtp"},
+        {**base, "_eventId": "oneTimeCode"},
+        {**base, "_eventId": "submit", "loginMethod": "oneTimeCode"},
+        {**base, "_eventId": "submit", "codeType": "EMAIL"},
+        {**base, "_eventId": "sendCode", "codeType": "EMAIL"},
+        {**base, "_eventId": "loginWithOTP"},
+        {**base, "_eventId": "submit", "loginMethod": "OTP"},
+        {**base, "_eventId": "submit", "rememberMe": "on", "_rememberMe": "on", "loginMethod": "emailOtp"},
+    ]
+
+
+def _run_otp_attempts(
+    http: requests.Session,
+    page_url: str,
+    page_html: str,
+    email: str,
+    seed: str,
+    pc_sign: str,
+    base: EaSession,
+    timeout: int,
+    stage_prefix: str = "otp",
+) -> EaSession:
+    got = _try_flow_get_transitions(http, page_url, page_html, email, seed, pc_sign, base, timeout, stage_prefix)
+    if got is not None:
+        return got
+
+    hidden = _extract_hidden_fields(page_html)
+    for idx, payload in enumerate(_otp_payloads(hidden, email)):
+        http.headers["Referer"] = page_url
+        http.headers["Origin"] = "https://signin.ea.com"
+        http.headers["Sec-Fetch-Site"] = "same-origin"
+        r = http.post(page_url, data=payload, timeout=timeout, allow_redirects=True)
+        body = r.text or ""
+        _diag(f"{stage_prefix}-attempt-{idx}", r)
+
+        if VERIFY_CODE_RE.search(body):
+            _save_pending_code_flow(http, email, seed, pc_sign, base, r.url)
+        if EMAIL_CODE_RADIO_RE.search(body) or SEND_CODE_RE.search(body):
+            return _send_email_code_and_pending(http, r.url, body, email, seed, pc_sign, base, timeout)
+        if WINDOW_LOCATION_RE.search(body.replace(" ", "")):
+            return _finish_login(http, body, r.url, email, pc_sign, base, seed, timeout)
+
+    raise EaLoginError(
+        "EmailCodePending",
+        f"EA blocked automated password login. Check **{masked_email(email)}** for a one-time code, "
+        f"then run `/eacode <code>`. If nothing arrived, run `/ealogin` again to resend.",
+    )
+
+
+def _handle_login_response(
+    http: requests.Session,
+    body: str,
+    page_url: str,
     email: str,
     password: str,
     seed: str,
+    pc_sign: str,
+    base: EaSession,
+    timeout: int,
+) -> EaSession:
+    has_captcha = bool(CAPTCHA_RE.search(body))
+    has_invalid = bool(INVALID_CREDS_RE.search(body))
+    needs_otp = _otp_flow_needed(body)
+
+    if EMAIL_CODE_RADIO_RE.search(body) or SEND_CODE_RE.search(body):
+        return _send_email_code_and_pending(http, page_url, body, email, seed, pc_sign, base, timeout)
+
+    if VERIFY_CODE_RE.search(body):
+        _save_pending_code_flow(http, email, seed, pc_sign, base, page_url)
+
+    # Captcha / bot checks show a fake "incorrect credentials" banner — never treat as wrong password.
+    if has_captcha or (has_invalid and needs_otp):
+        return _run_otp_attempts(http, page_url, body, email, seed, pc_sign, base, timeout, "otp-after-password")
+
+    if has_invalid:
+        raise EaLoginError(
+            "AuthError",
+            "EA rejected the email or password — verify credentials in a browser at signin.ea.com",
+        )
+
+    return _finish_login(http, body, page_url, email, pc_sign, base, seed, timeout)
+
+
+def _open_signin_page(
+    email: str,
+    seed: str,
     existing: Optional[EaSession] = None,
     timeout: int = 45,
-) -> EaSession:
-    """
-    Perform signin.ea.com login and return a populated EaSession.
-    Raises EaLoginError on failure / email verification required.
-    """
-    if not email or not password:
-        raise EaLoginError("AuthError", "email and password are required")
-
+) -> tuple[requests.Session, str, str, str, EaSession]:
+    """GET the juno sign-in page and return (http, html, post_url, pc_sign, base session)."""
     pc_sign = generate_pc_sign(seed)
-    http = requests.Session()
-    http.headers.update({"User-Agent": UA, "Accept-Language": "en-US,en;q=0.9"})
-
+    http = _browser_session()
     base = existing or EaSession()
     if base.trust_cookies:
         _apply_trust_cookies(http, base.trust_cookies)
@@ -149,9 +389,58 @@ def login_with_email_password(
     r1 = http.get(start, timeout=timeout, allow_redirects=True)
     if "signin.ea.com" not in r1.url:
         raise EaLoginError("LoginFailed", f"expected signin.ea.com, got {r1.url[:120]}")
+    return http, r1.text or "", r1.url, pc_sign, base
 
-    post_url = r1.url
+
+def login_with_one_time_code(
+    email: str,
+    password: str,
+    seed: str,
+    existing: Optional[EaSession] = None,
+    timeout: int = 45,
+) -> EaSession:
+    """
+    Request EA email one-time code without posting the password.
+    Datacenter IPs (Railway) hit FunCaptcha on password login — this path works around it.
+    """
+    if not email:
+        raise EaLoginError("AuthError", "email is required")
+
+    http, login_html, post_url, pc_sign, base = _open_signin_page(email, seed, existing, timeout)
+
+    if ONE_TIME_HINT_RE.search(login_html) or SEND_CODE_RE.search(login_html):
+        return _run_otp_attempts(http, post_url, login_html, email, seed, pc_sign, base, timeout, "otp-first")
+
+    # Some flows need email submitted before the OTP option appears.
+    hidden = _extract_hidden_fields(login_html)
+    http.headers["Referer"] = post_url
+    http.headers["Origin"] = "https://signin.ea.com"
+    r_email = http.post(
+        post_url,
+        data={**hidden, "email": email.strip(), "regionCode": "US", "_eventId": "submit", "loginMethod": "emailOtp"},
+        timeout=timeout,
+        allow_redirects=True,
+    )
+    body = r_email.text or ""
+    _diag("otp-email-only", r_email)
+    return _run_otp_attempts(http, r_email.url, body, email, seed, pc_sign, base, timeout, "otp-after-email")
+
+
+def login_with_email_password(
+    email: str,
+    password: str,
+    seed: str,
+    existing: Optional[EaSession] = None,
+    timeout: int = 45,
+) -> EaSession:
+    if not email or not password:
+        raise EaLoginError("AuthError", "email and password are required")
+
+    http, login_html, post_url, pc_sign, base = _open_signin_page(email, seed, existing, timeout)
+    hidden = _extract_hidden_fields(login_html)
+
     data = {
+        **hidden,
         "email": email,
         "regionCode": "US",
         "phoneNumber": "",
@@ -164,49 +453,17 @@ def login_with_email_password(
         "_rememberMe": "on",
         "rememberMe": "on",
     }
+
+    http.headers["Referer"] = post_url
+    http.headers["Origin"] = "https://signin.ea.com"
+    http.headers["Sec-Fetch-Site"] = "same-origin"
+    http.headers["Content-Type"] = "application/x-www-form-urlencoded"
+
     r2 = http.post(post_url, data=data, timeout=timeout, allow_redirects=True)
     body = r2.text or ""
     _diag("password-post", r2)
 
-    if INVALID_CREDS_RE.search(body):
-        raise EaLoginError(
-            "AuthError",
-            "EA rejected the email or password — verify credentials in a browser at signin.ea.com",
-        )
-
-    if CAPTCHA_RE.search(body) and "thirdPartyCaptchaResponse" not in body:
-        raise EaLoginError(
-            "AuthError",
-            "EA sign-in requires captcha from this IP — log in once in EA App or a browser, then retry",
-        )
-
-    # EA wants an email code. Click "Send Code" (codeType=EMAIL + _eventId=submit),
-    # stash the flow state, and hand off to /eacode. The trust cookie we set on
-    # the verify step means EA won't ask again after this.
-    if EMAIL_CODE_RADIO_RE.search(body) or SEND_CODE_RE.search(body):
-        r_send = http.post(
-            r2.url,
-            data={"codeType": "EMAIL", "_eventId": "submit"},
-            timeout=timeout,
-            allow_redirects=True,
-        )
-        verify_body = r_send.text or ""
-        if not VERIFY_CODE_RE.search(verify_body):
-            raise EaLoginError("LoginFailed", "EA did not return the code-entry page after requesting a code")
-        save_pending({
-            "email": email.strip(),
-            "seed": seed,
-            "pc_sign": pc_sign,
-            "machine_hash": base.machine_hash or "",
-            "verify_url": r_send.url,
-            "cookies": requests.utils.dict_from_cookiejar(http.cookies),
-        })
-        raise EaLoginError(
-            "EmailCodePending",
-            f"EA emailed a verification code to {masked_email(email)} — submit it with /eacode <code>.",
-        )
-
-    return _finish_login(http, body, r2.url, email, pc_sign, base, seed, timeout)
+    return _handle_login_response(http, body, r2.url, email, password, seed, pc_sign, base, timeout)
 
 
 def _finish_login(
@@ -219,11 +476,11 @@ def _finish_login(
     seed: str,
     timeout: int = 45,
 ) -> EaSession:
-    """Shared tail: accept terms, follow the redirect for remid + trust cookies, persist."""
     if READ_ACCEPT_RE.search(body):
+        hidden = _extract_hidden_fields(body)
         r3 = http.post(
             post_url,
-            data={"_readAccept": "on", "readAccept": "on", "_eventId": "accept"},
+            data={**hidden, "_readAccept": "on", "readAccept": "on", "_eventId": "accept"},
             timeout=timeout,
             allow_redirects=True,
         )
@@ -268,10 +525,6 @@ def _finish_login(
 
 
 def submit_verification_code(code: str, timeout: int = 45) -> EaSession:
-    """
-    Resume a pending email verification: POST the code EA emailed (+ trust device)
-    and finish the login. Raises EaLoginError on no-pending / bad code.
-    """
     pending = load_pending()
     if not pending:
         raise EaLoginError("NoPendingVerification", "No EA verification is waiting — trigger a login first, then use /eacode.")
@@ -280,8 +533,7 @@ def submit_verification_code(code: str, timeout: int = 45) -> EaSession:
     if len(digits) < 4:
         raise EaLoginError("InvalidRequest", "Enter the numeric code EA emailed you.")
 
-    http = requests.Session()
-    http.headers.update({"User-Agent": UA, "Accept-Language": "en-US,en;q=0.9"})
+    http = _browser_session()
     http.cookies = requests.utils.cookiejar_from_dict(pending.get("cookies") or {})
 
     r = http.post(
