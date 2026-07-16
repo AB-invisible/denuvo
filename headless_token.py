@@ -1944,6 +1944,10 @@ def main(app_id, game_name, steampass_uuid, generation_mode="gbe"):
                 ticket_bytes, steam_id, new_refresh_token = get_encrypted_ticket_headless(
                     app_id, steamauth_login, steamauth_password, steamauth_guard,
                     refresh_token=(steamauth_refresh or None),
+                    # No guard code means the account has Guard off / no shared
+                    # secret (mobile guard + maFile are optional), so a
+                    # password-only login is expected — same as the owned path.
+                    allow_no_guard=(steamauth_guard is None),
                 )
             except Exception as e:
                 log(f"ERROR: SteamAuth login/gen failed: {e}")

@@ -156,13 +156,15 @@ export async function resolveSteamAuthLoginMaterial(
   linked: SteamAuthLinkedAccount,
 ): Promise<SteamAuthLoginMaterial> {
   const creds = await fetchSteamAuthCredentials(linked.accountId);
-  if (!creds.code) {
-    throw new Error('SteamAuth credentials response missing guard code');
-  }
+  // The guard code is OPTIONAL. Accounts with Guard off / no shared secret log
+  // in with just username+password, so an empty code is a valid state — the
+  // headless gen is told to allow a no-guard login. fetchSteamAuthCredentials()
+  // already rejects the genuinely broken cases (Guard revoked, or Guard on but
+  // no code available).
   return {
     steamLogin: (creds.steam_username || linked.steamLogin || '').trim(),
     steamPassword: creds.password,
-    guardCode: creds.code,
+    guardCode: creds.code ?? '',
   };
 }
 
