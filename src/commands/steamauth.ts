@@ -4,7 +4,7 @@ import { CONFIG } from '../config';
 import { utcDateKey } from '../utils/steampassPool';
 import { logAction } from '../utils/logging';
 import {
-  accountCanProvideGuardCode,
+  accountUsableForAuth,
   checkSteamAuthHealth,
   getSteamAuthAccount,
   isSteamAuthConfigured,
@@ -97,8 +97,11 @@ export async function execute(interaction: any): Promise<void> {
       let body = '';
       for (const m of matches) {
         const shortId = m.apiAccount.account_id.slice(0, 8) + '…';
-        const guardOk = m.apiAccount.has_steam_guard !== false && !m.apiAccount.guard_revoked;
-        const guardLabel = guardOk ? '🔐 guard ok' : '⚠️ no guard';
+        const guardLabel = m.apiAccount.guard_revoked
+          ? '⚠️ guard revoked'
+          : m.apiAccount.has_steam_guard === false
+            ? '➖ no guard needed'
+            : '🔐 guard ok';
         body += `**${m.apiAccount.steam_username}** (\`${shortId}\`) · ${guardLabel}\n`;
         for (let i = 0; i < m.appIds.length; i++) {
           body += `╰─ AppID \`${m.appIds[i]}\` — **${m.gameNames[i]}**\n`;
@@ -139,11 +142,8 @@ export async function execute(interaction: any): Promise<void> {
       }
 
       const apiAcct = await getSteamAuthAccount(accountId).catch(() => null);
-      if (apiAcct && !accountCanProvideGuardCode(apiAcct)) {
-        const reason = apiAcct.guard_revoked
-          ? 'Guard revoked on the service'
-          : 'No shared secret (has_steam_guard: false)';
-        return interaction.editReply({ content: `❌ That SteamAuth account cannot provide guard codes — ${reason}.` });
+      if (apiAcct && !accountUsableForAuth(apiAcct)) {
+        return interaction.editReply({ content: '❌ That SteamAuth account cannot be used — Guard revoked on the service.' });
       }
 
       const probe = await validateSteamAuthAccountForGen(accountId);

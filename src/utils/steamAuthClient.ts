@@ -136,6 +136,15 @@ export function accountCanProvideGuardCode(account: Pick<SteamAuthApiAccount, 'h
   return true;
 }
 
+/**
+ * True when the account is safe to use for login. Accounts with no shared
+ * secret (has_steam_guard: false) simply don't need a code at login — that's
+ * not an error, so they stay usable. Only a revoked Guard actually blocks it.
+ */
+export function accountUsableForAuth(account: Pick<SteamAuthApiAccount, 'has_steam_guard' | 'guard_revoked'>): boolean {
+  return account.guard_revoked !== true;
+}
+
 function guardUnavailableReason(data: Pick<SteamAuthGuardCode, 'has_steam_guard' | 'guard_revoked'>): string {
   if (data.guard_revoked) return 'SteamAuth account has Guard revoked on the service';
   if (!data.has_steam_guard) return 'SteamAuth account has no shared secret (has_steam_guard: false)';
@@ -171,7 +180,8 @@ function credentialsValidationError(data: SteamAuthCredentials): string {
       're-save the Steam password on https://steamauth.gamegen.lol/dashboard (PATCH account or re-import maFile).'
     );
   }
-  if (!data.code) return guardUnavailableReason(data);
+  if (data.guard_revoked) return guardUnavailableReason(data);
+  if (data.has_steam_guard && !data.code) return guardUnavailableReason(data);
   return '';
 }
 
@@ -195,7 +205,10 @@ export async function fetchSteamAuthGuardCode(accountId: string): Promise<SteamA
   const data = await apiRequest<SteamAuthGuardCode>(
     `/api/v1/accounts/${encodeURIComponent(accountId)}/guard-code`,
   );
-  if (!data.code) {
+  if (data.guard_revoked) {
+    throw new Error(guardUnavailableReason(data));
+  }
+  if (data.has_steam_guard && !data.code) {
     throw new Error(guardUnavailableReason(data));
   }
   return data;
@@ -216,9 +229,8 @@ export async function fetchSteamAuthCredentials(accountId: string): Promise<Stea
 export async function validateSteamAuthAccountForGen(accountId: string): Promise<{ ok: true } | { ok: false; reason: string }> {
   try {
     const api = await getSteamAuthAccount(accountId);
-    if (!accountCanProvideGuardCode(api)) {
-      if (api.guard_revoked) return { ok: false, reason: 'Guard revoked on the service' };
-      return { ok: false, reason: 'No Steam Guard shared secret (has_steam_guard: false)' };
+    if (!accountUsableForAuth(api)) {
+      return { ok: false, reason: 'Guard revoked on the service' };
     }
     await fetchSteamAuthCredentials(accountId);
     return { ok: true };
@@ -252,7 +264,7 @@ export function accountOwnsAppId(account: SteamAuthApiAccount, appId: number): b
 
 export async function findSteamAuthAccountsForAppId(appId: number): Promise<SteamAuthApiAccount[]> {
   const accounts = await listSteamAuthAccounts();
-  return accounts.filter((a) => accountCanProvideGuardCode(a) && accountOwnsAppId(a, appId));
+  return accounts.filter((a) => accountUsableForAuth(a) && accountOwnsAppId(a, appId));
 }
 
 export async function checkSteamAuthHealth(): Promise<{ ok: boolean; accountCount: number; uptime?: number; error?: string }> {
