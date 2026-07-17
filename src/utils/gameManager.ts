@@ -23,100 +23,74 @@ export async function getOrCreateServerStock(gameId: number, guildId: string): P
   });
   if (existing) return existing;
 
-  const game = await prisma.game.findUnique({ where: { id: gameId } });
-  const defaultStock = game?.appId
-    ? await getDefaultStockForApp(game.appId, guildId)
-    : CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
-
+  const defaultStock = CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
   return prisma.serverStock.create({
-    data: { gameId, guildId, stock: defaultStock },
+    data: { gameId, guildId, stock: defaultStock, maxStock: defaultStock },
   });
 }
 
 export async function getServerStockMapForGuild(
   guildId: string,
-): Promise<Map<number, { stock: number; lastDepletedAt: Date | null }>> {
+): Promise<Map<number, { stock: number; lastDepletedAt: Date | null; cycleStartedAt: Date | null; maxStock: number }>> {
   const stocks = await prisma.serverStock.findMany({ where: { guildId } });
-  return new Map(stocks.map((s) => [s.gameId, { stock: s.stock, lastDepletedAt: s.lastDepletedAt }]));
-}
-
-export async function processGuildRestocks(guildId: string): Promise<void> {
-  const now = new Date();
-  const pendingRestocks = await prisma.restock.findMany({
-    where: { guildId, restockAt: { lte: now } },
-    include: { game: true },
-  });
-  if (pendingRestocks.length === 0) return;
-
-  const byGame = new Map<number, typeof pendingRestocks>();
-  const excludedRestockIds: number[] = [];
-
-  for (const r of pendingRestocks) {
-    if (r.game.excludeRegen) {
-      excludedRestockIds.push(r.id);
-      continue;
-    }
-    if (!byGame.has(r.gameId)) byGame.set(r.gameId, []);
-    byGame.get(r.gameId)!.push(r);
-  }
-
-  if (excludedRestockIds.length > 0) {
-    await prisma.restock.deleteMany({ where: { id: { in: excludedRestockIds } } });
-  }
-
-  if (byGame.size === 0) return;
-
-  for (const [gameId, restocks] of byGame) {
-    const amount = restocks.length;
-    const serverStock = await getOrCreateServerStock(gameId, guildId);
-    const previousStock = serverStock.stock;
-
-    await prisma.$transaction([
-      prisma.serverStock.update({
-        where: { gameId_guildId: { gameId, guildId } },
-        data: { stock: previousStock + amount, lastDepletedAt: null },
-      }),
-      prisma.restock.deleteMany({
-        where: { id: { in: restocks.map(r => r.id) } },
-      }),
-    ]);
-
-    const gameName = restocks[0].game.name;
-    const newStock = previousStock + amount;
-    await logGlobal('✅ Auto-Restock', `**${amount} token(s)** auto-restocked for **${gameName}**.`, 0x57F287);
-    await notifyStockRestocked(gameId, gameName, previousStock, newStock);
-  }
+  return new Map(
+    stocks.map((s) => [
+      s.gameId,
+      { stock: s.stock, lastDepletedAt: s.lastDepletedAt, cycleStartedAt: s.cycleStartedAt, maxStock: s.maxStock },
+    ]),
+  );
 }
 
 /**
- * Recover owner-managed games left depleted with no scheduled restock — e.g.
- * depleted before restock-on-consume existed, or by a path that never wrote a
- * Restock row. Once REGEN_TIME has elapsed, refill to the base amount and clear
- * the flag. Account-synced Steam games are skipped: their stock is real account
- * capacity, so faking it would let users open tickets that dead-end at gen time.
+ * Refill every game whose 24h cycle has elapsed.
+ *
+ * A game's cycle starts the moment its FIRST token is used. The whole game
+ * returns to maxStock at cycleStartedAt + 24h no matter how many were used in
+ * between, and each game clocks independently:
+ *
+ *   Crimson Desert — first token 5pm, another at 7pm → refills tomorrow 5pm
+ *   The Bus        — first token 6pm                 → refills tomorrow 6pm
+ *
+ * Pass a guildId to sweep one server, or omit it to sweep them all (the 5-min
+ * scheduler job). Also supersedes the old per-token Restock rows + heal pass, so
+ * anything left stuck at 0 by the previous models recovers on the first run.
  */
-export async function healStuckDepletedGames(): Promise<void> {
+export async function processStockCycles(guildId?: string): Promise<void> {
   const cutoff = new Date(Date.now() - REGEN_TIME);
-  const stuck = await prisma.serverStock.findMany({
-    where: { stock: { lte: 0 }, lastDepletedAt: { not: null, lte: cutoff } },
+  const due = await prisma.serverStock.findMany({
+    where: {
+      ...(guildId !== undefined ? { guildId } : {}),
+      cycleStartedAt: { not: null, lte: cutoff },
+    },
     include: { game: true },
   });
-  if (stuck.length === 0) return;
+  if (due.length === 0) return;
 
-  for (const s of stuck) {
-    if (s.game.excludeRegen) continue;
-    const accountSynced = usesAccountSyncedStock(s.guildId) && !!s.game.appId && !isUbisoftGame(s.game) && !isEaGame(s.game);
-    if (accountSynced) continue;
-    const pending = await prisma.restock.findFirst({ where: { gameId: s.gameId, guildId: s.guildId } });
-    if (pending) continue;
+  for (const s of due) {
+    const target = s.maxStock;
 
-    const amount = CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
+    // excludeRegen games never auto-refill — just close the cycle so the panel
+    // stops showing a countdown that will never fire.
+    if (s.game.excludeRegen || target <= s.stock) {
+      await prisma.serverStock.update({
+        where: { gameId_guildId: { gameId: s.gameId, guildId: s.guildId } },
+        data: { cycleStartedAt: null },
+      });
+      continue;
+    }
+
+    const previousStock = s.stock;
     await prisma.serverStock.update({
       where: { gameId_guildId: { gameId: s.gameId, guildId: s.guildId } },
-      data: { stock: amount, lastDepletedAt: null },
+      data: { stock: target, cycleStartedAt: null, lastDepletedAt: null },
     });
-    await logGlobal('✅ Auto-Restock', `**${amount} token(s)** restocked for **${s.game.name}**.`, 0x57F287);
-    await notifyStockRestocked(s.gameId, s.game.name, 0, amount);
+
+    await logGlobal(
+      '✅ Auto-Restock',
+      `**${s.game.name}** refilled to **${target}** token(s) — 24h cycle complete.`,
+      0x57F287,
+    );
+    await notifyStockRestocked(s.gameId, s.game.name, previousStock, target);
   }
 }
 
@@ -180,15 +154,18 @@ export async function updateStock(gameName: string, sub: 'add' | 'remove' | 'set
   }
   if (newStock < 0) newStock = 0;
 
-  if (usesAccountSyncedStock(guildId) && game.appId && !isUbisoftGame(game) && !isEaGame(game)) {
-    newStock = await resolveOwnerManualStock(game.id, guildId, newStock);
-  }
-
   const lastDepletedAt = newStock === 0 ? new Date() : null;
 
   await prisma.serverStock.update({
     where: { gameId_guildId: { gameId: game.id, guildId } },
-    data: { stock: newStock, lastDepletedAt },
+    data: {
+      stock: newStock,
+      // /settokens (set) defines the refill target and starts a clean cycle —
+      // the next gen begins a fresh 24h clock. add/remove/clear only nudge the
+      // current count and leave the running cycle alone.
+      ...(sub === 'set' ? { maxStock: newStock, cycleStartedAt: null } : {}),
+      lastDepletedAt,
+    },
   });
 
   await notifyStockRestocked(game.id, game.name, previousStock, newStock);
@@ -214,15 +191,14 @@ export async function updateStockForAllGames(amount: number, guildId: string = '
     });
     const previousStock = existing?.stock ?? 0;
 
-    let stock = amount;
-    if (amount > 0 && !isUbisoftGame(game) && !isEaGame(game)) {
-      stock = await resolveOwnerManualStock(game.id, guildId, amount);
-    }
+    const stock = amount;
     const depletedAtRow = stock === 0 ? new Date() : null;
+    // Bulk set defines the refill target too, and starts everyone on a clean
+    // cycle (next gen begins a fresh 24h clock).
     await prisma.serverStock.upsert({
       where: { gameId_guildId: { gameId: game.id, guildId } },
-      update: { stock, lastDepletedAt: depletedAtRow },
-      create: { gameId: game.id, guildId, stock, lastDepletedAt: depletedAtRow },
+      update: { stock, maxStock: stock, cycleStartedAt: null, lastDepletedAt: depletedAtRow },
+      create: { gameId: game.id, guildId, stock, maxStock: stock, lastDepletedAt: depletedAtRow },
     });
 
     if (stock > previousStock) {
@@ -244,151 +220,84 @@ export async function updateStockForAllGames(amount: number, guildId: string = '
   return { count: games.length, restocksCleared, notified };
 }
 
+/**
+ * Take one token off the panel. One path for every game — no account-quota
+ * recomputation, no per-token Restock rows.
+ *
+ * The FIRST token of a cycle stamps cycleStartedAt, which is what the 24h
+ * refill clock runs off. Later uses in the same cycle deliberately do NOT touch
+ * it, so the refill time never drifts forward.
+ */
 export async function consumeStock(gameId: number, guildId: string, _fromQueue = false) {
   const game = await prisma.game.findUnique({ where: { id: gameId } });
   if (!game) throw new Error('Game not found.');
 
-  // Owner server: stock tracks live account quota (usage tables).
-  if (usesAccountSyncedStock(guildId)) {
-    if (isUbisoftGame(game) || isEaGame(game)) {
-      const ss = await prisma.serverStock.findUnique({
-        where: { gameId_guildId: { gameId, guildId } },
-      });
-      const current = ss?.stock ?? CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
-      const newStock = Math.max(0, current - 1);
+  const ss = await getOrCreateServerStock(gameId, guildId);
+  const newStock = Math.max(0, ss.stock - 1);
 
-      await prisma.serverStock.upsert({
-        where: { gameId_guildId: { gameId, guildId } },
-        update: {
-          stock: newStock,
-          lastDepletedAt: newStock === 0 ? new Date() : null,
-        },
-        create: {
-          gameId,
-          guildId,
-          stock: newStock,
-          lastDepletedAt: newStock === 0 ? new Date() : null,
-        },
-      });
+  // excludeRegen games never auto-refill, so never start a cycle for them — a
+  // countdown that will never fire would be a lie on the panel.
+  const cycleStartedAt = game.excludeRegen ? ss.cycleStartedAt : (ss.cycleStartedAt ?? new Date());
 
-      // Schedule this consumed activation to regenerate in REGEN_TIME. Owner-
-      // managed Ubisoft/EA titles have NO daily capacity reset to fall back on,
-      // so without a Restock row they deplete and never come back (the bug).
-      if (!game.excludeRegen) {
-        await prisma.restock.create({
-          data: { gameId, guildId, restockAt: new Date(Date.now() + REGEN_TIME) },
-        });
-      }
-
-      if (newStock === 0) {
-        await logGlobal('🚨 Game Depleted', `Stock for **${game.name}** has reached zero.`, 0xED4245);
-      } else if (newStock === 1) {
-        await logGlobal('⚠️ Last Token Alert', `Only **1 token** remains for **${game.name}**.`, 0xFEE75C);
-      }
-
-      return { ...game, stock: newStock };
-    }
-    if (game.appId) {
-      const synced = await computeRemainingDailyTokens(game.appId, guildId);
-      const ss = await prisma.serverStock.findUnique({
-        where: { gameId_guildId: { gameId, guildId } },
-      });
-      const newStock = Math.min(synced, ss?.stock ?? synced);
-
-      await prisma.serverStock.upsert({
-        where: { gameId_guildId: { gameId, guildId } },
-        update: {
-          stock: newStock,
-          lastDepletedAt: newStock === 0 ? new Date() : null,
-        },
-        create: {
-          gameId,
-          guildId,
-          stock: newStock,
-          lastDepletedAt: newStock === 0 ? new Date() : null,
-        },
-      });
-
-      if (newStock === 0) {
-        await logGlobal('🚨 Game Depleted', `Stock for **${game.name}** has reached zero — all account quotas used for today.`, 0xED4245);
-      } else if (newStock === 1) {
-        await logGlobal('⚠️ Last Token Alert', `Only **1 token** remains for **${game.name}**.`, 0xFEE75C);
-      } else if (newStock > 0) {
-        const thresholdSetting = await prisma.metadata.findUnique({ where: { key: 'lowStockThreshold' } });
-        const threshold = thresholdSetting ? parseInt(thresholdSetting.value) : 3;
-        if (newStock <= threshold) {
-          await logGlobal('⚠️ Low Stock Warning', `**${game.name}** is running low — only **${newStock}** token(s) remaining today.`, 0xFEE75C);
-        }
-      }
-      return { ...game, stock: newStock };
-    }
-  }
-
-  await processGuildRestocks(guildId);
-  const restockAt = new Date(Date.now() + REGEN_TIME);
-
-  const updatedStock = await prisma.$transaction(async (tx) => {
-    const ss = await tx.serverStock.findUnique({
-      where: { gameId_guildId: { gameId, guildId } },
-    });
-    const currentStock = ss?.stock ?? 5;
-    const finalStock = Math.max(0, currentStock - 1);
-
-    const updated = await tx.serverStock.upsert({
-      where: { gameId_guildId: { gameId, guildId } },
-      update: {
-        stock: finalStock,
-        lastDepletedAt: finalStock === 0 ? new Date() : null,
-      },
-      create: {
-        gameId,
-        guildId,
-        stock: finalStock,
-        lastDepletedAt: finalStock === 0 ? new Date() : null,
-      },
-    });
-
-    if (!game.excludeRegen) {
-      await tx.restock.create({
-        data: { gameId, guildId, restockAt },
-      });
-    }
-
-    return updated;
+  await prisma.serverStock.update({
+    where: { gameId_guildId: { gameId, guildId } },
+    data: {
+      stock: newStock,
+      cycleStartedAt,
+      lastDepletedAt: newStock === 0 ? new Date() : null,
+    },
   });
 
-  if (updatedStock.stock === 0) {
-    await logGlobal('🚨 Game Depleted', `Stock for **${game.name}** has reached zero via consumption. Individual regeneration tracking active.`, 0xED4245);
-  } else if (updatedStock.stock === 1) {
+  if (newStock === 0) {
+    await logGlobal('🚨 Game Depleted', `Stock for **${game.name}** has reached zero.`, 0xED4245);
+    await logStockNotification(game.name, 'DEPLETED');
+  } else if (newStock === 1) {
     await logGlobal('⚠️ Last Token Alert', `Only **1 token** remains for **${game.name}**.`, 0xFEE75C);
-  }
-
-  if (updatedStock.stock > 0) {
+  } else {
     const thresholdSetting = await prisma.metadata.findUnique({ where: { key: 'lowStockThreshold' } });
     const threshold = thresholdSetting ? parseInt(thresholdSetting.value) : 3;
-    if (updatedStock.stock <= threshold) {
-      await logGlobal('⚠️ Low Stock Warning', `**${game.name}** is running low — only **${updatedStock.stock}** token(s) remaining.`, 0xFEE75C);
+    if (newStock <= threshold) {
+      await logGlobal('⚠️ Low Stock Warning', `**${game.name}** is running low — only **${newStock}** token(s) remaining.`, 0xFEE75C);
     }
   }
 
-  return { ...game, stock: updatedStock.stock };
+  return { ...game, stock: newStock };
+}
+
+/**
+ * Consume one token FOR A TICKET, at most once ever.
+ *
+ * Every delivery path routes through here (auto-gen, EA/Ubisoft mint, installer
+ * call-home, staff zip, close-with-deduct), so a ticket can only cost one token
+ * no matter how many of those fire. The claim is a conditional UPDATE, so two
+ * concurrent paths can't both win.
+ *
+ * Returns true if this call is the one that took the token.
+ */
+export async function consumeStockForTicket(
+  ticket: { id: number; gameId: number; fromQueue?: boolean | null },
+  guildId: string,
+): Promise<boolean> {
+  const claim = await prisma.ticket.updateMany({
+    where: { id: ticket.id, stockConsumed: false },
+    data: { stockConsumed: true },
+  });
+  if (claim.count === 0) return false; // another path already paid for this ticket
+
+  try {
+    await consumeStock(ticket.gameId, guildId, !!ticket.fromQueue);
+    return true;
+  } catch (e) {
+    // Release the claim so a transient failure doesn't silently eat the token.
+    await prisma.ticket
+      .updateMany({ where: { id: ticket.id }, data: { stockConsumed: false } })
+      .catch(() => {});
+    throw e;
+  }
 }
 
 /** Staff manually delivered a zip without autogen — decrement panel stock by 1. */
 export async function manualConsumeStock(gameId: number, guildId: string) {
-  const game = await prisma.game.findUnique({ where: { id: gameId } });
-  if (!game) throw new Error('Game not found.');
-
-  if (usesAccountSyncedStock(guildId)) {
-    const ss = await getOrCreateServerStock(gameId, guildId);
-    const newStock = Math.max(0, ss.stock - 1);
-    await prisma.serverStock.update({
-      where: { gameId_guildId: { gameId, guildId } },
-      data: { stock: newStock, lastDepletedAt: newStock === 0 ? new Date() : null },
-    });
-    return { ...game, stock: newStock };
-  }
-
   return consumeStock(gameId, guildId);
 }
 

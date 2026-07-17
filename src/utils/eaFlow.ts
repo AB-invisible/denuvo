@@ -37,7 +37,7 @@ import { mintEaToken, eaServiceConfigured } from './eaService';
 import { resolvePublicBaseUrl } from './downloadHost';
 import { createCallhomeInstaller } from './installerPackage';
 import { isInstallerCallhomeEnabled } from './installerSettings';
-import { consumeStock } from './gameManager';
+import { consumeStockForTicket } from './gameManager';
 
 export const EA_STAGE_AWAITING = 'AWAITING_TICKET';
 /** Call-home installer delivered — user should run installer.exe, not paste ticket. */
@@ -483,7 +483,7 @@ export async function handleEaTicket(message: Message, ticket: any): Promise<boo
 
   // Each EA mint is a real activation spent now — decrement stock at delivery,
   // not on vouch (the vouch path skips EA/Ubisoft to avoid double-counting).
-  await consumeStock(ticket.gameId, guildId, !!ticket.fromQueue).catch((e) =>
+  await consumeStockForTicket(ticket, guildId).catch((e) =>
     console.error('[EaFlow] consumeStock failed:', (e as Error).message),
   );
 

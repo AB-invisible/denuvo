@@ -63,6 +63,10 @@ model Ticket {
   closedAt              DateTime?
   lastUserActivityAt    DateTime @default(now())
   fromQueue             Boolean  @default(false)
+  /// True once this ticket has taken its token off the panel. Every delivery
+  /// path routes through consumeStockForTicket(), so one ticket can only ever
+  /// cost one token no matter how it closes.
+  stockConsumed         Boolean  @default(false)
   createdAt             DateTime @default(now())
   updatedAt             DateTime @default(now()) @updatedAt
   verification          PendingVerification?
@@ -160,10 +164,17 @@ model ServerStock {
   gameId         Int
   guildId        String
   stock          Int       @default(5)
+  /// What a refill resets `stock` back to. Set by /settokens.
+  maxStock       Int       @default(5)
+  /// When the FIRST token of the current 24h cycle was used. The game refills
+  /// to maxStock at cycleStartedAt + 24h; later uses in the same cycle do NOT
+  /// push that out. Null = no cycle running. Each game clocks independently.
+  cycleStartedAt DateTime?
   lastDepletedAt DateTime?
   game           Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
 
   @@unique([gameId, guildId])
+  @@index([cycleStartedAt])
 }
 
 model Subscription {

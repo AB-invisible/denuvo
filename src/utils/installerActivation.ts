@@ -27,7 +27,7 @@ import { mintEaToken } from './eaService';
 import { mintUbisoftToken } from './ubisoftService';
 import { EA_STAGE_DONE, normalizeEaTicketInput } from './eaFlow';
 import { UBISOFT_STAGE_DONE } from './ubisoftFlow';
-import { consumeStock } from './gameManager';
+import { consumeStockForTicket } from './gameManager';
 
 export type ActivationPlatform = 'ea' | 'ubisoft';
 
@@ -98,7 +98,7 @@ async function finalizeTicket(row: ActivationRow, gameName: string, platform: Ac
   }).catch(() => {});
 
   if (ticket.gameId) {
-    await consumeStock(ticket.gameId, ticket.guildId || '', !!ticket.fromQueue).catch((e) =>
+    await consumeStockForTicket(ticket, ticket.guildId || '').catch((e) =>
       console.error('[InstallerActivation] consumeStock failed:', (e as Error).message),
     );
   }

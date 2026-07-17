@@ -1,7 +1,7 @@
 import { EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, TextChannel, User, TextBasedChannel, GuildMember } from 'discord.js';
 import { Game, Ticket, Cooldown, Subscription } from '@prisma/client';
 import { CONFIG } from '../config';
-import { getActiveGames, REGEN_TIME, processGuildRestocks, getServerStockMapForGuild } from './gameManager';
+import { getActiveGames, REGEN_TIME, processStockCycles, getServerStockMapForGuild } from './gameManager';
 import { usesAccountSyncedStock } from './accountCapacity';
 import { isUbisoftGame } from './ubisoftCatalog';
 import { isEaGame } from './eaCatalog';
@@ -42,13 +42,11 @@ type GameSelectStatusInput = {
   totalStock: number;
   reserved: number;
   queueCount: number;
-  gameLastDepleted: Date | null;
   now: Date;
   donatorOnly: boolean;
   boosterOnly: boolean;
   highDemand: boolean;
-  accountSynced: boolean;
-  /** When this game next restocks (soonest Restock row / daily reset), if out. */
+  /** cycleStartedAt + 24h — when this game refills to full. Null = no cycle. */
   nextRestockAt: Date | null;
 };
 
@@ -71,7 +69,7 @@ function gameSelectStatusTone(input: GameSelectStatusInput): GameSelectStatusTon
 }
 
 function formatGameSelectDescription(input: GameSelectStatusInput): string {
-  const { availableStock, totalStock, reserved, queueCount, now, accountSynced, nextRestockAt } = input;
+  const { availableStock, totalStock, reserved, queueCount, now, nextRestockAt } = input;
   const parts: string[] = [];
   const res = reservedSuffix(reserved);
 
@@ -84,12 +82,10 @@ function formatGameSelectDescription(input: GameSelectStatusInput): string {
   } else if (totalStock > 0 && reserved > 0) {
     parts.push(`${totalStock} total${res}`);
   } else {
-    // Fully out of stock — always show when it comes back if we know.
+    // Fully out — show when this game's 24h cycle refills it.
     const rp = restockPhrase(nextRestockAt, now);
     if (rp) {
       parts.push(rp + res);
-    } else if (accountSynced) {
-      parts.push(reserved > 0 ? `Out for today${res}` : 'Out for today');
     } else if (reserved > 0) {
       parts.push(`${reserved} in progress`);
     } else {
@@ -126,17 +122,8 @@ function buildGameSelectOption(
 }
 
 export async function createMainPanel(guildId?: string) {
-  // Process any pending auto-restocks for this server before building panel
-  if (guildId) await processGuildRestocks(guildId);
-
-  const accountSynced = guildId ? usesAccountSyncedStock(guildId) : false;
-
-  // Owner server: refresh depleted games from live account quotas so the panel
-  // does not show "Restocks 0m" while stock is still 0 in the DB.
-  if (guildId && accountSynced) {
-    const { syncAllOwnerGameStockForPanel } = await import('./accountCapacity');
-    await syncAllOwnerGameStockForPanel(guildId);
-  }
+  // Refill anything whose 24h cycle elapsed before we render the counts.
+  if (guildId) await processStockCycles(guildId);
 
   const allGames = await getActiveGames() as GameWithCount[];
   const now = new Date();
@@ -154,19 +141,16 @@ export async function createMainPanel(guildId?: string) {
   }
 
   // Per-server stock: each game has its own ServerStock row (incl. Ubisoft/EA).
-  let serverStockMap = new Map<number, { stock: number; lastDepletedAt: Date | null }>();
+  let serverStockMap = await getServerStockMapForGuild('__none__');
   if (guildId) {
     serverStockMap = await getServerStockMapForGuild(guildId);
   }
 
-  const restockCycleLine = accountSynced
-    ? 'Account quotas reset at **00:00 UTC** each day.'
-    : 'Depleted games refill **5 tokens** every **24 hours**.';
+  const restockCycleLine = 'Each game refills **24h** after its first token is used.';
 
   const totalStock = allGames.reduce((acc: number, game: GameWithCount) => {
     const ss = serverStockMap.get(game.id);
-    const authoritative = accountSynced && !!game.appId && !isUbisoftGame(game) && !isEaGame(game);
-    return acc + (ss ? ss.stock : (authoritative ? 0 : 5));
+    return acc + (ss ? ss.stock : CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY);
   }, 0);
   const totalReserved = allGames.reduce((acc: number, game: GameWithCount) => {
     return acc + (serverReservedMap.get(game.id) || 0);
@@ -179,26 +163,16 @@ export async function createMainPanel(guildId?: string) {
   const cleanWait = waitTime.replace(/[^\x20-\x7E]/g, '');
 
   // ── Next-restock countdown ──────────────────────────────────────────────
-  // Soonest of: the earliest pending Restock row (owner-managed + tenant games)
-  // and — for account-synced servers with a depleted game — the next 00:00 UTC
-  // quota reset. Rendered as a Discord relative timestamp so it live-counts-down
-  // in every client with no polling on our side.
-  let nextRestockLine = 'Nothing depleted';
-  if (guildId) {
-    const candidates: number[] = [];
-    const soonestRestock = await prisma.restock.findFirst({
-      where: { guildId, restockAt: { gt: now } },
-      orderBy: { restockAt: 'asc' },
-      select: { restockAt: true },
-    });
-    if (soonestRestock) candidates.push(soonestRestock.restockAt.getTime());
-    if (accountSynced && [...serverStockMap.values()].some((s) => s.stock <= 0)) {
-      candidates.push(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0));
-    }
-    if (candidates.length) {
-      nextRestockLine = `<t:${Math.floor(Math.min(...candidates) / 1000)}:R>`;
-    }
-  }
+  // Soonest running cycle: whichever game used its first token earliest refills
+  // first. Rendered as a Discord relative timestamp so it live-counts-down in
+  // every client with no polling on our side.
+  const runningCycles = [...serverStockMap.values()]
+    .map((s) => s.cycleStartedAt)
+    .filter((d): d is Date => d != null)
+    .map((d) => d.getTime() + REGEN_TIME);
+  const nextRestockLine = runningCycles.length
+    ? `<t:${Math.floor(Math.min(...runningCycles) / 1000)}:R>`
+    : 'Nothing depleted';
 
   const mainEmbed = new EmbedBuilder()
     .setTitle(`${CONFIG.NAME} — Game Selection`)
@@ -229,22 +203,6 @@ export async function createMainPanel(guildId?: string) {
     return { embeds: [mainEmbed], components: [] };
   }
 
-  // Per-game next restock: soonest pending Restock row (owner-managed Ubisoft/EA
-  // + tenant games). Account-synced Steam games regen at the 00:00 UTC quota
-  // reset instead. Shown as a plain-text countdown on each depleted entry.
-  const restockByGame = new Map<number, Date>();
-  if (guildId) {
-    const restockRows = await prisma.restock.findMany({
-      where: { guildId },
-      orderBy: { restockAt: 'asc' },
-      select: { gameId: true, restockAt: true },
-    });
-    for (const r of restockRows) {
-      if (!restockByGame.has(r.gameId)) restockByGame.set(r.gameId, r.restockAt);
-    }
-  }
-  const nextUtcMidnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0));
-
   // Create Select Menus
   const rows: ActionRowBuilder<StringSelectMenuBuilder>[] = [];
   const chunkSize = 25;
@@ -262,38 +220,26 @@ export async function createMainPanel(guildId?: string) {
       .addOptions(
         chunk.map((game: GameWithCount) => {
           const ss = serverStockMap.get(game.id);
-          const authoritative = accountSynced && !!game.appId && !isUbisoftGame(game) && !isEaGame(game);
-          const gameStock = ss ? ss.stock : (authoritative ? 0 : 5);
+          const gameStock = ss ? ss.stock : CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
           const reserved = serverReservedMap.get(game.id) || 0;
 
-          const gameLastDepleted = ss ? ss.lastDepletedAt : null;
           const availableStock = Math.max(0, gameStock - reserved);
           const queueCount = waitlistMap.get(game.id) || 0;
 
-          // When it comes back: soonest scheduled restock, else the daily reset
-          // (account-synced Steam), else lastDepleted + regen window.
-          let nextRestockAt: Date | null = null;
-          if (availableStock <= 0) {
-            nextRestockAt =
-              restockByGame.get(game.id) ??
-              (authoritative
-                ? nextUtcMidnight
-                : gameLastDepleted
-                ? new Date(gameLastDepleted.getTime() + REGEN_TIME)
-                : null);
-          }
+          // This game refills 24h after its own first token went out.
+          const nextRestockAt = ss?.cycleStartedAt
+            ? new Date(ss.cycleStartedAt.getTime() + REGEN_TIME)
+            : null;
 
           const statusInput: GameSelectStatusInput = {
             availableStock,
             totalStock: gameStock,
             reserved,
             queueCount,
-            gameLastDepleted,
             now,
             donatorOnly: !!game.donatorOnly,
             boosterOnly: !!game.boosterOnly,
             highDemand: !!game.highDemand,
-            accountSynced,
             nextRestockAt,
           };
 

@@ -218,8 +218,20 @@ async function sumAccountPoolRemaining(
   return { remaining, accountCount };
 }
 
-export function usesAccountSyncedStock(guildId: string): boolean {
-  return !guildId || guildId === CONFIG.OWNER_GUILD_ID;
+/**
+ * Panel stock is no longer derived from Steam account capacity — every game on
+ * every server is a plain owner-managed count (set via /settokens) that refills
+ * 24h after its first token is used. Returning false here neutralises the whole
+ * account-sync surface in one place: syncStockForGame() and getDefaultStockForApp()
+ * become no-ops, consumeStock() stops recomputing from live quota, updateStock()
+ * stops overriding /settokens via resolveOwnerManualStock(), and the panel drops
+ * its "Out for today" branch.
+ *
+ * The capacity helpers below are kept for the /steamhealth + /steamauth read-only
+ * views, which still report real account quota for staff.
+ */
+export function usesAccountSyncedStock(_guildId: string): boolean {
+  return false;
 }
 
 export interface AccountCapacityBreakdown {

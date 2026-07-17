@@ -7,7 +7,7 @@ import { createMainPanel, createVerificationPromptEmbed, createVerificationProce
 import { createTicket, claimTicket, closeTicket, handleCooldownSelection, handleDeductionChoice, unclaimTicket, autoCloseTicketForVerificationTimeout, triggerSessionFailure, pendingVerificationTimers, vouchTimers, closeTicketForDailyLimit } from './utils/ticketManager';
 import { getEstimatedWaitTime } from './utils/stats';
 import { computeCooldownHours } from './utils/cooldown';
-import { consumeStock, updateStockForAllGames, manualConsumeStock } from './utils/gameManager';
+import { consumeStock, consumeStockForTicket, updateStockForAllGames, manualConsumeStock } from './utils/gameManager';
 import prisma from './lib/prisma';
 import { logAction } from './utils/logging';
 import { refreshAllPanels, resumeFromMaintenance } from './utils/panelManager';
@@ -1245,6 +1245,14 @@ async function autoGenerateAndDeliver(channel: TextChannel, ticket: any, guild: 
         data: { deliveryMessageId: deliveryMsg.id, staffId: client.user!.id }
       });
 
+      // A token just went out — take it off the panel now. Previously this only
+      // happened if the user came back and vouched, so ghosted tickets never
+      // decremented. consumeStockForTicket is idempotent, so a later staff
+      // close-with-deduct can't charge this ticket a second time.
+      await consumeStockForTicket(ticket, guildId || '').catch((e) =>
+        console.error('[AutoGen] consumeStockForTicket failed:', (e as Error).message),
+      );
+
       await genMsg.delete().catch(() => {});
       await deliveryMsg.react('❤️').catch(() => {});
 
@@ -1988,12 +1996,11 @@ client.on(Events.MessageCreate, async (message) => {
             create: { userId: vouchTicket.userId, guildId: cdGuildId, until }
           });
 
-          // Deduct one token from stock — EXCEPT Ubisoft/EA, which already
-          // consumed at mint time (their activation is spent on delivery, not
-          // vouch). Skipping here avoids double-counting.
-          if (!isUbisoftGame(vouchTicket.game) && !isEaGame(vouchTicket.game)) {
-            await consumeStock(vouchTicket.gameId, vouchTicket.guildId || message.guildId || '', vouchTicket.fromQueue).catch((e) => console.error('[VouchAuto] consumeStock failed:', e));
-          }
+          // No stock deduction here: every delivery path (auto-gen, EA/Ubisoft
+          // mint, installer call-home) already took this ticket's token at gen
+          // time. Vouching is confirmation, not payment — deducting here would
+          // charge the panel twice, and never deduct at all when a user simply
+          // doesn't vouch.
 
           // Close ticket
           await prisma.ticket.update({
@@ -2137,7 +2144,9 @@ setInterval(() => updateTicketWaitTimes(client), 2 * 60 * 1000); // Live wait up
 setInterval(() => checkWeeklyStaffStats(client), 15 * 60 * 1000); // Weekly Check (Every 15m for precision)
 setInterval(() => checkDutyStatusReset(), 30 * 60 * 1000); // Duty Reset (Every 30m)
 setInterval(() => checkStaleTickets(client), 10 * 60 * 1000); // Stale Tickets (Every 10m)
-setInterval(() => syncOwnerStockForNewUtcDay(), 15 * 60 * 1000); // UTC daily account quota reset
+// (Removed: the 00:00-UTC account-quota resync. Panel stock is now a plain
+// owner-managed count that refills 24h after each game's first token — see
+// processStockCycles().)
 setInterval(() => processAllRestocks(), 5 * 60 * 1000); // Apply due token restocks (every 5m)
 setInterval(() => refreshAllPanels(), 10 * 60 * 1000); // Keep per-game restock countdowns fresh (every 10m)
 setInterval(() => cleanupExpiredCooldowns(), 6 * 60 * 60 * 1000); // Bug #15: Cooldown Cleanup (Every 6h)

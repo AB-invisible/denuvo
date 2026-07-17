@@ -18,7 +18,7 @@ import prisma from '../lib/prisma';
 import { CONFIG } from '../config';
 import fs from 'fs';
 import path from 'path';
-import { consumeStock, processGuildRestocks, getOrCreateServerStock } from './gameManager';
+import { consumeStock, consumeStockForTicket, processStockCycles, getOrCreateServerStock } from './gameManager';
 import { logAction } from './logging';
 import { refreshAllPanels } from './panelManager';
 import { trackTicketChannel, untrackTicketChannel } from './ticketChannelCache';
@@ -163,7 +163,7 @@ export async function createTicket(interaction: StringSelectMenuInteraction, sel
     }
 
     // Process any pending auto-restocks for this server before checking stock
-    await processGuildRestocks(ticketGuildId);
+    await processStockCycles(ticketGuildId);
 
     const gamePreview = gameRecord;
     if (gamePreview && usesAccountSyncedStock(ticketGuildId)) {
@@ -563,13 +563,19 @@ function ticketTokenAlreadyConsumed(ticket: { deliveryMessageId?: string | null;
   );
 }
 
-async function applyStockDeduction(ticket: { gameId: number; game: { appId?: number | null; ubisoftAppId?: number | null; eaContentId?: number | null }; deliveryMessageId?: string | null; ubisoftStage?: string | null; eaStage?: string | null; fromQueue?: boolean }, guildId: string): Promise<void> {
+/**
+ * Staff chose "deduct a token" on close. consumeStockForTicket() is idempotent
+ * per ticket, so if a delivery path already took this ticket's token (auto-gen,
+ * EA/Ubisoft mint, installer call-home) this is a no-op rather than a second
+ * deduction — every ticket costs exactly one token, however it closes.
+ */
+async function applyStockDeduction(ticket: { id: number; gameId: number; game: { appId?: number | null; ubisoftAppId?: number | null; eaContentId?: number | null }; deliveryMessageId?: string | null; ubisoftStage?: string | null; eaStage?: string | null; fromQueue?: boolean }, guildId: string): Promise<void> {
   if (isUbisoftGame(ticket.game)) {
     if (!ticketTokenAlreadyConsumed(ticket)) {
       const appId = ticket.game.ubisoftAppId;
       if (appId) {
         await consumeUbisoftPoolSlot(appId);
-        await consumeStock(ticket.gameId, guildId, !!ticket.fromQueue);
+        await consumeStockForTicket(ticket, guildId);
       }
     }
     return;
@@ -577,11 +583,11 @@ async function applyStockDeduction(ticket: { gameId: number; game: { appId?: num
   if (isEaGame(ticket.game)) {
     if (!ticketTokenAlreadyConsumed(ticket)) {
       await consumeEaPoolSlot();
-      await consumeStock(ticket.gameId, guildId, !!ticket.fromQueue);
+      await consumeStockForTicket(ticket, guildId);
     }
     return;
   }
-  await consumeStock(ticket.gameId, guildId, !!ticket.fromQueue);
+  await consumeStockForTicket(ticket, guildId);
 }
 
 async function refreshPlatformStockAfterClose(_ticket: { game: { appId?: number | null; ubisoftAppId?: number | null; eaContentId?: number | null } }, _guildId: string): Promise<void> {

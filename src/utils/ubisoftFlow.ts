@@ -39,7 +39,7 @@ import { mintUbisoftToken, ubisoftServiceConfigured } from './ubisoftService';
 import { resolvePublicBaseUrl } from './downloadHost';
 import { createCallhomeInstaller } from './installerPackage';
 import { isInstallerCallhomeEnabled } from './installerSettings';
-import { consumeStock } from './gameManager';
+import { consumeStockForTicket } from './gameManager';
 
 export const UBISOFT_STAGE_AWAITING = 'AWAITING_TOKEN_REQ';
 /** Call-home installer delivered — user should run installer.exe, not paste token_req. */
@@ -442,7 +442,7 @@ export async function handleUbisoftTokenReq(message: Message, ticket: any): Prom
   // stock at delivery, not on vouch (the vouch path skips Ubisoft/EA to avoid
   // double-counting). Otherwise delivered-but-unvouched tokens never drop the
   // count and the panel overstates availability.
-  await consumeStock(ticket.gameId, guildId, !!ticket.fromQueue).catch((e) =>
+  await consumeStockForTicket(ticket, guildId).catch((e) =>
     console.error('[UbisoftFlow] consumeStock failed:', (e as Error).message),
   );
 
