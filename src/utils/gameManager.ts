@@ -55,7 +55,68 @@ export async function getServerStockMapForGuild(
  * scheduler job). Also supersedes the old per-token Restock rows + heal pass, so
  * anything left stuck at 0 by the previous models recovers on the first run.
  */
+/**
+ * Adopt rows depleted under the OLD models into the cycle model.
+ *
+ * Anything drained before cycleStartedAt existed has it NULL, which both hides
+ * the panel countdown and — worse — makes processStockCycles() skip the row
+ * forever (its filter is `not: null`), so those games would never refill again.
+ *
+ * Derive the real start from the best evidence available, in order:
+ *   1. Oldest pending Restock row — the old model wrote restockAt = used + 24h,
+ *      so restockAt - 24h IS the moment the first token went out.
+ *   2. lastDepletedAt — when it hit zero.
+ *   3. now — nothing better; start the clock fresh.
+ *
+ * Rows already at/above maxStock have nothing to refill, so they just stay
+ * cycle-less. Idempotent: once stamped, a row is never re-adopted.
+ */
+async function adoptLegacyCycles(guildId?: string): Promise<void> {
+  const orphans = await prisma.serverStock.findMany({
+    where: {
+      ...(guildId !== undefined ? { guildId } : {}),
+      cycleStartedAt: null,
+    },
+    include: { game: true },
+  });
+  if (orphans.length === 0) return;
+
+  for (const s of orphans) {
+    if (s.stock >= s.maxStock) continue; // full — nothing owed
+    if (s.game.excludeRegen) continue; // never auto-refills
+
+    const oldestRestock = await prisma.restock.findFirst({
+      where: { gameId: s.gameId, guildId: s.guildId },
+      orderBy: { restockAt: 'asc' },
+      select: { restockAt: true },
+    });
+
+    const startedAt = oldestRestock
+      ? new Date(oldestRestock.restockAt.getTime() - REGEN_TIME)
+      : (s.lastDepletedAt ?? new Date());
+
+    await prisma.serverStock.update({
+      where: { gameId_guildId: { gameId: s.gameId, guildId: s.guildId } },
+      data: { cycleStartedAt: startedAt },
+    });
+
+    // Burn the legacy rows now they're translated — leaving them would let a
+    // future cycle-less state (e.g. after /stock remove) read an ancient
+    // restockAt and refill instantly.
+    if (oldestRestock) {
+      await prisma.restock.deleteMany({ where: { gameId: s.gameId, guildId: s.guildId } });
+    }
+    console.log(
+      `[Stock] Adopted "${s.game.name}" into the cycle model (started ${startedAt.toISOString()}, stock ${s.stock}/${s.maxStock}).`,
+    );
+  }
+}
+
 export async function processStockCycles(guildId?: string): Promise<void> {
+  // Pull pre-migration rows in first, or they'd never refill and would show no
+  // countdown. Anything already past its 24h gets refilled by the sweep below.
+  await adoptLegacyCycles(guildId);
+
   const cutoff = new Date(Date.now() - REGEN_TIME);
   const due = await prisma.serverStock.findMany({
     where: {
