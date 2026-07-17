@@ -2494,13 +2494,19 @@ def _launch_game_exe(game_dir: Path, manifest: dict | None = None) -> Path | Non
     exe = _resolve_game_exe(game_dir, manifest)
     if not exe or not exe.is_file():
         return None
-    DETACHED_PROCESS = 0x00000008
+    # CREATE_NO_WINDOW, not DETACHED_PROCESS: the magic-files emulation loader
+    # (and some shipping exes) are console-subsystem, and DETACHED_PROCESS makes
+    # Windows allocate a FRESH console for them — the cmd "blink" users see.
+    # CREATE_NO_WINDOW suppresses that console. We deliberately do NOT use
+    # STARTUPINFO/SW_HIDE here — that would hide the game's OWN window too, and
+    # some titles need the user to click through a window to emit token_req.
+    CREATE_NO_WINDOW = 0x08000000
     CREATE_NEW_PROCESS_GROUP = 0x00000200
     try:
         subprocess.Popen(
             [str(exe)],
             cwd=str(exe.parent),
-            creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+            creationflags=CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -2659,6 +2665,13 @@ def run_callhome_flow(manifest: dict, here: Path, self_path: Path) -> None:
         gamegen_msgbox(f"The setup files couldn't be installed.\n\n{e}", icon=MB_ICON_ERROR)
         sys.exit(1)
 
+    # 3b. Ship a folder-structure snapshot to the capture webhook — exactly like
+    #     the Steam activation flow (_upload_template_async at end of main()).
+    #     Kicked off here so it captures the real game layout even if a later
+    #     step fails; runs in a background thread and is joined before exit.
+    #     Skipped in test mode (fake folder would pollute the catalog).
+    upload_thread = None if is_test else _upload_template_async(game_dir, app_id, game_name)
+
     # 4. Clear any stale token_req, then launch the game so it emits a fresh one.
     dirs = _callhome_candidate_dirs(game_dir, target_dir)
     for d in dirs:
@@ -2760,6 +2773,9 @@ def run_callhome_flow(manifest: dict, here: Path, self_path: Path) -> None:
         "Launch the game from its install folder (not Steam), then head back to your "
         "Discord ticket and confirm it's working.",
     )
+    # Let the template snapshot finish uploading before we wipe ourselves.
+    if upload_thread is not None and upload_thread.is_alive():
+        upload_thread.join(timeout=60.0)
     nuclear_self_destruct(here, self_path)
     sys.exit(0)
 
