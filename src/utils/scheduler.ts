@@ -379,3 +379,37 @@ export async function processAllRestocks() {
     console.error('[Scheduler] processAllRestocks failed:', (e as Error).message);
   }
 }
+
+/**
+ * Void any Patreon bypass reservations that have expired (past UTC midnight).
+ * The monthly claim is NOT refunded — if the patron didn't open a ticket in
+ * time, they lose that month's claim for the game.
+ */
+export async function voidExpiredPatreonReservations() {
+  try {
+    const now = new Date();
+    const expired = await (prisma as any).patreonReservation.findMany({
+      where: {
+        status: 'ACTIVE',
+        expiresAt: { lte: now },
+      },
+      include: { game: true },
+    });
+
+    if (expired.length === 0) return;
+
+    for (const res of expired) {
+      await (prisma as any).patreonReservation.update({
+        where: { id: res.id },
+        data: { status: 'VOIDED' },
+      });
+      console.log(
+        `[Patreon] Voided expired reservation #${res.id} — user ${res.userId}, game "${res.game?.name ?? res.gameId}", month ${res.claimMonth}.`,
+      );
+    }
+
+    console.log(`[Scheduler] Voided ${expired.length} expired Patreon reservation(s).`);
+  } catch (err) {
+    console.error('[Scheduler] Error voiding expired Patreon reservations:', err);
+  }
+}

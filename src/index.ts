@@ -20,7 +20,7 @@ import { startUbisoftDelivery, handleUbisoftTokenReq, UBISOFT_STAGE_AWAITING, UB
 import { isEaGame } from './utils/eaCatalog';
 import { startEaDelivery, handleEaTicket, EA_STAGE_AWAITING, EA_STAGE_CALLHOME } from './utils/eaFlow';
 import { enqueueTokenGen } from './utils/tokenQueue';
-import { updateTicketWaitTimes, checkWeeklyStaffStats, checkDutyStatusReset, checkStaleTickets, cleanupExpiredCooldowns, syncOwnerStockForNewUtcDay, processAllRestocks } from './utils/scheduler';
+import { updateTicketWaitTimes, checkWeeklyStaffStats, checkDutyStatusReset, checkStaleTickets, cleanupExpiredCooldowns, syncOwnerStockForNewUtcDay, processAllRestocks, voidExpiredPatreonReservations } from './utils/scheduler';
 import { addSubscription } from './utils/subscriptionManager';
 import { logTenant } from './utils/logging';
 import { checkGuild, shouldLeaveGuild } from './utils/guildAccess';
@@ -498,6 +498,10 @@ const commands = [
       .setName('roster')
       .setDescription('(Staff) List every user in queue with their position')
       .addStringOption(o => o.setName('game').setDescription('Game name (leave empty for all games)').setAutocomplete(true))),
+  new SlashCommandBuilder()
+    .setName('claim')
+    .setDescription('Reserve a Patreon bypass token for a high-demand game (1/month per game)')
+    .addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true)),
 ].map(command => command.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(CONFIG.TOKEN);
@@ -2150,6 +2154,7 @@ setInterval(() => checkStaleTickets(client), 10 * 60 * 1000); // Stale Tickets (
 setInterval(() => processAllRestocks(), 5 * 60 * 1000); // Apply due token restocks (every 5m)
 setInterval(() => refreshAllPanels(), 10 * 60 * 1000); // Keep per-game restock countdowns fresh (every 10m)
 setInterval(() => cleanupExpiredCooldowns(), 6 * 60 * 60 * 1000); // Bug #15: Cooldown Cleanup (Every 6h)
+setInterval(() => voidExpiredPatreonReservations(), 5 * 60 * 1000); // Void expired Patreon bypass reservations (every 5m)
 // Token downloads have a 30-minute TTL; sweep every 5 minutes to delete
 // the stored zip file + DB row once the link expires.
 setInterval(() => {

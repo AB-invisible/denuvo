@@ -87,6 +87,7 @@ export const CONFIG = {
   PATREON_TIER_BRONZE_ID: process.env.PATREON_TIER_BRONZE_ID || '',
   PATREON_TIER_SILVER_ID: process.env.PATREON_TIER_SILVER_ID || '',
   PATREON_TIER_GOLD_ID: process.env.PATREON_TIER_GOLD_ID || '',
+  PATREON_TIER_BYPASS_ID: process.env.PATREON_TIER_BYPASS_ID || '',
   // Full-campaign reconciliation cadence (minutes). The webhook covers
   // real-time updates; this periodic pass catches anything it missed
   // (bot downtime, dropped webhook delivery, manual role edits, etc.).

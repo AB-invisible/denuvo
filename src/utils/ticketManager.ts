@@ -227,19 +227,43 @@ export async function createTicket(interaction: StringSelectMenuInteraction, sel
       });
       const availableResources = currentStock - serverReservations;
 
+      // ── Patreon bypass reservation check ──
+      // If this user has an ACTIVE PatreonReservation for this game, consume
+      // it and let the ticket through regardless of public stock. The token
+      // was pre-reserved when they ran /claim.
       if (availableResources <= 0) {
-        const existing = await tx.waitlist.findUnique({
-          where: { userId_gameId: { userId: interaction.user.id, gameId: game.id } },
+        const reservation = await (tx as any).patreonReservation.findFirst({
+          where: {
+            userId: interaction.user.id,
+            guildId: ticketGuildId,
+            gameId: game.id,
+            status: 'ACTIVE',
+            expiresAt: { gt: new Date() },
+          },
         });
-        if (existing) {
-          const position = await tx.waitlist.count({
-            where: { gameId: game.id, createdAt: { lte: existing.createdAt } },
+
+        if (reservation) {
+          // Fulfill the reservation — mark it used
+          await (tx as any).patreonReservation.update({
+            where: { id: reservation.id },
+            data: { status: 'FULFILLED', fulfilledAt: new Date() },
           });
-          return { error: `⏳ **Out of Stock:** You're already on the waitlist for **${gameName}** at position **#${position}**. You'll be DM'd when your slot is ready.` };
+          // Let the ticket proceed — skip the out-of-stock gate below
+          // (the reserved token doesn't come from public stock)
+        } else {
+          const existing = await tx.waitlist.findUnique({
+            where: { userId_gameId: { userId: interaction.user.id, gameId: game.id } },
+          });
+          if (existing) {
+            const position = await tx.waitlist.count({
+              where: { gameId: game.id, createdAt: { lte: existing.createdAt } },
+            });
+            return { error: `⏳ **Out of Stock:** You're already on the waitlist for **${gameName}** at position **#${position}**. You'll be DM'd when your slot is ready.` };
+          }
+          await tx.waitlist.create({ data: { userId: interaction.user.id, gameId: game.id } });
+          const position = await tx.waitlist.count({ where: { gameId: game.id } });
+          return { error: `⏳ **Out of Stock:** You've been added to the waitlist for **${gameName}** at position **#${position}**. You'll receive a DM when your slot is ready!` };
         }
-        await tx.waitlist.create({ data: { userId: interaction.user.id, gameId: game.id } });
-        const position = await tx.waitlist.count({ where: { gameId: game.id } });
-        return { error: `⏳ **Out of Stock:** You've been added to the waitlist for **${gameName}** at position **#${position}**. You'll receive a DM when your slot is ready!` };
       }
 
       const queueCheck = await checkQueueAccess(

@@ -45,6 +45,7 @@ import { execute as eacode } from './eacode';
 import { execute as easession } from './easession';
 import { execute as setinstaller } from './setinstaller';
 import { execute as patreon } from './patreon';
+import { execute as claim } from './claim';
 
 export const commandHandlers: Record<string, (interaction: any) => Promise<void>> = {
   postpanel,
@@ -94,4 +95,5 @@ export const commandHandlers: Record<string, (interaction: any) => Promise<void>
   easession,
   setinstaller,
   patreon,
+  claim,
 };

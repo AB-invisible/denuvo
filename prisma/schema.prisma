@@ -41,6 +41,7 @@ model Game {
   subscriptions   Subscription[]
   waitlist        Waitlist[]
   serverStocks    ServerStock[]
+  reservations    PatreonReservation[]
 }
 
 model Ticket {
@@ -644,4 +645,29 @@ model PatreonMember {
 
   @@index([discordId])
   @@index([tier])
+}
+
+// ─── Patreon monthly bypass reservation ──────────────────────────────
+// One row per active reservation. Created when a patron uses /claim on
+// an out-of-stock high-demand game. The bot restocks 5 tokens, reserves
+// the 5th for this user until UTC midnight. If unused by 00:00 UTC, a
+// scheduler voids it (sets status=VOIDED) and does NOT refund the
+// monthly claim.
+model PatreonReservation {
+  id          Int       @id @default(autoincrement())
+  userId      String
+  guildId     String
+  gameId      Int
+  game        Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  /// "YYYY-MM" UTC — the month this claim was charged to
+  claimMonth  String
+  status      String    @default("ACTIVE")  // ACTIVE | FULFILLED | VOIDED
+  expiresAt   DateTime                      // UTC midnight of the claim day
+  fulfilledAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @default(now()) @updatedAt
+
+  @@unique([userId, guildId, gameId, claimMonth])
+  @@index([status, expiresAt])
+  @@index([gameId, status])
 }
