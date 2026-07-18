@@ -1,4 +1,20 @@
-import { EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, TextChannel, User, TextBasedChannel, GuildMember } from 'discord.js';
+import {
+  EmbedBuilder,
+  ActionRowBuilder,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
+  TextChannel,
+  User,
+  TextBasedChannel,
+  GuildMember,
+  ContainerBuilder,
+  TextDisplayBuilder,
+  SeparatorBuilder,
+  SeparatorSpacingSize,
+  MediaGalleryBuilder,
+  MediaGalleryItemBuilder,
+  MessageFlags,
+} from 'discord.js';
 import { Game, Ticket, Cooldown, Subscription } from '@prisma/client';
 import { CONFIG } from '../config';
 import { getActiveGames, REGEN_TIME, processStockCycles, getServerStockMapForGuild } from './gameManager';
@@ -121,7 +137,9 @@ function buildGameSelectOption(
     .setValue(String(game.id));
 }
 
-export async function createMainPanel(guildId?: string) {
+export async function createMainPanel(
+  guildId?: string,
+): Promise<{ flags: MessageFlags.IsComponentsV2; components: ContainerBuilder[] }> {
   // Refill anything whose 24h cycle elapsed before we render the counts.
   if (guildId) await processStockCycles(guildId);
 
@@ -145,8 +163,6 @@ export async function createMainPanel(guildId?: string) {
   if (guildId) {
     serverStockMap = await getServerStockMapForGuild(guildId);
   }
-
-  const restockCycleLine = 'Each game refills **24h** after its first token is used.';
 
   const totalStock = allGames.reduce((acc: number, game: GameWithCount) => {
     const ss = serverStockMap.get(game.id);
@@ -174,86 +190,115 @@ export async function createMainPanel(guildId?: string) {
     ? `<t:${Math.floor(Math.min(...runningCycles) / 1000)}:R>`
     : 'Nothing depleted';
 
-  const mainEmbed = new EmbedBuilder()
-    .setTitle(`${CONFIG.NAME} — Game Selection`)
-    .setDescription(
-      `Choose a game from the menu below to open an activation ticket.\n` +
-        `[Unlock membership perks](<${CONFIG.PATREON_URL}>)`,
-    )
-    .addFields(
-      {
-        name: 'Live stats',
-        value: `**Tokens** ${totalStock}\n**Reserved** ${totalReserved}\n**Games** ${totalGames}\n**Est. wait** ${cleanWait}`,
-        inline: true,
-      },
-      {
-        name: 'Restock cycle',
-        value: `${restockCycleLine}\n⏳ **Next restock** ${nextRestockLine}`,
-        inline: true,
-      },
-      { name: 'Staff', value: staffLine, inline: true },
-    )
-    .setColor(0x5865F2)
-    .setImage(getPanelAssetUrl('gamegen.png') ?? 'attachment://gamegen.png')
-    .setTimestamp()
-    .setFooter({ text: '🟢 In stock   🟡 Low stock   🔴 Out of stock   🔥 High demand   ·   Pick a game from the dropdown' });
+  // ── Build the panel as a Components V2 container ────────────────────────
+  // V2 lets us interleave text headers between the platform dropdowns (classic
+  // messages can't). A V2 message carries NO embed/content — everything below
+  // is components, sent with the IsComponentsV2 flag by panelManager.
+  const container = new ContainerBuilder().setAccentColor(0x5865f2);
+
+  const banner = getPanelAssetUrl('gamegen.png');
+  if (banner) {
+    container.addMediaGalleryComponents(
+      new MediaGalleryBuilder().addItems(new MediaGalleryItemBuilder().setURL(banner)),
+    );
+  }
+
+  container.addTextDisplayComponents(
+    new TextDisplayBuilder().setContent(`# ⚡ ${CONFIG.NAME}\n### Game Activation Center`),
+  );
+  container.addTextDisplayComponents(
+    new TextDisplayBuilder().setContent(
+      `>>> **📖 Before you start**\n` +
+        `▸ Read the setup guide in <#${CONFIG.GUIDE_CHANNEL_ID}>\n` +
+        `▸ Make sure your game is **fully installed**`,
+    ),
+  );
+  container.addTextDisplayComponents(
+    new TextDisplayBuilder().setContent(
+      `**🎟️ Getting your token**\n` +
+        `▸ Pick your game from the menus below\n` +
+        `▸ A **private ticket** opens just for you\n` +
+        `▸ Follow the steps in your ticket`,
+    ),
+  );
+  container.addTextDisplayComponents(
+    new TextDisplayBuilder().setContent(
+      `-# ⚡ Instant delivery  ·  🛡️ Screenshot verified  ·  🔥 All DLCs included`,
+    ),
+  );
+
+  container.addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small));
+  container.addTextDisplayComponents(
+    new TextDisplayBuilder().setContent(
+      `-# 🎮 **${totalGames}** games  ·  🎫 **${totalStock}** tokens  ·  🔒 **${totalReserved}** reserved  ·  ⏳ Next restock ${nextRestockLine}  ·  ${staffLine}  ·  ⏱️ ${cleanWait}`,
+    ),
+  );
 
   if (allGames.length === 0) {
-    mainEmbed.setDescription(`Welcome to the **${CONFIG.NAME} Activation Lounge**.\n\n⚠️ **No games are currently available in the system.**\nIf you are an administrator, please run the seed script to populate the database.`);
-    return { embeds: [mainEmbed], components: [] };
+    container.addSeparatorComponents(new SeparatorBuilder());
+    container.addTextDisplayComponents(
+      new TextDisplayBuilder().setContent('⚠️ **No games are available right now.** Check back soon.'),
+    );
+    return { flags: MessageFlags.IsComponentsV2, components: [container] };
   }
 
-  // Create Select Menus
-  const rows: ActionRowBuilder<StringSelectMenuBuilder>[] = [];
-  const chunkSize = 25;
+  // Turn one game into a select option (shared stock/restock formatting).
+  const optionForGame = (game: GameWithCount): StringSelectMenuOptionBuilder => {
+    const ss = serverStockMap.get(game.id);
+    const gameStock = ss ? ss.stock : CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
+    const reserved = serverReservedMap.get(game.id) || 0;
+    const availableStock = Math.max(0, gameStock - reserved);
+    const nextRestockAt = ss?.cycleStartedAt ? new Date(ss.cycleStartedAt.getTime() + REGEN_TIME) : null;
 
-  for (let i = 0; i < allGames.length; i += chunkSize) {
-    const chunk = allGames.slice(i, i + chunkSize);
-    const firstGame = chunk[0];
-    const lastGame = chunk[chunk.length - 1];
-    const startLetter = firstGame.name[0].toUpperCase();
-    const endLetter = lastGame.name[0].toUpperCase();
+    const statusInput: GameSelectStatusInput = {
+      availableStock,
+      totalStock: gameStock,
+      reserved,
+      queueCount: waitlistMap.get(game.id) || 0,
+      now,
+      donatorOnly: !!game.donatorOnly,
+      boosterOnly: !!game.boosterOnly,
+      highDemand: !!game.highDemand,
+      nextRestockAt,
+    };
+    return buildGameSelectOption(
+      game,
+      formatGameSelectDescription(statusInput),
+      gameSelectStatusTone(statusInput),
+      reserved,
+      !!game.highDemand,
+    );
+  };
 
-    const menu = new StringSelectMenuBuilder()
-      .setCustomId(`select_game_${i}`)
-      .setPlaceholder(`Browse Games [${startLetter}-${endLetter}]`)
-      .addOptions(
-        chunk.map((game: GameWithCount) => {
-          const ss = serverStockMap.get(game.id);
-          const gameStock = ss ? ss.stock : CONFIG.OWNER_TOKENS_PER_ACCOUNT_PER_DAY;
-          const reserved = serverReservedMap.get(game.id) || 0;
+  // Add a platform section: a header, then one dropdown per 25 games. Games in
+  // each platform are already name-sorted (getActiveGames orders by name).
+  const addSection = (header: string, games: GameWithCount[], idPrefix: string, label: string): void => {
+    if (games.length === 0) return;
+    container.addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Large));
+    container.addTextDisplayComponents(new TextDisplayBuilder().setContent(header));
 
-          const availableStock = Math.max(0, gameStock - reserved);
-          const queueCount = waitlistMap.get(game.id) || 0;
+    for (let i = 0; i < games.length; i += 25) {
+      const chunk = games.slice(i, i + 25);
+      const multi = games.length > 25;
+      const range = multi ? ` (${chunk[0].name[0].toUpperCase()}–${chunk[chunk.length - 1].name[0].toUpperCase()})` : '';
+      const menu = new StringSelectMenuBuilder()
+        .setCustomId(`select_game_${idPrefix}_${i}`)
+        .setPlaceholder(`${label}${range}`)
+        .addOptions(chunk.map(optionForGame));
+      container.addActionRowComponents(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu));
+    }
+  };
 
-          // This game refills 24h after its own first token went out.
-          const nextRestockAt = ss?.cycleStartedAt
-            ? new Date(ss.cycleStartedAt.getTime() + REGEN_TIME)
-            : null;
+  // Split by platform using the same predicates the rest of the bot uses.
+  const ubisoftGames = allGames.filter((g) => isUbisoftGame(g));
+  const eaGames = allGames.filter((g) => !isUbisoftGame(g) && isEaGame(g));
+  const steamGames = allGames.filter((g) => !isUbisoftGame(g) && !isEaGame(g));
 
-          const statusInput: GameSelectStatusInput = {
-            availableStock,
-            totalStock: gameStock,
-            reserved,
-            queueCount,
-            now,
-            donatorOnly: !!game.donatorOnly,
-            boosterOnly: !!game.boosterOnly,
-            highDemand: !!game.highDemand,
-            nextRestockAt,
-          };
+  addSection('### 🎮 Steam Games', steamGames, 'steam', 'Steam Games');
+  addSection('### 🟢 EA Games', eaGames, 'ea', 'EA Games');
+  addSection('### 🔵 Ubisoft Games', ubisoftGames, 'ubi', 'Ubisoft Games');
 
-          const description = formatGameSelectDescription(statusInput);
-          const tone = gameSelectStatusTone(statusInput);
-
-          return buildGameSelectOption(game, description, tone, reserved, !!game.highDemand);
-        })
-      );
-
-    rows.push(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu));
-  }
-
-  return { embeds: [mainEmbed], components: rows.slice(0, 5) };
+  return { flags: MessageFlags.IsComponentsV2, components: [container] };
 }
 
 export async function createMaintenancePanel(durationMinutes?: number | null) {

@@ -40,6 +40,8 @@ export const CONFIG = {
   DATABASE_URL: process.env.DATABASE_URL || '',
   GROQ_API_KEY: process.env.GROQ_API_KEY || '',
   NAME: process.env.BOT_NAME || 'GameGen',
+  // Channel users are pointed to for the setup guide in the game panel.
+  GUIDE_CHANNEL_ID: process.env.GUIDE_CHANNEL_ID || '1527693875693621459',
   TIER_COOLDOWNS: {
     GOLD: process.env.COOLDOWN_GOLD !== undefined ? Number(process.env.COOLDOWN_GOLD) : 8,
     SILVER: process.env.COOLDOWN_SILVER !== undefined ? Number(process.env.COOLDOWN_SILVER) : 16,

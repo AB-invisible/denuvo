@@ -2,15 +2,13 @@ import { client } from '../client';
 import { CONFIG } from '../config';
 import {
   TextChannel,
-  AttachmentBuilder,
   TextBasedChannel,
   Message,
   MessageEditOptions,
-  EmbedBuilder,
+  MessageFlags,
 } from 'discord.js';
 import { createMainPanel } from './embeds';
 import { logAction } from './logging';
-import { getPanelAssetUrl, panelImageAttachmentPath } from './downloadHost';
 import prisma from '../lib/prisma';
 
 const PANEL_EDIT_DELAY_MS = 500;
@@ -47,62 +45,9 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Keep the image URL already on the message so refresh edits don't re-upload or swap CDN hosts. */
-function embedsForPanelRefresh(message: Message, embeds: EmbedBuilder[]): EmbedBuilder[] {
-  if (embeds.length === 0) return embeds;
-
-  const existingImageUrl = message.embeds[0]?.image?.url;
-  const embed = EmbedBuilder.from(embeds[0]);
-
-  if (existingImageUrl) {
-    embed.setImage(existingImageUrl);
-    return [embed];
-  }
-
-  const hostedUrl = getPanelAssetUrl('gamegen.png');
-  if (hostedUrl) {
-    embed.setImage(hostedUrl);
-  }
-
-  return [embed];
-}
-
-function buildPanelEditPayload(
-  message: Message,
-  panelContent: Awaited<ReturnType<typeof createMainPanel>>,
-  opts?: { stripImage?: boolean; dropLegacyAttachment?: boolean },
-): MessageEditOptions {
-  const usesHostedImage = !!getPanelAssetUrl('gamegen.png');
-  const hasLegacyAttachment = message.attachments.some((a) => a.name === 'gamegen.png');
-
-  let embeds = embedsForPanelRefresh(message, panelContent.embeds);
-  if (opts?.stripImage && embeds.length > 0) {
-    embeds = [EmbedBuilder.from(embeds[0]).setImage(null)];
-  }
-
-  const payload: MessageEditOptions = {
-    embeds,
-    components: panelContent.components,
-  };
-
-  // Legacy file attachment + embed image causes Discord edit 500s — drop the file
-  // when migrating to hosted URL or when explicitly requested.
-  if (hasLegacyAttachment && (usesHostedImage || opts?.dropLegacyAttachment)) {
-    payload.attachments = [];
-    if (!usesHostedImage && embeds.length > 0 && !opts?.stripImage) {
-      const embed = EmbedBuilder.from(embeds[0]);
-      if (!embed.data.image?.url || embed.data.image.url.startsWith('attachment://')) {
-        embed.setImage('attachment://gamegen.png');
-        payload.embeds = [embed];
-      }
-      payload.files = [new AttachmentBuilder(panelImageAttachmentPath('gamegen.png'), { name: 'gamegen.png' })];
-    }
-  } else if (!usesHostedImage && !hasLegacyAttachment) {
-    payload.files = [new AttachmentBuilder(panelImageAttachmentPath('gamegen.png'), { name: 'gamegen.png' })];
-  }
-
-  return payload;
-}
+// The panel is a Components V2 message: no embeds, no file attachments — just
+// the container. Sends carry the IsComponentsV2 flag; edits only swap the
+// components (a message's V2-ness is fixed at creation and can't be edited on).
 
 async function editMessageWithRetry(message: Message, payload: MessageEditOptions, retries = 4): Promise<void> {
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -128,15 +73,7 @@ async function repostPanelMessage(
   panelContent: Awaited<ReturnType<typeof createMainPanel>>,
   oldMessage: Message,
 ): Promise<void> {
-  const payload: Parameters<TextChannel['send']>[0] = {
-    embeds: panelContent.embeds,
-    components: panelContent.components,
-  };
-  if (!getPanelAssetUrl('gamegen.png')) {
-    payload.files = [new AttachmentBuilder(panelImageAttachmentPath('gamegen.png'), { name: 'gamegen.png' })];
-  }
-
-  const sentMessage = await sendMessageWithRetry(channel, payload);
+  const sentMessage = await sendMessageWithRetry(channel, panelContent);
   await prisma.panel.update({
     where: { id: panelRecord.id },
     data: { messageId: sentMessage.id },
@@ -151,44 +88,23 @@ async function editPanelMessage(
   panelRecord: { id: number; messageId: string },
   panelContent: Awaited<ReturnType<typeof createMainPanel>>,
 ): Promise<void> {
-  const hasLegacyAttachment = message.attachments.some((a) => a.name === 'gamegen.png');
-  const embedImageUrl = message.embeds[0]?.image?.url ?? '';
-  const embedUsesAttachment = embedImageUrl.startsWith('attachment://');
-  const embeds = embedsForPanelRefresh(message, panelContent.embeds);
-
-  const attempts: { label: string; payload: MessageEditOptions }[] = [
-    {
-      label: 'embeds+components',
-      payload: {
-        embeds,
-        components: panelContent.components,
-        // Only strip legacy file when embed already uses a CDN/hosted URL.
-        ...(hasLegacyAttachment && !embedUsesAttachment ? { attachments: [] } : {}),
-      },
-    },
-    {
-      label: 'full',
-      payload: buildPanelEditPayload(message, panelContent, { dropLegacyAttachment: !embedUsesAttachment }),
-    },
-    {
-      label: 'imageless',
-      payload: buildPanelEditPayload(message, panelContent, { stripImage: true, dropLegacyAttachment: true }),
-    },
-    { label: 'components-only', payload: { components: panelContent.components } },
-  ];
-
-  for (const attempt of attempts) {
-    try {
-      await editMessageWithRetry(message, attempt.payload);
-      return;
-    } catch (err) {
-      if (isStaleDiscordResource(err)) throw err;
-      if (!isRetryableDiscordError(err)) throw err;
-      console.warn(`[Panel] ${attempt.label} edit failed for ${message.id}, trying next strategy…`);
-    }
+  // A message's V2-ness is fixed at creation. Old (embed) panels from before
+  // this redesign can't be edited into a V2 container, so repost them once.
+  if (!message.flags.has(MessageFlags.IsComponentsV2)) {
+    await repostPanelMessage(channel, panelRecord, panelContent, message);
+    return;
   }
 
-  console.warn(`[Panel] All edit strategies failed for ${message.id} — reposting panel message`);
+  try {
+    // Edit swaps only the components — the V2 flag is already set on the message.
+    await editMessageWithRetry(message, { components: panelContent.components });
+    return;
+  } catch (err) {
+    if (isStaleDiscordResource(err)) throw err;
+    if (!isRetryableDiscordError(err)) throw err;
+    console.warn(`[Panel] Edit failed for ${message.id} — reposting panel message`);
+  }
+
   await repostPanelMessage(channel, panelRecord, panelContent, message);
 }
 
@@ -333,13 +249,7 @@ export async function postMainPanel(channel: TextBasedChannel) {
   if (channel.isTextBased() && 'send' in channel) {
     const guildId = (channel as TextChannel).guildId || '';
     const panel = await createMainPanel(guildId);
-    const payload: Parameters<TextChannel['send']>[0] = { ...panel };
-
-    if (!getPanelAssetUrl('gamegen.png')) {
-      payload.files = [new AttachmentBuilder(panelImageAttachmentPath('gamegen.png'), { name: 'gamegen.png' })];
-    }
-
-    const sentMessage = await sendMessageWithRetry(channel as TextChannel, payload);
+    const sentMessage = await sendMessageWithRetry(channel as TextChannel, panel);
 
     await prisma.panel.create({
       data: { channelId: channel.id, messageId: sentMessage.id }
