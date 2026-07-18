@@ -502,6 +502,9 @@ const commands = [
     .setName('claim')
     .setDescription('Reserve a Patreon bypass token for a high-demand game (1/month per game)')
     .addStringOption(o => o.setName('game').setDescription('Game name').setRequired(true).setAutocomplete(true)),
+  new SlashCommandBuilder()
+    .setName('patreon-account-link')
+    .setDescription('Link your Patreon account to your Discord account via the bot'),
 ].map(command => command.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(CONFIG.TOKEN);
@@ -977,7 +980,7 @@ async function handleChatCommand(interaction: any) {
     }).catch(() => {});
   }
 
-  const USER_FACING_COMMANDS = new Set(['mycooldown', 'profile', 'onduty', 'request', 'redeem', 'waitlist', 'queue']);
+  const USER_FACING_COMMANDS = new Set(['mycooldown', 'profile', 'onduty', 'request', 'redeem', 'waitlist', 'queue', 'claim', 'patreon-account-link']);
   if (!USER_FACING_COMMANDS.has(interaction.commandName)) {
     const m = interaction.member as GuildMember | null;
     const hasAdmin = m?.permissions?.has?.(PermissionsBitField.Flags.Administrator);

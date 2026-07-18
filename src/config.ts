@@ -80,6 +80,7 @@ export const CONFIG = {
   // it's a static token tied to your own creator account.
   PATREON_ACCESS_TOKEN: process.env.PATREON_ACCESS_TOKEN || '',
   // Your campaign ID (GET /api/oauth2/v2/campaigns with the token above).
+  campaignId: process.env.PATREON_CAMPAIGN_ID || '',
   PATREON_CAMPAIGN_ID: process.env.PATREON_CAMPAIGN_ID || '',
   // Secret shown on the webhook's page in the Platform Portal. Used to
   // verify X-Patreon-Signature (hex HMAC-MD5 of the raw request body).
@@ -94,4 +95,8 @@ export const CONFIG = {
   // real-time updates; this periodic pass catches anything it missed
   // (bot downtime, dropped webhook delivery, manual role edits, etc.).
   PATREON_SYNC_INTERVAL_MINUTES: process.env.PATREON_SYNC_INTERVAL_MINUTES !== undefined ? Number(process.env.PATREON_SYNC_INTERVAL_MINUTES) : 30,
+  // ── Patreon OAuth (optional, for linking via bot) ──
+  PATREON_CLIENT_ID: process.env.PATREON_CLIENT_ID || '',
+  PATREON_CLIENT_SECRET: process.env.PATREON_CLIENT_SECRET || '',
+  PATREON_REDIRECT_URI: process.env.PATREON_REDIRECT_URI || '',
 };

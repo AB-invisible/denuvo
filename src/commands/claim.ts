@@ -1,5 +1,6 @@
 import { EmbedBuilder } from 'discord.js';
 import prisma from '../lib/prisma';
+import crypto from 'crypto';
 import { CONFIG } from '../config';
 import { logAction } from '../utils/logging';
 import { getOrCreateServerStock } from '../utils/gameManager';
@@ -43,13 +44,21 @@ export async function execute(interaction: any): Promise<void> {
   // Verify the user is a patron
   if (!patron) {
     const patreonUrl = CONFIG.PATREON_URL || 'https://www.patreon.com';
-    return interaction.editReply({
-      content:
-        `❌ **Not a Patreon member.** You need an active Patreon subscription with your Discord account linked.\n\n` +
-        `1. Subscribe at ${patreonUrl}\n` +
-        `2. Link your Discord on [patreon.com → Settings → Connected Accounts](https://www.patreon.com/settings/apps)\n` +
-        `3. Wait for the next sync (usually within 30 minutes) or ask staff to run \`/patreon sync\`.`,
-    });
+    let content =
+      `❌ **Not a Patreon member.** You need an active Patreon subscription with your Discord account linked.\n\n` +
+      `1. Subscribe at ${patreonUrl}\n` +
+      `2. Link your Discord on [patreon.com → Settings → Connected Accounts](https://www.patreon.com/settings/apps)\n` +
+      `3. Wait for the next sync (usually within 30 minutes) or ask staff to run \`/patreon sync\`.`;
+
+    if (CONFIG.PATREON_CLIENT_ID && CONFIG.PATREON_REDIRECT_URI) {
+      const secret = process.env.HMAC_SECRET || 'fallback-secret';
+      const hmac = crypto.createHmac('sha256', secret).update(userId).digest('hex');
+      const state = `${userId}.${hmac}`;
+      const authUrl = `https://www.patreon.com/oauth2/authorize?response_type=code&client_id=${CONFIG.PATREON_CLIENT_ID}&redirect_uri=${encodeURIComponent(CONFIG.PATREON_REDIRECT_URI)}&state=${state}`;
+      content += `\n\n🔗 **Alternative:** If you cannot link on patreon.com, you can [Link your Patreon account via our Bot](${authUrl}) to immediately authorize.`;
+    }
+
+    return interaction.editReply({ content });
   }
 
   // Double check user actually has the bypass subscription tier active on their Patreon account.

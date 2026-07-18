@@ -46,6 +46,7 @@ import { execute as easession } from './easession';
 import { execute as setinstaller } from './setinstaller';
 import { execute as patreon } from './patreon';
 import { execute as claim } from './claim';
+import { execute as patreonAccountLink } from './patreonAccountLink';
 
 export const commandHandlers: Record<string, (interaction: any) => Promise<void>> = {
   postpanel,
@@ -96,4 +97,5 @@ export const commandHandlers: Record<string, (interaction: any) => Promise<void>
   setinstaller,
   patreon,
   claim,
+  'patreon-account-link': patreonAccountLink,
 };

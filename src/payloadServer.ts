@@ -27,6 +27,7 @@ import http from 'http';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import { CONFIG } from './config';
 import { UBISOFT_CATALOG, resolveMagicDir, locateMagicZip } from './utils/ubisoftCatalog';
 import { resolveMagicFile as resolveEaMagicFile, resolveMagicDir as resolveEaMagicDir } from './utils/eaCatalog';
 
@@ -589,6 +590,257 @@ export function startPayloadServer(): void {
             res.writeHead(500, { 'Content-Type': 'text/plain' });
             res.end('Internal error');
           }
+        }
+        return;
+      }
+
+      // ── Patreon OAuth callback: link Patreon + Discord accounts ──
+      // GET /patreon/oauth/callback?code=<code>&state=<userId.hmac>
+      if (url.pathname === '/patreon/oauth/callback' && req.method === 'GET') {
+        const code = url.searchParams.get('code');
+        const state = url.searchParams.get('state');
+
+        if (!code || !state) {
+          res.writeHead(400, { 'Content-Type': 'text/html' });
+          res.end('<h1>Link Failed</h1><p>Missing auth code or state parameter.</p>');
+          return;
+        }
+
+        try {
+          const [userId, hmac] = state.split('.');
+          if (!userId || !hmac) {
+            res.writeHead(400, { 'Content-Type': 'text/html' });
+            res.end('<h1>Link Failed</h1><p>Malformed state parameter.</p>');
+            return;
+          }
+
+          const secret = (process.env.HMAC_SECRET || '').trim();
+          const expectedHmac = crypto.createHmac('sha256', secret).update(userId).digest('hex');
+          let safe = false;
+          try {
+            safe = crypto.timingSafeEqual(Buffer.from(hmac, 'utf-8'), Buffer.from(expectedHmac, 'utf-8'));
+          } catch {
+            safe = false;
+          }
+          if (!safe) {
+            res.writeHead(400, { 'Content-Type': 'text/html' });
+            res.end('<h1>Link Failed</h1><p>Invalid or expired session state.</p>');
+            return;
+          }
+
+          if (!CONFIG.PATREON_CLIENT_ID || !CONFIG.PATREON_CLIENT_SECRET || !CONFIG.PATREON_REDIRECT_URI) {
+            res.writeHead(500, { 'Content-Type': 'text/html' });
+            res.end('<h1>Link Failed</h1><p>Patreon OAuth is not configured on this server.</p>');
+            return;
+          }
+
+          // Exchange code for token
+          const tokenRes = await fetch('https://www.patreon.com/api/oauth2/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+              code,
+              grant_type: 'authorization_code',
+              client_id: CONFIG.PATREON_CLIENT_ID,
+              client_secret: CONFIG.PATREON_CLIENT_SECRET,
+              redirect_uri: CONFIG.PATREON_REDIRECT_URI,
+            }).toString(),
+          });
+
+          if (!tokenRes.ok) {
+            const errText = await tokenRes.text();
+            console.error('[PatreonOAuth] Token exchange failed:', errText);
+            res.writeHead(500, { 'Content-Type': 'text/html' });
+            res.end('<h1>Link Failed</h1><p>Failed to authenticate with Patreon.</p>');
+            return;
+          }
+
+          const tokenData = (await tokenRes.json()) as any;
+          const accessToken = tokenData.access_token;
+
+          // Fetch Patreon identity + memberships
+          const userRes = await fetch(
+            'https://www.patreon.com/api/oauth2/v2/identity?include=memberships,memberships.campaign,memberships.currently_entitled_tiers&fields[member]=patron_status,currently_entitled_amount_cents,last_charge_status,full_name&fields[tier]=title,amount_cents',
+            { headers: { Authorization: `Bearer ${accessToken}` } }
+          );
+
+          if (!userRes.ok) {
+            const errText = await userRes.text();
+            console.error('[PatreonOAuth] Identity fetch failed:', errText);
+            res.writeHead(500, { 'Content-Type': 'text/html' });
+            res.end('<h1>Link Failed</h1><p>Failed to retrieve Patreon identity.</p>');
+            return;
+          }
+
+          const userData = (await userRes.json()) as any;
+          const included = userData.included || [];
+
+          const campaignId = (CONFIG.PATREON_CAMPAIGN_ID || '').trim();
+          const memberResource = included.find(
+            (inc: any) =>
+              inc.type === 'member' &&
+              inc.relationships?.campaign?.data?.id === campaignId
+          );
+
+          if (!memberResource) {
+            res.writeHead(400, { 'Content-Type': 'text/html' });
+            res.end('<h1>Link Failed</h1><p>You are not currently subscribed to this campaign on Patreon.</p>');
+            return;
+          }
+
+          const patreonMemberId = memberResource.id;
+          const attrs = memberResource.attributes || {};
+          const patronStatus = attrs.patron_status ?? null;
+          const currentlyEntitledAmountCents = attrs.currently_entitled_amount_cents ?? null;
+          const tierRefs: Array<{ id: string; type: string }> =
+            memberResource.relationships?.currently_entitled_tiers?.data || [];
+          const tierIds = tierRefs.map((t) => String(t.id));
+
+          const { resolveTier, applySyncForMember } = await import('./utils/patreonRoles');
+          const tier = patronStatus === 'active_patron' ? resolveTier(tierIds) : null;
+
+          const prisma = await getPrisma();
+
+          // Upsert the PatreonMember linking their discordId to patreonMemberId
+          await prisma.patreonMember.upsert({
+            where: { patreonMemberId },
+            update: {
+              discordId: userId,
+              patronStatus,
+              tier,
+              tierAmountCents: currentlyEntitledAmountCents,
+              lastSyncedAt: new Date(),
+            },
+            create: {
+              patreonMemberId,
+              discordId: userId,
+              patronStatus,
+              tier,
+              tierAmountCents: currentlyEntitledAmountCents,
+            },
+          });
+
+          const { client } = await import('./client');
+          const syncResult = await applySyncForMember(client, {
+            id: patreonMemberId,
+            fullName: attrs.full_name || '',
+            patronStatus,
+            currentlyEntitledAmountCents,
+            tierIds,
+            discordId: userId,
+            patreonUserId: userData.data.id,
+          });
+
+          // Output a beautiful premium dark-mode success page
+          res.writeHead(200, { 'Content-Type': 'text/html' });
+          res.end(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GameGen • Account Linked</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      background: radial-gradient(circle at center, #1b2030 0%, #0d0f17 100%);
+      color: #ffffff;
+      font-family: 'Inter', sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      overflow: hidden;
+    }
+    .card {
+      background: rgba(255, 255, 255, 0.03);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 20px;
+      padding: 40px;
+      max-width: 450px;
+      width: 90%;
+      text-align: center;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+      animation: fadeIn 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .icon-container {
+      width: 80px;
+      height: 80px;
+      margin: 0 auto 24px;
+      background: radial-gradient(circle, #57F287 0%, #2f9e53 100%);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 0 30px rgba(87, 242, 135, 0.3);
+      animation: scaleIn 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+    @keyframes scaleIn {
+      from { transform: scale(0); }
+      to { transform: scale(1); }
+    }
+    .checkmark {
+      font-size: 40px;
+      color: #fff;
+    }
+    h1 {
+      margin: 0 0 12px;
+      font-size: 28px;
+      font-weight: 700;
+      background: linear-gradient(135deg, #ffffff 0%, #a5b4fc 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    p {
+      color: #94a3b8;
+      font-size: 16px;
+      line-height: 1.6;
+      margin: 0 0 30px;
+    }
+    .btn {
+      display: inline-block;
+      background: linear-gradient(135deg, #5865F2 0%, #4752c4 100%);
+      color: #ffffff;
+      text-decoration: none;
+      padding: 14px 32px;
+      border-radius: 10px;
+      font-weight: 500;
+      font-size: 16px;
+      box-shadow: 0 10px 20px rgba(88, 101, 242, 0.2);
+      transition: all 0.3s;
+    }
+    .btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 12px 24px rgba(88, 101, 242, 0.35);
+    }
+    .btn:active {
+      transform: translateY(0);
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon-container">
+      <span class="checkmark">✓</span>
+    </div>
+    <h1>Account Linked Successfully!</h1>
+    <p>Your Patreon account is now securely linked with Discord. Your bronze/silver/gold roles have been synchronized in the server.</p>
+    <a href="https://discord.com/app" class="btn">Return to Discord</a>
+  </div>
+</body>
+</html>`);
+        } catch (e) {
+          console.error('[PayloadServer] Patreon OAuth callback error', e);
+          res.writeHead(500, { 'Content-Type': 'text/html' });
+          res.end('<h1>Link Failed</h1><p>Internal Server Error during linking.</p>');
         }
         return;
       }

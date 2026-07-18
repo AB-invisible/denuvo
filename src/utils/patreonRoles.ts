@@ -66,10 +66,15 @@ function allTierRoleIds(): string[] {
 
 async function upsertPatreonMemberRow(m: PatreonApiMember, tier: PatreonTier | null): Promise<void> {
   try {
+    const existing = await (prisma as any).patreonMember.findUnique({
+      where: { patreonMemberId: m.id },
+    });
+    const discordId = m.discordId || existing?.discordId || null;
+
     await (prisma as any).patreonMember.upsert({
       where: { patreonMemberId: m.id },
       update: {
-        discordId: m.discordId,
+        discordId,
         patronStatus: m.patronStatus,
         tier,
         tierAmountCents: m.currentlyEntitledAmountCents,
@@ -77,7 +82,7 @@ async function upsertPatreonMemberRow(m: PatreonApiMember, tier: PatreonTier | n
       },
       create: {
         patreonMemberId: m.id,
-        discordId: m.discordId,
+        discordId,
         patronStatus: m.patronStatus,
         tier,
         tierAmountCents: m.currentlyEntitledAmountCents,
@@ -96,6 +101,13 @@ async function upsertPatreonMemberRow(m: PatreonApiMember, tier: PatreonTier | n
 export async function applySyncForMember(client: Client, apiMember: PatreonApiMember): Promise<PatreonSyncResult> {
   const isActivePatron = apiMember.patronStatus === 'active_patron';
   const tier = isActivePatron ? resolveTier(apiMember.tierIds) : null;
+
+  const existing = await (prisma as any).patreonMember.findUnique({
+    where: { patreonMemberId: apiMember.id },
+  });
+  if (!apiMember.discordId && existing?.discordId) {
+    apiMember.discordId = existing.discordId;
+  }
 
   await upsertPatreonMemberRow(apiMember, tier);
 
@@ -304,6 +316,14 @@ export async function runFullPatreonSync(client: Client): Promise<FullSyncSummar
 
   for (const m of members) {
     if (m.patronStatus === 'active_patron') summary.activePatrons++;
+
+    const existing = await (prisma as any).patreonMember.findUnique({
+      where: { patreonMemberId: m.id },
+    });
+    if (!m.discordId && existing?.discordId) {
+      m.discordId = existing.discordId;
+    }
+
     if (!m.discordId) {
       summary.unlinked++;
       // Still persist the row (discordId null) so /patreon list can surface it to staff.
