@@ -1,6 +1,8 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
+const publicUrl = process.env.PUBLIC_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : 'https://denuvo-production-a806.up.railway.app');
+
 export const CONFIG = {
   TOKEN: process.env.DISCORD_TOKEN || '',
   CLIENT_ID: process.env.CLIENT_ID || '',
@@ -98,5 +100,5 @@ export const CONFIG = {
   // ── Patreon OAuth (optional, for linking via bot) ──
   PATREON_CLIENT_ID: process.env.PATREON_CLIENT_ID || '',
   PATREON_CLIENT_SECRET: process.env.PATREON_CLIENT_SECRET || '',
-  PATREON_REDIRECT_URI: process.env.PATREON_REDIRECT_URI || '',
+  PATREON_REDIRECT_URI: process.env.PATREON_REDIRECT_URI || `${publicUrl}/patreon/oauth/callback`,
 };
