@@ -682,19 +682,24 @@ export function startPayloadServer(): void {
               inc.relationships?.campaign?.data?.id === campaignId
           );
 
-          if (!memberResource) {
-            res.writeHead(400, { 'Content-Type': 'text/html' });
-            res.end('<h1>Link Failed</h1><p>You are not currently subscribed to this campaign on Patreon.</p>');
-            return;
-          }
+          let patreonMemberId = '';
+          let patronStatus: string | null = null;
+          let currentlyEntitledAmountCents: number | null = null;
+          let tierIds: string[] = [];
+          let subscribed = false;
 
-          const patreonMemberId = memberResource.id;
-          const attrs = memberResource.attributes || {};
-          const patronStatus = attrs.patron_status ?? null;
-          const currentlyEntitledAmountCents = attrs.currently_entitled_amount_cents ?? null;
-          const tierRefs: Array<{ id: string; type: string }> =
-            memberResource.relationships?.currently_entitled_tiers?.data || [];
-          const tierIds = tierRefs.map((t) => String(t.id));
+          if (memberResource) {
+            patreonMemberId = memberResource.id;
+            const attrs = memberResource.attributes || {};
+            patronStatus = attrs.patron_status ?? null;
+            currentlyEntitledAmountCents = attrs.currently_entitled_amount_cents ?? null;
+            const tierRefs: Array<{ id: string; type: string }> =
+              memberResource.relationships?.currently_entitled_tiers?.data || [];
+            tierIds = tierRefs.map((t) => String(t.id));
+            subscribed = true;
+          } else {
+            patreonMemberId = `user:${userData.data.id}`;
+          }
 
           const { resolveTier, applySyncForMember } = await import('./utils/patreonRoles');
           const tier = patronStatus === 'active_patron' ? resolveTier(tierIds) : null;
@@ -706,6 +711,7 @@ export function startPayloadServer(): void {
             where: { patreonMemberId },
             update: {
               discordId: userId,
+              patreonUserId: userData.data.id,
               patronStatus,
               tier,
               tierAmountCents: currentlyEntitledAmountCents,
@@ -713,6 +719,7 @@ export function startPayloadServer(): void {
             },
             create: {
               patreonMemberId,
+              patreonUserId: userData.data.id,
               discordId: userId,
               patronStatus,
               tier,
@@ -720,16 +727,18 @@ export function startPayloadServer(): void {
             },
           });
 
-          const { client } = await import('./client');
-          const syncResult = await applySyncForMember(client, {
-            id: patreonMemberId,
-            fullName: attrs.full_name || '',
-            patronStatus,
-            currentlyEntitledAmountCents,
-            tierIds,
-            discordId: userId,
-            patreonUserId: userData.data.id,
-          });
+          if (subscribed && memberResource) {
+            const { client } = await import('./client');
+            await applySyncForMember(client, {
+              id: patreonMemberId,
+              fullName: memberResource.attributes?.full_name || '',
+              patronStatus: patronStatus as 'active_patron' | 'declined_patron' | 'former_patron' | null,
+              currentlyEntitledAmountCents,
+              tierIds,
+              discordId: userId,
+              patreonUserId: userData.data.id,
+            }).catch(console.error);
+          }
 
           // Output a beautiful premium dark-mode success page
           res.writeHead(200, { 'Content-Type': 'text/html' });
@@ -741,99 +750,239 @@ export function startPayloadServer(): void {
   <title>GameGen • Account Linked</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;700&display=swap" rel="stylesheet">
   <style>
+    :root {
+      --bg-dark: #090a0f;
+      --bg-card: rgba(17, 19, 31, 0.65);
+      --border-card: rgba(255, 255, 255, 0.07);
+      --text-main: #ffffff;
+      --text-muted: #94a3b8;
+      
+      --color-patreon: #f96854;
+      --color-discord: #5865f2;
+      --color-success: #10b981;
+      --color-warning: #f59e0b;
+    }
+
     body {
       margin: 0;
       padding: 0;
-      background: radial-gradient(circle at center, #1b2030 0%, #0d0f17 100%);
-      color: #ffffff;
-      font-family: 'Inter', sans-serif;
+      background: radial-gradient(circle at 50% 50%, #151829 0%, var(--bg-dark) 100%);
+      color: var(--text-main);
+      font-family: 'Outfit', sans-serif;
       display: flex;
       align-items: center;
       justify-content: center;
       min-height: 100vh;
       overflow: hidden;
     }
+
+    /* Ambient background glows */
+    .glow-sphere {
+      position: absolute;
+      width: 400px;
+      height: 400px;
+      border-radius: 50%;
+      filter: blur(120px);
+      opacity: 0.15;
+      z-index: 0;
+    }
+    .glow-patreon {
+      background: var(--color-patreon);
+      top: 10%;
+      left: 15%;
+      animation: drift 20s infinite alternate;
+    }
+    .glow-discord {
+      background: var(--color-discord);
+      bottom: 10%;
+      right: 15%;
+      animation: drift 25s infinite alternate-reverse;
+    }
+
+    @keyframes drift {
+      from { transform: translate(0, 0) scale(1); }
+      to { transform: translate(40px, 40px) scale(1.15); }
+    }
+
     .card {
-      background: rgba(255, 255, 255, 0.03);
-      backdrop-filter: blur(12px);
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      border-radius: 20px;
-      padding: 40px;
-      max-width: 450px;
+      background: var(--bg-card);
+      backdrop-filter: blur(25px);
+      -webkit-backdrop-filter: blur(25px);
+      border: 1px solid var(--border-card);
+      border-radius: 24px;
+      padding: 48px;
+      max-width: 480px;
       width: 90%;
       text-align: center;
-      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
-      animation: fadeIn 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+      box-shadow: 0 30px 60px rgba(0, 0, 0, 0.6), 
+                  inset 0 1px 0 rgba(255, 255, 255, 0.1);
+      z-index: 10;
+      animation: cardAppear 1s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+      opacity: 0;
+      transform: translateY(30px);
     }
-    @keyframes fadeIn {
-      from { opacity: 0; transform: translateY(20px); }
-      to { opacity: 1; transform: translateY(0); }
+
+    @keyframes cardAppear {
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
     }
-    .icon-container {
-      width: 80px;
-      height: 80px;
-      margin: 0 auto 24px;
-      background: radial-gradient(circle, #57F287 0%, #2f9e53 100%);
-      border-radius: 50%;
+
+    .icon-wrapper {
+      position: relative;
+      width: 96px;
+      height: 96px;
+      margin: 0 auto 32px;
       display: flex;
       align-items: center;
       justify-content: center;
-      box-shadow: 0 0 30px rgba(87, 242, 135, 0.3);
-      animation: scaleIn 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+      border-radius: 50%;
+      z-index: 2;
     }
-    @keyframes scaleIn {
-      from { transform: scale(0); }
-      to { transform: scale(1); }
+
+    .icon-wrapper::before {
+      content: '';
+      position: absolute;
+      inset: -8px;
+      border-radius: 50%;
+      opacity: 0.15;
+      animation: pulse 2s infinite;
     }
-    .checkmark {
-      font-size: 40px;
-      color: #fff;
+
+    /* Success Theme */
+    .theme-success .icon-wrapper {
+      background: radial-gradient(circle, #10b981 0%, #059669 100%);
+      box-shadow: 0 15px 35px rgba(16, 185, 129, 0.35);
     }
+    .theme-success .icon-wrapper::before {
+      background: var(--color-success);
+    }
+
+    /* Warning/Alert Theme */
+    .theme-warning .icon-wrapper {
+      background: radial-gradient(circle, #f59e0b 0%, #d97706 100%);
+      box-shadow: 0 15px 35px rgba(245, 158, 11, 0.35);
+    }
+    .theme-warning .icon-wrapper::before {
+      background: var(--color-warning);
+    }
+
+    @keyframes pulse {
+      0% { transform: scale(1); opacity: 0.2; }
+      50% { transform: scale(1.15); opacity: 0.05; }
+      100% { transform: scale(1); opacity: 0.2; }
+    }
+
+    .icon-svg {
+      width: 44px;
+      height: 44px;
+      fill: #ffffff;
+      animation: iconPop 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) 0.2s both;
+    }
+
+    @keyframes iconPop {
+      from { transform: scale(0); opacity: 0; }
+      to { transform: scale(1); opacity: 1; }
+    }
+
     h1 {
-      margin: 0 0 12px;
-      font-size: 28px;
+      margin: 0 0 16px;
+      font-size: 32px;
       font-weight: 700;
-      background: linear-gradient(135deg, #ffffff 0%, #a5b4fc 100%);
+      letter-spacing: -0.5px;
+      line-height: 1.25;
+      background: linear-gradient(135deg, #ffffff 0%, #cbd5e1 100%);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
     }
+
     p {
-      color: #94a3b8;
-      font-size: 16px;
+      color: var(--text-muted);
+      font-size: 17px;
       line-height: 1.6;
-      margin: 0 0 30px;
+      margin: 0 0 36px;
     }
+
+    .btn-container {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      align-items: stretch;
+    }
+
     .btn {
-      display: inline-block;
-      background: linear-gradient(135deg, #5865F2 0%, #4752c4 100%);
-      color: #ffffff;
-      text-decoration: none;
-      padding: 14px 32px;
-      border-radius: 10px;
-      font-weight: 500;
+      display: block;
+      padding: 16px 32px;
+      border-radius: 14px;
+      font-weight: 600;
       font-size: 16px;
-      box-shadow: 0 10px 20px rgba(88, 101, 242, 0.2);
-      transition: all 0.3s;
+      text-decoration: none;
+      transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+      cursor: pointer;
     }
-    .btn:hover {
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--color-discord) 0%, #4752c4 100%);
+      color: #ffffff;
+      box-shadow: 0 8px 24px rgba(88, 101, 242, 0.25);
+    }
+    .btn-primary:hover {
       transform: translateY(-2px);
-      box-shadow: 0 12px 24px rgba(88, 101, 242, 0.35);
+      box-shadow: 0 12px 30px rgba(88, 101, 242, 0.4);
     }
-    .btn:active {
-      transform: translateY(0);
+
+    .btn-patreon {
+      background: linear-gradient(135deg, var(--color-patreon) 0%, #e25845 100%);
+      color: #ffffff;
+      box-shadow: 0 8px 24px rgba(249, 104, 84, 0.25);
+    }
+    .btn-patreon:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 12px 30px rgba(249, 104, 84, 0.4);
+    }
+
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--text-muted);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text-main);
     }
   </style>
 </head>
 <body>
-  <div class="card">
-    <div class="icon-container">
-      <span class="checkmark">✓</span>
+  <div class="glow-sphere glow-patreon"></div>
+  <div class="glow-sphere glow-discord"></div>
+
+  <div class="card ${subscribed ? 'theme-success' : 'theme-warning'}">
+    <div class="icon-wrapper">
+      ${subscribed 
+        ? `<svg class="icon-svg" viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>`
+        : `<svg class="icon-svg" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>`
+      }
     </div>
-    <h1>Account Linked Successfully!</h1>
-    <p>Your Patreon account is now securely linked with Discord. Your bronze/silver/gold roles have been synchronized in the server.</p>
-    <a href="https://discord.com/app" class="btn">Return to Discord</a>
+    
+    <h1>${subscribed ? 'Account Linked!' : 'Linked (Unsubscribed)'}</h1>
+    
+    <p>
+      ${subscribed 
+        ? `Your Patreon account has been successfully linked with Discord. Your bronze/silver/gold roles have been synchronized in the server.`
+        : `Your Patreon account was linked successfully, but we couldn't find an active subscription to our campaign. Subscribe now to unlock your benefits!`
+      }
+    </p>
+
+    <div class="btn-container">
+      ${subscribed 
+        ? `<a href="https://discord.com/app" class="btn btn-primary">Return to Discord</a>`
+        : `<a href="${CONFIG.PATREON_URL || 'https://www.patreon.com'}" class="btn btn-patreon">Subscribe on Patreon</a>
+           <a href="https://discord.com/app" class="btn btn-secondary">Return to Discord</a>`
+      }
+    </div>
   </div>
 </body>
 </html>`);

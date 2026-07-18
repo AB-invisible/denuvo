@@ -635,6 +635,7 @@ model EaUsage {
 model PatreonMember {
   id              Int      @id @default(autoincrement())
   patreonMemberId String   @unique
+  patreonUserId   String?  @unique
   discordId       String?
   patronStatus    String?  // active_patron | declined_patron | former_patron | null
   tier            String?  // "bronze" | "silver" | "gold" | null (none/unmapped)

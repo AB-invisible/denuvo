@@ -66,15 +66,32 @@ function allTierRoleIds(): string[] {
 
 async function upsertPatreonMemberRow(m: PatreonApiMember, tier: PatreonTier | null): Promise<void> {
   try {
-    const existing = await (prisma as any).patreonMember.findUnique({
-      where: { patreonMemberId: m.id },
-    });
+    let existing = null;
+    if (m.patreonUserId) {
+      existing = await (prisma as any).patreonMember.findFirst({
+        where: { patreonUserId: m.patreonUserId },
+      });
+      if (existing && existing.patreonMemberId.startsWith('user:') && existing.patreonMemberId !== m.id) {
+        console.log(`[Patreon] Replacing placeholder member row ${existing.patreonMemberId} with real ID ${m.id}`);
+        await (prisma as any).patreonMember.delete({
+          where: { id: existing.id },
+        }).catch(() => {});
+      }
+    }
+
+    if (!existing) {
+      existing = await (prisma as any).patreonMember.findUnique({
+        where: { patreonMemberId: m.id },
+      });
+    }
+
     const discordId = m.discordId || existing?.discordId || null;
 
     await (prisma as any).patreonMember.upsert({
       where: { patreonMemberId: m.id },
       update: {
         discordId,
+        patreonUserId: m.patreonUserId || existing?.patreonUserId || null,
         patronStatus: m.patronStatus,
         tier,
         tierAmountCents: m.currentlyEntitledAmountCents,
@@ -82,6 +99,7 @@ async function upsertPatreonMemberRow(m: PatreonApiMember, tier: PatreonTier | n
       },
       create: {
         patreonMemberId: m.id,
+        patreonUserId: m.patreonUserId || null,
         discordId,
         patronStatus: m.patronStatus,
         tier,
@@ -102,9 +120,17 @@ export async function applySyncForMember(client: Client, apiMember: PatreonApiMe
   const isActivePatron = apiMember.patronStatus === 'active_patron';
   const tier = isActivePatron ? resolveTier(apiMember.tierIds) : null;
 
-  const existing = await (prisma as any).patreonMember.findUnique({
-    where: { patreonMemberId: apiMember.id },
-  });
+  let existing = null;
+  if (apiMember.patreonUserId) {
+    existing = await (prisma as any).patreonMember.findFirst({
+      where: { patreonUserId: apiMember.patreonUserId },
+    });
+  }
+  if (!existing) {
+    existing = await (prisma as any).patreonMember.findUnique({
+      where: { patreonMemberId: apiMember.id },
+    });
+  }
   if (!apiMember.discordId && existing?.discordId) {
     apiMember.discordId = existing.discordId;
   }
@@ -317,9 +343,17 @@ export async function runFullPatreonSync(client: Client): Promise<FullSyncSummar
   for (const m of members) {
     if (m.patronStatus === 'active_patron') summary.activePatrons++;
 
-    const existing = await (prisma as any).patreonMember.findUnique({
-      where: { patreonMemberId: m.id },
-    });
+    let existing = null;
+    if (m.patreonUserId) {
+      existing = await (prisma as any).patreonMember.findFirst({
+        where: { patreonUserId: m.patreonUserId },
+      });
+    }
+    if (!existing) {
+      existing = await (prisma as any).patreonMember.findUnique({
+        where: { patreonMemberId: m.id },
+      });
+    }
     if (!m.discordId && existing?.discordId) {
       m.discordId = existing.discordId;
     }
