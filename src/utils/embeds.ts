@@ -507,6 +507,10 @@ export function createTokenDeliveryEmbed(
       `❌ \`...\\SteamLibrary\\steamapps\\common\\${safeName}\\...\`  ← **NEVER**\n` +
       `✅ \`...\\Desktop\\Token [${safeName}]\\...\`  ← **do this**\n` +
       `━━━━━━━━━━━━━━━━━━━━━━\n` +
+      `⏳ **TIME-SENSITIVE — the token expires 30 minutes after it's generated.**\n` +
+      `Download **and** finish the install **within 30 minutes** of this message, then launch the game.\n` +
+      `Wait too long and you'll get **"token not valid"** — that just means it expired. Open a new ticket for a fresh one.\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━\n` +
       `🚀 **HOW TO ACTIVATE — 3 STEPS**\n` +
       `${step1}\n` +
       `2. Right-click the zip → **Extract All...** and pick a folder on your **Desktop**.\n` +
