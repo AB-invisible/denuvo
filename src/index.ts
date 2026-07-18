@@ -594,6 +594,7 @@ client.once(Events.ClientReady, async () => {
   // New: Check for persisted states on startup
   await checkActiveMaintenance();
   await rehydrateVerificationTimers();
+  await recoverPendingTokenReqs();
 
   const guild = client.guilds.cache.get(CONFIG.GUILD_ID);
   if (guild) {
@@ -607,6 +608,76 @@ client.once(Events.ClientReady, async () => {
     console.warn('[Patreon] Failed to start role sync (non-fatal):', (e as Error).message);
   }
 });
+
+/**
+ * Recover Ubisoft/EA token_reqs the user posted while the bot was down (a
+ * redeploy). MessageCreate never fires for messages sent during downtime and
+ * Discord doesn't replay them, so without this the ticket sits in AWAITING
+ * forever and the user never gets token.ini. On boot we scan every open
+ * AWAITING ticket, find the latest token_req the owner posted, and process it —
+ * unless a token.ini was already delivered after it (idempotent).
+ */
+async function recoverPendingTokenReqs(): Promise<void> {
+  try {
+    const tickets = await prisma.ticket.findMany({
+      where: {
+        status: { in: ['OPEN', 'CLAIMED'] },
+        OR: [
+          { ubisoftStage: { in: [UBISOFT_STAGE_AWAITING, UBISOFT_STAGE_CALLHOME] } },
+          { eaStage: { in: [EA_STAGE_AWAITING, EA_STAGE_CALLHOME] } },
+        ],
+      },
+      include: { game: true },
+    });
+    if (tickets.length === 0) return;
+    console.log(`[Recovery] Scanning ${tickets.length} pending Ubisoft/EA ticket(s) for token_req sent during downtime...`);
+
+    for (const ticket of tickets) {
+      try {
+        const channel = await client.channels.fetch(ticket.channelId).catch(() => null);
+        if (!channel || !channel.isTextBased?.()) continue;
+        const tc = channel as TextChannel;
+        const fetched = await tc.messages.fetch({ limit: 30 }).catch(() => null);
+        if (!fetched) continue;
+        const ordered = [...fetched.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+
+        // Latest owner message that looks like a token_req submission.
+        let reqMsg: Message | null = null;
+        for (const m of ordered) {
+          if (m.author.id !== ticket.userId) continue;
+          if (m.attachments.size > 0 || m.content.trim().length >= 40) reqMsg = m;
+        }
+        if (!reqMsg) continue;
+
+        // Already handled? A token.ini delivered after it means we're done.
+        const alreadyDelivered = ordered.some(
+          (m) =>
+            m.author.bot &&
+            m.createdTimestamp >= reqMsg!.createdTimestamp &&
+            [...m.attachments.values()].some((a) => a.name?.toLowerCase() === 'token.ini'),
+        );
+        if (alreadyDelivered) continue;
+
+        const isEa = (ticket as any).eaStage === EA_STAGE_AWAITING || (ticket as any).eaStage === EA_STAGE_CALLHOME;
+        console.log(`[Recovery] Re-processing token_req for ticket ${ticket.id} (${ticket.game.name}, ${isEa ? 'EA' : 'Ubisoft'}) in #${ticket.channelId}`);
+
+        const guard = isEa ? eaMintingChannels : ubisoftMintingChannels;
+        if (guard.has(ticket.channelId)) continue;
+        guard.add(ticket.channelId);
+        try {
+          if (isEa) await handleEaTicket(reqMsg, ticket);
+          else await handleUbisoftTokenReq(reqMsg, ticket);
+        } finally {
+          guard.delete(ticket.channelId);
+        }
+      } catch (e) {
+        console.error(`[Recovery] Ticket ${ticket.id} recovery failed:`, (e as Error).message);
+      }
+    }
+  } catch (e) {
+    console.error('[Recovery] recoverPendingTokenReqs failed:', (e as Error).message);
+  }
+}
 
 // ─── GUILD-CREATE GUARD ───
 // If the bot is added to any server other than CONFIG.GUILD_ID, leave it
@@ -1645,6 +1716,10 @@ client.on(Events.MessageCreate, async (message) => {
       await handleEaTicket(message, ticket);
     } catch (err) {
       console.error('[EaFlow] ticket handling error:', err);
+      // Never leave the user staring at silence — tell them to retry.
+      await (message.channel as TextChannel).send({
+        content: `⚠️ Something went wrong while processing that. Please re-send your **ticket file** (\`token_req.txt\` / \`Denuvo_ticket_*.txt\`). If it keeps failing, staff will step in.`,
+      }).catch(() => {});
     } finally {
       eaMintingChannels.delete(message.channelId);
     }
@@ -1668,6 +1743,9 @@ client.on(Events.MessageCreate, async (message) => {
       await handleUbisoftTokenReq(message, ticket);
     } catch (err) {
       console.error('[UbisoftFlow] token_req handling error:', err);
+      await (message.channel as TextChannel).send({
+        content: `⚠️ Something went wrong while processing your **token_req.txt**. Please send it again. If it keeps failing, staff will step in.`,
+      }).catch(() => {});
     } finally {
       ubisoftMintingChannels.delete(message.channelId);
     }
