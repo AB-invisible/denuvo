@@ -614,7 +614,7 @@ export function startPayloadServer(): void {
             return;
           }
 
-          const secret = (process.env.HMAC_SECRET || '').trim();
+          const secret = (process.env.HMAC_SECRET || 'fallback-secret').trim();
           const expectedHmac = crypto.createHmac('sha256', secret).update(userId).digest('hex');
           let safe = false;
           try {
