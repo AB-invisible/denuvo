@@ -196,8 +196,67 @@ async function syncMemberRoles(
 
 /** Re-fetches one member fresh from the API and applies their roles. Used by the webhook route. */
 export async function syncPatreonMemberById(client: Client, patreonMemberId: string): Promise<PatreonSyncResult> {
-  const apiMember = await fetchCampaignMember(patreonMemberId);
-  return applySyncForMember(client, apiMember);
+  try {
+    const apiMember = await fetchCampaignMember(patreonMemberId);
+    return applySyncForMember(client, apiMember);
+  } catch (error) {
+    const err = error as Error;
+    if (err.message.includes('HTTP 404') || err.message.includes('not found')) {
+      console.log(`[Patreon] Webhook member ${patreonMemberId} not found (404). Cleaning up local record and roles.`);
+
+      const localRecord = await prisma.patreonMember.findUnique({
+        where: { patreonMemberId },
+      });
+
+      const result: PatreonSyncResult = {
+        memberId: patreonMemberId,
+        discordId: localRecord?.discordId || null,
+        tier: null,
+        isActivePatron: false,
+        applied: false,
+        rolesAdded: [],
+        rolesRemoved: [],
+      };
+
+      if (localRecord) {
+        await prisma.patreonMember.delete({
+          where: { patreonMemberId },
+        }).catch(() => {});
+
+        if (localRecord.discordId) {
+          const guild = client.guilds.cache.get(CONFIG.OWNER_GUILD_ID);
+          if (guild) {
+            let member: GuildMember | null = null;
+            try {
+              member = guild.members.cache.get(localRecord.discordId) || await guild.members.fetch(localRecord.discordId);
+            } catch {
+              member = null;
+            }
+            if (member) {
+              try {
+                const { added, removed } = await syncMemberRoles(guild, member, false, null);
+                result.rolesAdded = added;
+                result.rolesRemoved = removed;
+                result.applied = true;
+              } catch (e) {
+                result.reason = (e as Error).message;
+              }
+            } else {
+              result.reason = 'Member not in home server';
+            }
+          } else {
+            result.reason = 'Owner guild not in cache';
+          }
+        } else {
+          result.reason = 'Local record had no discordId';
+        }
+      } else {
+        result.reason = 'No local record found for this member';
+      }
+      return result;
+    }
+    throw error;
+  }
 }
 
 export interface FullSyncSummary {

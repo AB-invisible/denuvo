@@ -251,17 +251,54 @@ export async function createTicket(interaction: StringSelectMenuInteraction, sel
           // Let the ticket proceed — skip the out-of-stock gate below
           // (the reserved token doesn't come from public stock)
         } else {
+          const userTier = await getTierForGuild(member, ticketGuildId);
+          const isGold = userTier === 'Gold';
+
           const existing = await tx.waitlist.findUnique({
             where: { userId_gameId: { userId: interaction.user.id, gameId: game.id } },
           });
           if (existing) {
+            if (isGold) {
+              const oldestEntry = await tx.waitlist.findFirst({
+                where: { gameId: game.id, NOT: { userId: interaction.user.id } },
+                orderBy: { createdAt: 'asc' },
+              });
+              if (oldestEntry && existing.createdAt > oldestEntry.createdAt) {
+                const newCreatedAt = new Date(oldestEntry.createdAt.getTime() - 1000);
+                await tx.waitlist.update({
+                  where: { id: existing.id },
+                  data: { createdAt: newCreatedAt },
+                });
+                existing.createdAt = newCreatedAt;
+              }
+            }
             const position = await tx.waitlist.count({
               where: { gameId: game.id, createdAt: { lte: existing.createdAt } },
             });
             return { error: `⏳ **Out of Stock:** You're already on the waitlist for **${gameName}** at position **#${position}**. You'll be DM'd when your slot is ready.` };
           }
-          await tx.waitlist.create({ data: { userId: interaction.user.id, gameId: game.id } });
-          const position = await tx.waitlist.count({ where: { gameId: game.id } });
+
+          let createdAt = new Date();
+          if (isGold) {
+            const oldestEntry = await tx.waitlist.findFirst({
+              where: { gameId: game.id },
+              orderBy: { createdAt: 'asc' },
+            });
+            if (oldestEntry) {
+              createdAt = new Date(oldestEntry.createdAt.getTime() - 1000);
+            }
+          }
+
+          await tx.waitlist.create({
+            data: {
+              userId: interaction.user.id,
+              gameId: game.id,
+              createdAt,
+            },
+          });
+          const position = await tx.waitlist.count({
+            where: { gameId: game.id, createdAt: { lte: createdAt } },
+          });
           return { error: `⏳ **Out of Stock:** You've been added to the waitlist for **${gameName}** at position **#${position}**. You'll receive a DM when your slot is ready!` };
         }
       }

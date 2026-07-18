@@ -1,4 +1,4 @@
-import { EmbedBuilder } from 'discord.js';
+import { EmbedBuilder, GuildMember } from 'discord.js';
 import prisma from '../lib/prisma';
 import { refreshAllPanels } from '../utils/panelManager';
 
@@ -35,7 +35,30 @@ export async function execute(interaction: any): Promise<void> {
     });
   }
 
+  const member = interaction.member as GuildMember;
+  const guildId = interaction.guildId;
+  let isGold = false;
+  if (member && guildId) {
+    const { getTierForGuild } = await import('../utils/permissions');
+    const userTier = await getTierForGuild(member, guildId);
+    isGold = userTier === 'Gold';
+  }
+
   const lines = await Promise.all(entries.map(async (e) => {
+    if (isGold) {
+      const oldestEntry = await prisma.waitlist.findFirst({
+        where: { gameId: e.gameId, NOT: { userId: interaction.user.id } },
+        orderBy: { createdAt: 'asc' },
+      });
+      if (oldestEntry && e.createdAt > oldestEntry.createdAt) {
+        const newCreatedAt = new Date(oldestEntry.createdAt.getTime() - 1000);
+        await prisma.waitlist.update({
+          where: { id: e.id },
+          data: { createdAt: newCreatedAt },
+        });
+        e.createdAt = newCreatedAt;
+      }
+    }
     const position = await prisma.waitlist.count({
       where: { gameId: e.gameId, createdAt: { lte: e.createdAt } },
     });
