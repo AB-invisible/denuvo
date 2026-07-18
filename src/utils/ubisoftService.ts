@@ -255,15 +255,43 @@ function mapResult(
 }
 
 /**
- * Mint a Ubisoft token from a `token_req` ticket.
+ * Which of a game's two Ubisoft builds the account actually owns, learned at
+ * runtime and persisted in Metadata. A Denuvo token_req is single-use, so we
+ * must NOT spend it on a build the account doesn't own — try the known-owned
+ * one first. Keyed by the configured primary appId (stable per game).
+ */
+async function getCachedOwnedAppId(primaryAppId: number): Promise<number | null> {
+  try {
+    const m = await prisma.metadata.findUnique({ where: { key: `ubiOwnedAppId:${primaryAppId}` } });
+    const v = m ? parseInt(m.value, 10) : NaN;
+    return Number.isFinite(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+async function cacheOwnedAppId(primaryAppId: number, ownedAppId: number): Promise<void> {
+  try {
+    await prisma.metadata.upsert({
+      where: { key: `ubiOwnedAppId:${primaryAppId}` },
+      update: { value: String(ownedAppId) },
+      create: { key: `ubiOwnedAppId:${primaryAppId}`, value: String(ownedAppId) },
+    });
+  } catch {
+    /* non-fatal */
+  }
+}
+
+/**
+ * Mint a Ubisoft token from a single-use `token_req` ticket.
  *
- * Tries, in order:
- *   1. Each BYO UbisoftAccount with daily quota (primary appId, then alt).
- *   2. The service's default env account (creds override omitted).
- *
- * `ExceededActivations` on an account is treated as "this account is spent
- * today" — we mark full usage and rotate. `NotOwned` on the primary appId
- * triggers the alt appId on the same account before rotating.
+ * A Denuvo token_req can be submitted to Ubisoft exactly ONCE — the moment it
+ * hits an owned build it is spent. So we:
+ *   1. Try the known-owned appId first (cached), never wasting the ticket on a
+ *      build the account doesn't own.
+ *   2. Rotate to the next account ONLY when every appId came back NotOwned
+ *      (ownership is checked before the ticket is spent, so it's still good).
+ *      Any other result means the ticket is now spent — we stop and report it.
  */
 export async function mintUbisoftToken(
   ubisoftAppId: number,
@@ -286,7 +314,14 @@ export async function mintUbisoftToken(
     };
   }
 
-  const appIds = altAppId && altAppId !== ubisoftAppId ? [ubisoftAppId, altAppId] : [ubisoftAppId];
+  const configured = altAppId && altAppId !== ubisoftAppId ? [ubisoftAppId, altAppId] : [ubisoftAppId];
+  // Known-owned build first — never spend the single-use ticket on a build the
+  // account doesn't own.
+  const owned = await getCachedOwnedAppId(ubisoftAppId);
+  const appIds = owned && configured.includes(owned)
+    ? [owned, ...configured.filter((a) => a !== owned)]
+    : configured;
+
   const ownerGuildKey = !guildId || guildId === CONFIG.OWNER_GUILD_ID ? '' : guildId;
 
   const accounts = await getAvailableUbisoftAccounts(ownerGuildKey, ubisoftAppId);
@@ -299,12 +334,10 @@ export async function mintUbisoftToken(
     { id: null, creds: null },
   ];
 
-  let anyAccountSeen = accounts.length > 0;
-  let allExceeded = anyAccountSeen; // only meaningful if we had accounts
   let lastFailure: UbisoftMintFailure | null = null;
 
   for (const attempt of attempts) {
-    let sawExceededOnThisAccount = false;
+    let ticketSpent = false;
 
     for (const appId of appIds) {
       let resp;
@@ -312,56 +345,55 @@ export async function mintUbisoftToken(
         resp = await callService(appId, ticket, attempt.creds);
       } catch (e) {
         lastFailure = { ok: false, code: 'ServiceUnavailable', error: (e as Error).message };
-        continue;
+        break; // couldn't reach the service — the ticket likely wasn't spent; try next account
       }
 
       const result = mapResult(resp.status, resp.body, attempt.id, appId);
       if (result.ok) {
         await recordUbisoftMintUsage(attempt.id, result.usedAppId);
+        await cacheOwnedAppId(ubisoftAppId, result.usedAppId); // learn the owned build
         return result;
       }
 
       lastFailure = { ...result, poolQuotaAtStart };
+      console.warn(
+        `[ubisoftService] mint failed appId=${appId} acct=${attempt.id ?? 'env'} code=${result.code} — ${(result.logs || result.error || '').slice(-220).replace(/\s+/g, ' ')}`,
+      );
 
-      // NotOwned on the primary → try the alt appId on the SAME account.
-      if (result.code === 'NotOwned') continue;
-
-      // Daily cap — try the alternate build before giving up on this account.
-      // Magic files are Steam-based; the wrong AppID can burn activations or
-      // return a misleading limit error on the native build ID.
-      if (result.code === 'ExceededActivations') {
-        sawExceededOnThisAccount = true;
-        const appIdx = appIds.indexOf(appId);
-        if (appIdx >= 0 && appIdx < appIds.length - 1) continue;
-        if (attempt.id) await markAccountExhaustedToday(attempt.id, appId);
-        else await markEnvPlatformExhaustedToday('ubisoft', appId);
-        break;
+      // NotOwned: ownership is checked BEFORE the ticket is spent, so it's still
+      // good. In a 2-build setup the other build is the owned one — remember it
+      // and try it.
+      if (result.code === 'NotOwned') {
+        const other = configured.find((a) => a !== appId);
+        if (other) await cacheOwnedAppId(ubisoftAppId, other);
+        continue;
       }
 
-      // LoginFailed / InvalidRequest / Failure / Timeout → bump failure +
-      // rotate. InvalidRequest is likely a bad ticket, but another account
-      // won't fix that; still, rotating is cheap and safe.
-      if (attempt.id) await recordUbisoftFailure(attempt.id);
+      // Any other result: the token_req was submitted to an OWNED build and is
+      // now SPENT (single-use). Re-sending it — alt appId or another account —
+      // just dies on a used ticket and can burn extra activations. Stop.
+      ticketSpent = true;
+      if (result.code === 'ExceededActivations') {
+        if (attempt.id) await markAccountExhaustedToday(attempt.id, appId);
+        else await markEnvPlatformExhaustedToday('ubisoft', appId);
+      } else if (attempt.id) {
+        await recordUbisoftFailure(attempt.id);
+      }
       break;
     }
 
-    if (attempt.id && !sawExceededOnThisAccount) allExceeded = false;
-  }
-
-  if (allExceeded && anyAccountSeen) {
-    return {
-      ok: false,
-      code: 'ExceededActivations',
-      error: 'All Ubisoft accounts have hit their daily activation cap.',
-      exhausted: true,
-      poolQuotaAtStart,
-    };
+    // Only move to the next account when the ticket is still unspent (every
+    // appId came back NotOwned — this account owns none of the builds).
+    if (ticketSpent) break;
   }
 
   // A login failure means Ubisoft is rejecting our sign-in (rate-limit / creds /
   // device trust). Trip the cooldown so we stop hammering until it recovers.
   if (lastFailure?.code === 'LoginFailed') tripUbisoftLoginCooldown();
 
+  if (lastFailure?.code === 'ExceededActivations') {
+    return { ...lastFailure, exhausted: true, poolQuotaAtStart };
+  }
   if (lastFailure) return { ...lastFailure, poolQuotaAtStart };
   return { ok: false, code: 'Failure', error: 'no attempt produced a result', poolQuotaAtStart };
 }
