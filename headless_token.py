@@ -1406,6 +1406,44 @@ def get_encrypted_ticket_headless(app_id, steam_login, steam_password, guard_cod
         log(f"[LICENSE-DEBUG] diagnostic failed (non-fatal): {_e}")
     # ───────────────────────────────────────────────────────────────────────
 
+    # ── OWNERSHIP-TICKET PROBE (temporary) ─────────────────────────────────
+    # The ENCRYPTED app ticket embeds a signed AppOwnershipTicket — that exact
+    # blob is what Denuvo decrypts and checks. Fetch the PLAIN (decodable) app
+    # ownership ticket to see whether Steam actually SIGNS ownership of this app
+    # to this account, or refuses because it's only BORROWED (family share).
+    # Layout: u32 outerLen | u32 version | u64 steamid | u32 appid | u32 extIP
+    #         | u32 intIP | u32 flags | u32 issueTime | u16 numLicenses ...
+    try:
+        import struct as _st
+        _ot = client.get_app_ticket(int(app_id))
+        _eres = getattr(_ot, "eresult", None)
+        _tk = getattr(_ot, "ticket", b"") or b""
+        log(f"[OWNERSHIP-DEBUG] get_app_ticket({app_id}) eresult={_eres} ticket_len={len(_tk)}")
+        if _tk:
+            log(f"[OWNERSHIP-DEBUG] hex[0:48]={_tk[:48].hex()}")
+        if _tk and len(_tk) >= 20:
+            try:
+                _outer = _st.unpack_from("<I", _tk, 0)[0]
+                _ver = _st.unpack_from("<I", _tk, 4)[0]
+                _sid = _st.unpack_from("<Q", _tk, 8)[0]
+                _aid = _st.unpack_from("<I", _tk, 16)[0]
+                _iss = _st.unpack_from("<I", _tk, 32)[0] if len(_tk) >= 36 else 0
+                log(f"[OWNERSHIP-DEBUG] decoded ver={_ver} steamid={_sid} appid_in_ticket={_aid} "
+                    f"issueTime={_iss} (target appid {app_id}, my steamid {steam_id})")
+                if _aid == int(app_id):
+                    log("[OWNERSHIP-DEBUG] MATCH -> Steam SIGNS ownership of this app to this account "
+                        "(ticket carries valid ownership; problem is NOT the ticket)")
+                else:
+                    log("[OWNERSHIP-DEBUG] MISMATCH -> signed appid != target; ownership not attributed here")
+            except Exception as _e:
+                log(f"[OWNERSHIP-DEBUG] decode err (non-fatal): {_e}")
+        elif not _tk:
+            log("[OWNERSHIP-DEBUG] EMPTY ticket -> Steam REFUSED to sign an ownership ticket for this "
+                "borrowed app (family share has no signable ownership) -> encrypted ticket is hollow")
+    except Exception as _e:
+        log(f"[OWNERSHIP-DEBUG] get_app_ticket failed (non-fatal): {_e}")
+    # ───────────────────────────────────────────────────────────────────────
+
     # Request encrypted app ticket
     log(f"Steam: requesting encrypted app ticket for AppID {app_id}...")
     try:
