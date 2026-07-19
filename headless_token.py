@@ -1357,6 +1357,40 @@ def get_encrypted_ticket_headless(app_id, steam_login, steam_password, guard_cod
     else:
         log("Steam: no refresh_token exposed by this library version (cached creds will still help)")
 
+    # ── LICENSE DIAGNOSTIC (temporary) ─────────────────────────────────────
+    # Does this HEADLESS session actually see a license for the app — including
+    # a new account-based Steam Families share? If a family-shared game shows
+    # up here, its encrypted app ticket carries ownership and Denuvo accepts it.
+    # If it does NOT show up, the share isn't reachable headless (ValvePython
+    # doesn't pull the family library) and that's our answer. Never fatal.
+    try:
+        _lic = dict(getattr(client, "licenses", {}) or {})
+        _pkg_ids = [int(p) for p in _lic.keys()]
+        log(f"[LICENSE-DEBUG] account {steam_id}: {len(_pkg_ids)} license package(s)")
+        log(f"[LICENSE-DEBUG] package ids: {_pkg_ids[:80]}")
+        _target = int(app_id)
+        _found_pkg = None
+        if _pkg_ids:
+            try:
+                _pinfo = client.get_product_info(packages=_pkg_ids, timeout=30) or {}
+                for _pid, _pdata in (_pinfo.get("packages", {}) or {}).items():
+                    _appids = (_pdata or {}).get("appids", {}) or {}
+                    _vals = _appids.values() if hasattr(_appids, "values") else _appids
+                    if _target in [int(a) for a in _vals if str(a).isdigit()]:
+                        _found_pkg = _pid
+                        break
+            except Exception as _e:
+                log(f"[LICENSE-DEBUG] package->appid resolve error (non-fatal): {_e}")
+        if _found_pkg is not None:
+            log(f"[LICENSE-DEBUG] RESULT: app {_target} IS licensed via package {_found_pkg} "
+                f"— owned or family-shared & reachable headless -> ticket should be VALID")
+        else:
+            log(f"[LICENSE-DEBUG] RESULT: app {_target} NOT in any license package on this "
+                f"headless session -> family share NOT reachable headless (or account doesn't own it)")
+    except Exception as _e:
+        log(f"[LICENSE-DEBUG] diagnostic failed (non-fatal): {_e}")
+    # ───────────────────────────────────────────────────────────────────────
+
     # Request encrypted app ticket
     log(f"Steam: requesting encrypted app ticket for AppID {app_id}...")
     try:
