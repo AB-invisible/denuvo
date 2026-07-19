@@ -1357,36 +1357,51 @@ def get_encrypted_ticket_headless(app_id, steam_login, steam_password, guard_cod
     else:
         log("Steam: no refresh_token exposed by this library version (cached creds will still help)")
 
-    # ── LICENSE DIAGNOSTIC (temporary) ─────────────────────────────────────
-    # Does this HEADLESS session actually see a license for the app — including
-    # a new account-based Steam Families share? If a family-shared game shows
-    # up here, its encrypted app ticket carries ownership and Denuvo accepts it.
-    # If it does NOT show up, the share isn't reachable headless (ValvePython
-    # doesn't pull the family library) and that's our answer. Never fatal.
+    # ── LICENSE DIAGNOSTIC v2 (temporary) ──────────────────────────────────
+    # The license list arrives ASYNC after logon; the raw ClientLogon path
+    # returns before it lands, so v1 read 0. Wait for it, then dump each license
+    # incl. owner_id — a family-shared game is owned by ANOTHER account, so its
+    # owner_id != our account id. Tells us if the shared game is visible headless
+    # as a license and whether it's flagged shared. Never fatal.
     try:
+        from steam.enums.emsg import EMsg as _EMsg
+        if not getattr(client, "licenses", None):
+            log("[LICENSE-DEBUG] licenses empty right after login — waiting for ClientLicenseList...")
+            client.wait_event(_EMsg.ClientLicenseList, timeout=12)
+    except Exception as _e:
+        log(f"[LICENSE-DEBUG] wait license list err (non-fatal): {_e}")
+    try:
+        _my_acc = int(getattr(client.steam_id, "account_id", 0))
         _lic = dict(getattr(client, "licenses", {}) or {})
         _pkg_ids = [int(p) for p in _lic.keys()]
-        log(f"[LICENSE-DEBUG] account {steam_id}: {len(_pkg_ids)} license package(s)")
-        log(f"[LICENSE-DEBUG] package ids: {_pkg_ids[:80]}")
+        log(f"[LICENSE-DEBUG] account {steam_id} (accid {_my_acc}): {len(_pkg_ids)} license(s)")
+        log(f"[LICENSE-DEBUG] pkg ids (first 80): {_pkg_ids[:80]}")
+        _shared = []
+        for _pid, _l in _lic.items():
+            _owner = getattr(_l, "owner_id", None)
+            if _owner is not None and int(_owner) != _my_acc:
+                _shared.append((int(_pid), int(_owner)))
+        log(f"[LICENSE-DEBUG] family-shared pkgs (owner!=me): {_shared[:40]}")
         _target = int(app_id)
-        _found_pkg = None
+        _found = None
         if _pkg_ids:
             try:
-                _pinfo = client.get_product_info(packages=_pkg_ids, timeout=30) or {}
-                for _pid, _pdata in (_pinfo.get("packages", {}) or {}).items():
-                    _appids = (_pdata or {}).get("appids", {}) or {}
-                    _vals = _appids.values() if hasattr(_appids, "values") else _appids
+                _pi = client.get_product_info(packages=_pkg_ids, timeout=30) or {}
+                for _pid, _pd in (_pi.get("packages", {}) or {}).items():
+                    _ap = (_pd or {}).get("appids", {}) or {}
+                    _vals = _ap.values() if hasattr(_ap, "values") else _ap
                     if _target in [int(a) for a in _vals if str(a).isdigit()]:
-                        _found_pkg = _pid
+                        _found = int(_pid)
                         break
             except Exception as _e:
-                log(f"[LICENSE-DEBUG] package->appid resolve error (non-fatal): {_e}")
-        if _found_pkg is not None:
-            log(f"[LICENSE-DEBUG] RESULT: app {_target} IS licensed via package {_found_pkg} "
-                f"— owned or family-shared & reachable headless -> ticket should be VALID")
+                log(f"[LICENSE-DEBUG] pkg resolve err (non-fatal): {_e}")
+        if _found is not None:
+            _is_shared = any(p == _found for p, _o in _shared)
+            log(f"[LICENSE-DEBUG] RESULT: app {_target} licensed via pkg {_found}"
+                f"{' (FAMILY-SHARED)' if _is_shared else ' (OWNED)'} -> reachable headless")
         else:
-            log(f"[LICENSE-DEBUG] RESULT: app {_target} NOT in any license package on this "
-                f"headless session -> family share NOT reachable headless (or account doesn't own it)")
+            log(f"[LICENSE-DEBUG] RESULT: app {_target} NOT in any of the {len(_pkg_ids)} license "
+                f"pkg(s) -> family share is NOT a headless license (ticket has no ownership)")
     except Exception as _e:
         log(f"[LICENSE-DEBUG] diagnostic failed (non-fatal): {_e}")
     # ───────────────────────────────────────────────────────────────────────
