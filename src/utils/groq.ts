@@ -114,8 +114,11 @@ ANSWER: [YES or NO]`,
       ],
       // Model can be overridden via env var if Groq deprecates the default.
       // List of models: https://console.groq.com/docs/models
-      model: process.env.GROQ_MODEL || 'meta-llama/llama-4-scout-17b-16e-instruct',
-      temperature: 0.1, // Low temperature for higher consistency
+      model: process.env.GROQ_MODEL || 'qwen/qwen3.6-27b',
+      temperature: 0.6,
+      max_completion_tokens: 2048,
+      top_p: 0.95,
+      reasoning_effort: 'default',
       }),
       new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('Groq verification timed out')), GROQ_TIMEOUT_MS + 5_000),
