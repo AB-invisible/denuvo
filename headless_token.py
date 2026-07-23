@@ -1447,6 +1447,12 @@ def get_encrypted_ticket_headless(app_id, steam_login, steam_password, guard_cod
     # Request encrypted app ticket
     log(f"Steam: requesting encrypted app ticket for AppID {app_id}...")
     try:
+        # For Family Shared games, we must tell Steam we are "playing" the game 
+        # to acquire the temporary license lease before requesting the ticket.
+        client.games_played([int(app_id)])
+        import time
+        time.sleep(1.5)
+        
         resp = client.get_encrypted_app_ticket(app_id, userdata=b'')
 
         if not resp:
