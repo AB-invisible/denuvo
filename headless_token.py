@@ -17,6 +17,17 @@ import sys, os, json, shutil, re, time, random, base64, struct, hashlib, hmac
 import requests
 from pathlib import Path
 
+# Windows consoles default to cp1252, which can't encode the Unicode glyphs
+# (→, —, ◇, …) used in log lines — that raises UnicodeEncodeError inside log()
+# and kills gen mid-run. Force UTF-8 on stdout/stderr (no-op on Linux, which is
+# already UTF-8). errors="replace" is a last-resort guard so logging can never
+# crash the generator again.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # ─── CONFIG ───────────────────────────────────────
 # Templates are CONSULTED when present (the installer's capture webhook
 # grows _Template/ over time for troubleshooting), but every game without
