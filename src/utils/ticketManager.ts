@@ -23,6 +23,9 @@ import { logAction } from './logging';
 import { refreshAllPanels } from './panelManager';
 import { trackTicketChannel, untrackTicketChannel } from './ticketChannelCache';
 import { createVerificationPromptEmbed, createTicketSuccessEmbed } from './embeds';
+
+/** Gateway can redeliver the same interaction after reconnect — skip duplicates. */
+const createTicketHandled = new Set<string>();
 import { getEstimatedWaitTime } from './stats';
 import { isStaff, getTier, getTierForGuild } from './permissions';
 import { canBypassQueue, checkQueueAccess, removeFromQueue } from './queueManager';
@@ -36,6 +39,28 @@ import { consumeEaPoolSlot } from './eaService';
 import { UBISOFT_STAGE_DONE } from './ubisoftFlow';
 import { EA_STAGE_DONE } from './eaFlow';
 import { isUserBlacklisted, BLACKLIST_TICKET_MESSAGE } from './blacklistManager';
+
+async function getCooldownRejection(userId: string, guildId: string): Promise<string | null> {
+  const cooldown = await prisma.cooldown.findUnique({
+    where: { userId_guildId: { userId, guildId } },
+  });
+  if (!cooldown || cooldown.until <= new Date()) return null;
+
+  const hoursLeft = (cooldown.until.getTime() - Date.now()) / (1000 * 60 * 60);
+  if (hoursLeft > 168) {
+    return '🚨 **Access Revoked:** Your activation privileges have been permanently terminated due to multiple **failed denuvo checks**.';
+  }
+  const exp = Math.floor(cooldown.until.getTime() / 1000);
+  return `❌ **Security Cooldown Active:** You can open a new session <t:${exp}:R>.`;
+}
+
+function isBenignTicketInteractionError(err: Error & { code?: number }): boolean {
+  const detail = err?.message || String(err);
+  return err?.code === 40060
+    || err?.code === 10062
+    || detail.includes('already been acknowledged')
+    || detail.includes('Unknown interaction');
+}
 
 // Note: The Maps below now only store active timers to handle timeouts.
 // All stateful metadata (retries, processing, vouches) is persisted in Prisma for durability across reboots.
@@ -73,22 +98,28 @@ export async function createTicket(interaction: StringSelectMenuInteraction, sel
   let gameName = selectedValue;
   try {
     // ─── Replay guard ──────────────────────────────────────────
-    // Discord can re-deliver the same interactionCreate event when the
-    // bot gateway disconnects + resumes (which happens on every Railway
-    // redeploy). The first copy already deferred and created the
-    // ticket; the replay would call deferReply again and throw error
-    // 40060 ("Interaction has already been acknowledged"), confusing
-    // the staff log into thinking the user couldn't open a ticket when
-    // they actually did. Skip silently if the interaction is already
-    // owned by an earlier handler.
-    if (interaction.deferred || interaction.replied) {
-      console.warn(`[createTicket] Replay of interaction ${interaction.id} ignored (already acknowledged).`);
+    // Discord can redeliver the same interactionCreate after gateway
+    // reconnect. index.ts may defer early — that is NOT a replay.
+    if (createTicketHandled.has(interaction.id)) {
+      console.warn(`[createTicket] Duplicate delivery of ${interaction.id} ignored.`);
       return;
     }
+    createTicketHandled.add(interaction.id);
+    setTimeout(() => createTicketHandled.delete(interaction.id), 5 * 60 * 1000);
 
-    await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+    if (!interaction.deferred && !interaction.replied) {
+      await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+    }
     const guild = interaction.guild;
     if (!guild) return;
+
+    const ticketGuildId = interaction.guildId || '';
+
+    const cooldownMsg = await getCooldownRejection(interaction.user.id, ticketGuildId);
+    if (cooldownMsg) {
+      await interaction.editReply({ content: cooldownMsg }).catch(() => {});
+      return;
+    }
 
     const gameRecord = await resolveGameFromSelectValue(selectedValue);
     if (!gameRecord) {
@@ -98,7 +129,6 @@ export async function createTicket(interaction: StringSelectMenuInteraction, sel
     }
     gameName = gameRecord.name;
 
-    const ticketGuildId = interaction.guildId || '';
     if (await isUserBlacklisted(interaction.user.id, ticketGuildId)) {
       return interaction.editReply({ content: BLACKLIST_TICKET_MESSAGE });
     }
@@ -334,7 +364,7 @@ export async function createTicket(interaction: StringSelectMenuInteraction, sel
     });
 
     if ('error' in result) {
-      await interaction.editReply({ content: result.error });
+      await interaction.editReply({ content: result.error }).catch(() => {});
       if (typeof result.error === 'string' && result.error.includes('waitlist')) {
         await refreshAllPanels();
       }
@@ -473,8 +503,8 @@ export async function createTicket(interaction: StringSelectMenuInteraction, sel
     // FIRST copy of the interaction succeeded, so there's nothing useful
     // to surface to staff. Don't spam the log channel with these.
     const isReplay = err?.code === 40060 || detail.includes('already been acknowledged');
-    if (isReplay) {
-      console.warn(`[createTicket] Interaction replay swallowed (40060) for ${interaction.id}.`);
+    if (isReplay || isBenignTicketInteractionError(err)) {
+      console.warn(`[createTicket] Benign interaction error swallowed for ${interaction.id}: ${detail}`);
       return;
     }
 
