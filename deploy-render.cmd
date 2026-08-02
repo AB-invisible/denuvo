@@ -31,7 +31,7 @@ if errorlevel 1 (
   echo   1. Create API key: https://dashboard.render.com/u/settings#api-keys
   echo   2. Add RENDER_API_KEY=rnd_... to .env
   echo   3. Open https://dashboard.render.com/blueprint/new
-  echo   4. Connect GitHub repo TheMich157/denuvo and apply render.yaml
+  echo   4. Connect GitHub repo AB-invisible/denuvo and apply render.yaml
   echo   5. Paste values from dist\render-env.txt when prompted
   echo   6. Run: npm run render:setup
 )

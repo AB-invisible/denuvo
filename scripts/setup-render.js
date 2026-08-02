@@ -126,6 +126,20 @@ async function listServices() {
   return json || [];
 }
 
+async function findPostgresDb(name) {
+  const json = await api('GET', '/postgres?limit=100');
+  const rows = json || [];
+  return rows.find((r) => r.postgres?.name === name)?.postgres
+    || rows.find((r) => r.name === name);
+}
+
+async function resolveDatabaseUrl() {
+  const db = await findPostgresDb('denuvo-db');
+  if (!db?.id) return null;
+  const info = await api('GET', `/postgres/${db.id}/connection-info`);
+  return info?.internalConnectionString || info?.externalConnectionString || null;
+}
+
 async function findService(name) {
   const services = await listServices();
   return services.find((s) => s.service?.name === name || s.name === name)?.service
@@ -135,17 +149,23 @@ async function findService(name) {
 
 async function patchServiceEnv(serviceId, envVars) {
   const payload = envVars.map(({ key, value }) => ({ key, value }));
-  return api('PATCH', `/services/${serviceId}/env-vars`, payload);
+  return api('PUT', `/services/${serviceId}/env-vars`, payload);
 }
 
 async function triggerDeploy(serviceId) {
-  return api('POST', `/services/${serviceId}/deploys`, { clearCache: false });
+  return api('POST', `/services/${serviceId}/deploys`, {});
 }
 
 async function main() {
   console.log('[setup-render] Reading local .env...');
   const localEnv = cloudifyLocalUrls(parseEnvFile(path.join(ROOT, '.env')));
   const envVars = ENV_KEYS.filter((k) => localEnv[k]).map((k) => ({ key: k, value: localEnv[k] }));
+  envVars.push({ key: 'NODE_ENV', value: 'production' });
+
+  const databaseUrl = await resolveDatabaseUrl();
+  if (databaseUrl) {
+    envVars.push({ key: 'DATABASE_URL', value: databaseUrl });
+  }
 
   if (!localEnv.DISCORD_TOKEN) {
     throw new Error('DISCORD_TOKEN missing in .env');

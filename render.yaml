@@ -14,7 +14,7 @@ services:
     name: denuvo-bot
     runtime: docker
     plan: starter
-    repo: https://github.com/TheMich157/denuvo
+    repo: https://github.com/AB-invisible/denuvo
     branch: main
     dockerfilePath: ./Dockerfile
     healthCheckPath: /payload/health
