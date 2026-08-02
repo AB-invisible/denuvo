@@ -29,6 +29,11 @@ import { hydrateActiveTicketChannels, isActiveTicketChannel, untrackTicketChanne
 import { syncAllOwnerGameStock } from './utils/accountCapacity';
 import { migrateGameLinksFromUsage, ensureEnvPoolAccount } from './utils/steampassPool';
 import { OWNER_COMMANDS, SETLOGS_COMMAND, SETVOUCH_COMMAND, ADDSUPPORT_COMMAND, OWNER_COMMAND_NAMES, handleTenantCommand } from './utils/tenantCommands';
+import { hydrateOwnerGuildId, setGuildCommandReregister } from './utils/ownerGuild';
+import { hydrateOwnerLogChannel } from './utils/ownerLogChannel';
+import { hydrateSteampassSetting } from './utils/steampassSettings';
+import { allowsOwnerOnlyCommand } from './utils/ownerAccess';
+import { startRenderKeepAlive } from './utils/renderKeepAlive';
 // Spin up the payload HTTP server immediately so Railway's PORT-based
 // healthcheck has something to talk to even before the Discord client
 // finishes connecting. Wrapped in dynamic import + try/catch so any
@@ -52,7 +57,7 @@ const eaMintingChannels = new Set<string>();
 const commands = [
   new SlashCommandBuilder()
     .setName('postpanel')
-    .setDescription('Post the GameGen Selection Panel')
+    .setDescription('Post the OpenSteam Selection Panel')
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
     .setName('closepanel')
@@ -175,7 +180,7 @@ const commands = [
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
   new SlashCommandBuilder()
     .setName('steamauth')
-    .setDescription('Manage GameGen Auth Service accounts (guard codes via steamauth.gamegen.lol) — owner only')
+    .setDescription('Manage OpenSteam Auth Service accounts (guard codes via steamauth.gamegen.lol) — owner only')
     .addSubcommand(sub => sub
       .setName('link')
       .setDescription('Link a SteamAuth account UUID to a game (top autogen priority)')
@@ -518,18 +523,12 @@ async function registerCommands(targetGuildId?: string) {
     const setlogs = SETLOGS_COMMAND.toJSON();
     const setvouch = SETVOUCH_COMMAND.toJSON();
     const addsupport = ADDSUPPORT_COMMAND.toJSON();
-
-    const tenantCommands = [
-      ...commands.filter((c: any) => c.name !== 'test' && c.name !== 'simulate' && c.name !== 'deplet' && c.name !== 'lowstock' && c.name !== 'setsteampass' && c.name !== 'game' && c.name !== 'removegame' && c.name !== 'autogen' && c.name !== 'stock' && c.name !== 'settokens' && c.name !== 'exclude-auto' && c.name !== 'setmode' && c.name !== 'getmode' && c.name !== 'promo' && c.name !== 'requests' && c.name !== 'staffstats' && c.name !== 'restockall' && c.name !== 'steamhealth' && c.name !== 'steamaccount' && c.name !== 'steamauth' && c.name !== 'patreon' && c.name !== 'export' && c.name !== 'ubisoftaccount' && c.name !== 'ubisoftgame' && c.name !== 'ubisofthealth' && c.name !== 'eaaccount' && c.name !== 'eagame' && c.name !== 'eahealth' && c.name !== 'eatest' && c.name !== 'installertest' && c.name !== 'setinstaller' && c.name !== 'ealogin' && c.name !== 'eacode' && c.name !== 'easession'),
-      setlogs,
-      setvouch,
-      addsupport,
-    ];
     const ownerGuildCommands = [...commands, ...ownerCmds, setlogs, setvouch, addsupport];
+    const tenantGuildCommands = [...commands, setlogs, setvouch, addsupport];
 
     const guilds = targetGuildId ? [targetGuildId] : await getAllowedGuildIds();
     for (const gid of guilds) {
-      const body = gid === CONFIG.OWNER_GUILD_ID ? ownerGuildCommands : tenantCommands;
+      const body = gid === CONFIG.OWNER_GUILD_ID ? ownerGuildCommands : tenantGuildCommands;
       await rest.put(Routes.applicationGuildCommands(CONFIG.CLIENT_ID, gid), { body })
         .catch(e => console.error(`[registerCommands] failed for guild ${gid}:`, e?.message || e));
     }
@@ -539,8 +538,28 @@ async function registerCommands(targetGuildId?: string) {
   }
 }
 
+setGuildCommandReregister(async (guildIds: string[]) => {
+  for (const gid of guildIds) {
+    await registerCommands(gid);
+  }
+});
+
 client.once(Events.ClientReady, async () => {
   console.log(`${CONFIG.NAME} is online!`);
+  await hydrateOwnerGuildId();
+  await hydrateOwnerLogChannel();
+  await hydrateSteampassSetting();
+  try {
+    const { initPublicUrlValidation } = await import('./utils/downloadHost');
+    await initPublicUrlValidation();
+    const { startTunnelUrlWatcher } = await import('./utils/downloadHost');
+    startTunnelUrlWatcher();
+  } catch (e) {
+    console.warn('[downloadHost] PUBLIC_URL validation failed:', (e as Error).message);
+  }
+  console.log(`[OwnerGuild] Home server: ${CONFIG.OWNER_GUILD_ID}`);
+  console.log(`[OwnerLog] Log channel: ${CONFIG.LOG_CHANNEL_ID || '(not set)'}`);
+  console.log(`[Steampass] API ${CONFIG.STEAMPASS_DISABLED ? 'disabled' : 'enabled'}`);
   if (CONFIG.STEAMPASS_DISABLED) {
     console.log('[Steampass] Disabled — autogen uses SteamAuth + BYO owned accounts only.');
     try {
@@ -563,6 +582,8 @@ client.once(Events.ClientReady, async () => {
     }
   }
   await registerCommands();
+
+  startRenderKeepAlive(client);
 
   client.user?.setActivity('Denuvo Activations', { type: ActivityType.Watching });
 
@@ -814,7 +835,7 @@ client.on('interactionCreate', async (interaction) => {
     // ─── SIMULATE: handle at the top to bypass all other middleware ───
     if (interaction.isChatInputCommand() && interaction.commandName === 'simulate') {
       console.log('[Simulate] === INTERCEPTED at top of interactionCreate ===');
-      if (interaction.guildId !== CONFIG.OWNER_GUILD_ID) {
+      if (!allowsOwnerOnlyCommand(interaction)) {
         return interaction.reply({ content: '❌ This command is not available in this server.', flags: [MessageFlags.Ephemeral] }).catch(() => {});
       }
 
@@ -880,7 +901,7 @@ client.on('interactionCreate', async (interaction) => {
     // ─── DEPLET: handle at the top to bypass all other middleware ───
     if (interaction.isChatInputCommand() && interaction.commandName === 'deplet') {
       console.log('[Deplet] === INTERCEPTED at top of interactionCreate ===');
-      if (interaction.guildId !== CONFIG.OWNER_GUILD_ID) {
+      if (!allowsOwnerOnlyCommand(interaction)) {
         return interaction.reply({ content: '❌ This command is not available in this server.', flags: [MessageFlags.Ephemeral] }).catch(() => {});
       }
 
@@ -930,6 +951,17 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.editReply({ content: `❌ Deplet failed: ${(e as Error).message}` }).catch(() => {});
       }
       return;
+    }
+
+    // Acknowledge game-panel dropdowns immediately so slow pre-flight work
+    // cannot expire the interaction before createTicket replies.
+    if (
+      interaction.isStringSelectMenu()
+      && interaction.customId.startsWith('select_game_')
+      && !interaction.deferred
+      && !interaction.replied
+    ) {
+      await interaction.deferReply({ flags: [MessageFlags.Ephemeral] }).catch(() => {});
     }
 
     // ─── GLOBAL SERVER LOCK ───
@@ -1020,31 +1052,8 @@ async function handleAutocomplete(interaction: any) {
 }
 
 async function handleChatCommand(interaction: any) {
-  if (interaction.commandName === 'test' && interaction.guildId !== CONFIG.OWNER_GUILD_ID) {
-    return interaction.reply({
-      content: '❌ This command is not available in this server.',
-      flags: [MessageFlags.Ephemeral],
-    }).catch(() => {});
-  }
-  if (interaction.commandName === 'eatest' && interaction.guildId !== CONFIG.OWNER_GUILD_ID) {
-    return interaction.reply({
-      content: '❌ This command is not available in this server.',
-      flags: [MessageFlags.Ephemeral],
-    }).catch(() => {});
-  }
-  if (interaction.commandName === 'installertest' && interaction.guildId !== CONFIG.OWNER_GUILD_ID) {
-    return interaction.reply({
-      content: '❌ This command is not available in this server.',
-      flags: [MessageFlags.Ephemeral],
-    }).catch(() => {});
-  }
-  if (interaction.commandName === 'setinstaller' && interaction.guildId !== CONFIG.OWNER_GUILD_ID) {
-    return interaction.reply({
-      content: '❌ This command is not available in this server.',
-      flags: [MessageFlags.Ephemeral],
-    }).catch(() => {});
-  }
-  if ((interaction.commandName === 'ealogin' || interaction.commandName === 'eacode' || interaction.commandName === 'easession') && interaction.guildId !== CONFIG.OWNER_GUILD_ID) {
+  const ownerOnlyCommands = new Set(['test', 'eatest', 'installertest', 'setinstaller', 'ealogin', 'eacode', 'easession']);
+  if (ownerOnlyCommands.has(interaction.commandName) && !allowsOwnerOnlyCommand(interaction)) {
     return interaction.reply({
       content: '❌ This command is not available in this server.',
       flags: [MessageFlags.Ephemeral],
