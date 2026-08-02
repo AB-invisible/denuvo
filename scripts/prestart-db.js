@@ -13,7 +13,13 @@ async function main() {
 
   const client = new Client({
     connectionString: url,
-    ssl: url.includes('railway') || url.includes('rlwy.net') ? { rejectUnauthorized: false } : undefined,
+    ssl:
+      url.includes('railway') ||
+      url.includes('rlwy.net') ||
+      url.includes('neon.tech') ||
+      url.includes('render.com')
+        ? { rejectUnauthorized: false }
+        : undefined,
   });
 
   await client.connect();

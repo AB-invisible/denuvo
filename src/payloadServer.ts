@@ -28,12 +28,13 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { CONFIG } from './config';
+import { resolvePlatformPublicUrl } from './utils/cloudPublicUrl';
 import { UBISOFT_CATALOG, resolveMagicDir, locateMagicZip } from './utils/ubisoftCatalog';
 import { resolveMagicFile as resolveEaMagicFile, resolveMagicDir as resolveEaMagicDir } from './utils/eaCatalog';
 
 const CORE_DIR = path.join(__dirname, '..', '_Core');
 const PANEL_ASSET_DIR = path.join(__dirname, 'public');
-const PANEL_ASSETS = new Set(['gamegen.png', 'maintenance.png']);
+const PANEL_ASSETS = new Set(['opensteam.png', 'gamegen.png', 'maintenance.png']);
 
 // Lazy Prisma loader — same pattern as downloadHost.ts. Keeps a module-
 // load-time failure in @prisma/client from blowing up the HTTP server's
@@ -747,7 +748,7 @@ export function startPayloadServer(): void {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>GameGen • Account Linked</title>
+  <title>OpenSteam • Account Linked</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;700&display=swap" rel="stylesheet">
@@ -1321,9 +1322,7 @@ export function startPayloadServer(): void {
   });
 
   server.listen(port, () => {
-    const publicUrl =
-      process.env.PUBLIC_URL ||
-      (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : '');
+    const publicUrl = resolvePlatformPublicUrl() || '';
     if (publicUrl) {
       console.log(`[PayloadServer] listening on :${port} (public: ${publicUrl}/payload/...)`);
     } else {

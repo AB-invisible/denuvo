@@ -1,7 +1,8 @@
 import dotenv from 'dotenv';
+import { resolvePlatformPublicUrl } from './utils/cloudPublicUrl';
 dotenv.config();
 
-const publicUrl = process.env.PUBLIC_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : 'https://denuvo-production-a806.up.railway.app');
+const publicUrl = resolvePlatformPublicUrl() || 'https://denuvo-production-a806.up.railway.app';
 
 export const CONFIG = {
   TOKEN: process.env.DISCORD_TOKEN || '',
@@ -41,7 +42,7 @@ export const CONFIG = {
   ACTIVATORS_ROLE_ID: process.env.ACTIVATORS_ROLE_ID || process.env.STAFF_ROLE_ID || '1484195272270811226',
   DATABASE_URL: process.env.DATABASE_URL || '',
   GROQ_API_KEY: process.env.GROQ_API_KEY || '',
-  NAME: process.env.BOT_NAME || 'GameGen',
+  NAME: process.env.BOT_NAME || 'OpenSteam',
   // Channel users are pointed to for the setup guide in the game panel.
   GUIDE_CHANNEL_ID: process.env.GUIDE_CHANNEL_ID || '1527693875693621459',
   TIER_COOLDOWNS: {

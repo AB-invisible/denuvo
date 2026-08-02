@@ -11,7 +11,19 @@ const prismaClientSingleton = (): PrismaClient => {
     return new PrismaClient(); 
   }
 
-  const pool = new Pool({ connectionString, connectionTimeoutMillis: 5000, query_timeout: 10000, idleTimeoutMillis: 10000 });
+  const needsSsl =
+    connectionString.includes('railway') ||
+    connectionString.includes('rlwy.net') ||
+    connectionString.includes('neon.tech') ||
+    connectionString.includes('render.com');
+
+  const pool = new Pool({
+    connectionString,
+    connectionTimeoutMillis: 5000,
+    query_timeout: 10000,
+    idleTimeoutMillis: 10000,
+    ssl: needsSsl ? { rejectUnauthorized: false } : undefined,
+  });
   const adapter = new PrismaPg(pool as any);
   return new PrismaClient({ adapter });
 };

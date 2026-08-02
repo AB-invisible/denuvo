@@ -9,7 +9,10 @@
     "dev": "ts-node src/index.ts",
     "build": "prisma generate && tsc",
     "prisma:seed": "ts-node prisma/seed.ts",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "justrunmy:bundle": "node scripts/build-justrunmy-bundle.js && node scripts/generate-justrunmy-env.js",
+    "render:env": "node scripts/generate-render-env.js",
+    "render:setup": "node scripts/setup-render.js"
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"

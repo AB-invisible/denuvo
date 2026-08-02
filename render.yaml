@@ -1,0 +1,108 @@
+# Render Blueprint — https://dashboard.render.com
+# Repo: https://github.com/AB-invisible/denuvo
+# After connecting GitHub: New → Blueprint → select repo → apply.
+# Then: node scripts/setup-render.js (requires RENDER_API_KEY in .env)
+
+databases:
+  - name: denuvo-db
+    plan: free
+    databaseName: denuvo
+    user: denuvo
+
+services:
+  - type: web
+    name: denuvo-bot
+    runtime: docker
+    plan: starter
+    repo: https://github.com/TheMich157/denuvo
+    branch: main
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /payload/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: denuvo-db
+          property: connectionString
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: CLIENT_ID
+        sync: false
+      - key: GUILD_ID
+        sync: false
+      - key: OWNER_GUILD_ID
+        sync: false
+      - key: OWNER_ROLE_ID
+        sync: false
+      - key: SUPER_OWNER_IDS
+        sync: false
+      - key: STAFF_ROLE_ID
+        sync: false
+      - key: DONATOR_ROLE_ID
+        sync: false
+      - key: BRONZE_ROLE_ID
+        sync: false
+      - key: SILVER_ROLE_ID
+        sync: false
+      - key: GOLD_ROLE_ID
+        sync: false
+      - key: ACTIVATORS_ROLE_ID
+        sync: false
+      - key: TICKET_CATEGORY_ID
+        sync: false
+      - key: LOG_CHANNEL_ID
+        sync: false
+      - key: STOCK_NOTIF_CHANNEL_ID
+        sync: false
+      - key: VOUCHER_CHANNEL_ID
+        sync: false
+      - key: GUIDE_CHANNEL_ID
+        sync: false
+      - key: BOT_NAME
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        sync: false
+      - key: STEAMAUTH_API_URL
+        sync: false
+      - key: STEAMAUTH_API_KEY
+        sync: false
+      - key: STEAMPASS_DISABLED
+        sync: false
+      - key: UBISOFT_SERVICE_URL
+        sync: false
+      - key: UBISOFT_SERVICE_KEY
+        sync: false
+      - key: EA_SERVICE_URL
+        sync: false
+      - key: EA_SERVICE_KEY
+        sync: false
+      - key: HMAC_SECRET
+        sync: false
+      - key: INSTALLER_CALLHOME
+        sync: false
+      - key: SELF_HOSTED_DOWNLOADS
+        sync: false
+      - key: PATREON_ACCESS_TOKEN
+        sync: false
+      - key: PATREON_CAMPAIGN_ID
+        sync: false
+      - key: PATREON_WEBHOOK_SECRET
+        sync: false
+      - key: PATREON_TIER_BRONZE_ID
+        sync: false
+      - key: PATREON_TIER_SILVER_ID
+        sync: false
+      - key: PATREON_TIER_GOLD_ID
+        sync: false
+      - key: PATREON_TIER_BYPASS_ID
+        sync: false
+      - key: PATREON_SYNC_INTERVAL_MINUTES
+        sync: false
+      - key: PATREON_CLIENT_ID
+        sync: false
+      - key: PATREON_CLIENT_SECRET
+        sync: false

@@ -18,6 +18,7 @@
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import { resolvePlatformPublicUrl } from './cloudPublicUrl';
 
 const LINK_TTL_MS = 30 * 60 * 1000; // 30 minutes
 // `persistent` links (staff /tokengen outside a ticket) get this far-future
@@ -42,18 +43,221 @@ export interface SelfHostedLink {
   expiresInMinutes: number;
 }
 
-export function resolvePublicBaseUrl(): string | null {
-  const explicit = (process.env.PUBLIC_URL || '').trim().replace(/\/+$/, '');
-  if (explicit) {
-    if (!/^https?:\/\//i.test(explicit)) return 'https://' + explicit;
-    return explicit;
+let validatedPublicBaseUrl: string | null | undefined;
+
+function tunnelUrlFilePath(): string {
+  const fromEnv = (process.env.PUBLIC_URL_FILE || '').trim();
+  if (fromEnv) return fromEnv;
+  return path.join(process.cwd(), '..', 'denuvo-data', 'public-url.txt');
+}
+
+function readTunnelUrlFile(): string | null {
+  const file = tunnelUrlFilePath();
+  if (!fs.existsSync(file)) return null;
+  try {
+    const line = fs.readFileSync(file, 'utf8').split(/\r?\n/).map(l => l.trim()).find(Boolean);
+    return line ? normalizeExplicitUrl(line) : null;
+  } catch {
+    return null;
   }
+}
+
+function isTunnelHostname(host: string): boolean {
+  const h = host.toLowerCase();
+  return h.endsWith('.trycloudflare.com')
+    || h.endsWith('.cfargotunnel.com')
+    || h.endsWith('.cloudflareaccess.com');
+}
+
+function isIpAddressHost(host: string): boolean {
+  return /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(':');
+}
+
+function normalizeExplicitUrl(raw: string): string {
+  const trimmed = raw.trim().replace(/\/+$/, '');
+  if (!/^https?:\/\//i.test(trimmed)) return `http://${trimmed}`;
+  return trimmed;
+}
+
+function isIpUrl(url: string): boolean {
+  try {
+    return isIpAddressHost(new URL(normalizeExplicitUrl(url)).hostname);
+  } catch {
+    return true;
+  }
+}
+
+function localOnlyHost(host: string): boolean {
+  if (host === '127.0.0.1' || host === 'localhost') return true;
+  return /^192\.168\.|^10\.|^172\.(1[6-9]|2\d|3[01])\./.test(host);
+}
+
+export function resolvePublicBaseUrl(): string | null {
+  // Always read the tunnel file first — quick-tunnel URLs change whenever
+  // denuvo-tunnel restarts; a startup cache goes stale and breaks downloads.
+  const tunnel = readTunnelUrlFile();
+  if (tunnel && !isIpUrl(tunnel)) {
+    if (tunnel !== validatedPublicBaseUrl) {
+      validatedPublicBaseUrl = tunnel;
+      process.env.PUBLIC_URL = tunnel;
+    }
+    return tunnel;
+  }
+
+  if (validatedPublicBaseUrl && !isIpUrl(validatedPublicBaseUrl)) {
+    return validatedPublicBaseUrl;
+  }
+
+  const explicit = (process.env.PUBLIC_URL || '').trim().replace(/\/+$/, '');
+  if (explicit && !isIpUrl(explicit)) {
+    try {
+      const host = new URL(normalizeExplicitUrl(explicit)).hostname;
+      if (isTunnelHostname(host) || !localOnlyHost(host)) {
+        return normalizeExplicitUrl(explicit);
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
   const railway = (process.env.RAILWAY_PUBLIC_DOMAIN || '').trim();
   if (railway) return 'https://' + railway;
+
+  const platform = resolvePlatformPublicUrl();
+  if (platform) return platform;
+
   return null;
 }
 
-export type PanelAssetName = 'gamegen.png' | 'maintenance.png';
+/** Strip stale IP-based PUBLIC_URL left in the process environment. */
+export function sanitizePublicUrlEnv(): void {
+  const explicit = (process.env.PUBLIC_URL || '').trim();
+  if (explicit && isIpUrl(explicit)) {
+    console.warn(`[downloadHost] Removing stale IP PUBLIC_URL from process env`);
+    process.env.PUBLIC_URL = readTunnelUrlFile() || '';
+  }
+}
+
+/** URL forwarded to Python / shown to users — never a raw public IP. */
+export function getPublicUrlForGeneration(): string {
+  sanitizePublicUrlEnv();
+  return resolvePublicBaseUrl() || '';
+}
+
+export function selfHostedDownloadsOnly(): boolean {
+  return process.env.SELF_HOSTED_DOWNLOADS !== 'false';
+}
+
+/** Validate PUBLIC_URL / Cloudflare tunnel file at startup. */
+export async function initPublicUrlValidation(): Promise<void> {
+  let explicit = (process.env.PUBLIC_URL || '').trim().replace(/\/+$/, '');
+  const tunnelFile = readTunnelUrlFile();
+
+  if (explicit) {
+    try {
+      const host = new URL(normalizeExplicitUrl(explicit)).hostname;
+      if (isIpAddressHost(host)) {
+        console.warn(
+          `[downloadHost] PUBLIC_URL uses raw IP (${host}) — blocked. ` +
+          'Download links will use the Cloudflare tunnel URL only.',
+        );
+        process.env.PUBLIC_URL = '';
+        explicit = '';
+      }
+    } catch {
+      process.env.PUBLIC_URL = '';
+      explicit = '';
+    }
+  }
+
+  const candidate = tunnelFile || (explicit ? normalizeExplicitUrl(explicit) : null);
+
+  if (!candidate) {
+    validatedPublicBaseUrl = null;
+    if (selfHostedDownloadsOnly()) {
+      console.warn(
+        '[downloadHost] No Cloudflare tunnel URL yet. Start denuvo-tunnel before generating tokens.',
+      );
+    }
+    return;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    console.warn('[downloadHost] Public URL is invalid');
+    validatedPublicBaseUrl = null;
+    return;
+  }
+
+  const host = parsed.hostname;
+
+  let localServer = false;
+  try {
+    const health = await fetch('http://127.0.0.1:8080/health', { signal: AbortSignal.timeout(3000) });
+    localServer = health.ok;
+  } catch {
+    localServer = false;
+  }
+
+  if (!localServer) {
+    console.warn('[downloadHost] Payload server is not listening on port 8080');
+    validatedPublicBaseUrl = null;
+    return;
+  }
+
+  if (isTunnelHostname(host)) {
+    validatedPublicBaseUrl = candidate;
+    process.env.PUBLIC_URL = candidate;
+    try {
+      const remote = await fetch(`${candidate.replace(/\/+$/, '')}/health`, { signal: AbortSignal.timeout(8000) });
+      if (remote.ok) {
+        console.log(`[downloadHost] Download links use Cloudflare tunnel (IP hidden): ${candidate}`);
+      } else {
+        console.warn(`[downloadHost] Tunnel URL set (${candidate}) but /health returned ${remote.status}`);
+      }
+    } catch {
+      console.warn(`[downloadHost] Tunnel URL set (${candidate}) — waiting for tunnel to become reachable`);
+    }
+    return;
+  }
+
+  if (isIpAddressHost(host)) {
+    console.warn('[downloadHost] Refusing to use raw IP for public download links');
+    validatedPublicBaseUrl = tunnelFile;
+    if (tunnelFile) process.env.PUBLIC_URL = tunnelFile;
+    return;
+  }
+
+  validatedPublicBaseUrl = candidate;
+  process.env.PUBLIC_URL = candidate;
+  console.log(`[downloadHost] Download links via: ${candidate}`);
+}
+
+let tunnelWatchStarted = false;
+
+/** Re-read public-url.txt when the tunnel service publishes a new URL. */
+export function startTunnelUrlWatcher(): void {
+  if (tunnelWatchStarted) return;
+  tunnelWatchStarted = true;
+  const file = tunnelUrlFilePath();
+  if (!fs.existsSync(file)) return;
+
+  fs.watch(file, { persistent: false }, () => {
+    setTimeout(async () => {
+      try {
+        validatedPublicBaseUrl = undefined;
+        await initPublicUrlValidation();
+      } catch (e) {
+        console.warn('[downloadHost] Tunnel URL refresh failed:', (e as Error).message);
+      }
+    }, 500);
+  });
+  console.log(`[downloadHost] Watching for tunnel URL changes: ${file}`);
+}
+
+export type PanelAssetName = 'opensteam.png' | 'gamegen.png' | 'maintenance.png';
 
 /** Public URL for Discord embed images when Railway/PUBLIC_URL is configured. */
 export function getPanelAssetUrl(filename: PanelAssetName): string | null {
