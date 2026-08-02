@@ -414,7 +414,7 @@ model OwnedSteamUsage {
   @@unique([accountId, usageDate])
 }
 
-// ─── GameGen Auth Service (steamauth.gamegen.lol) accounts ─────────
+// ─── OpenSteam Auth Service (steamauth.gamegen.lol) accounts ─────────
 // Links a service account UUID to an AppID. At gen time the bot calls
 // GET /api/v1/accounts/:id/credentials (API key only) — no password stored.
 // Used first for autogen, then BYO owned accounts, then steampass pool.

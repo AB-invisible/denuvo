@@ -1,8 +1,20 @@
 {
   "games": [
     {
+      "name": "Assassin's Creed Black Flag Resynced",
+      "appId": 3751950,
+      "disabled": false,
+      "boosterOnly": false
+    },
+    {
       "name": "Assassin's Creed Shadows",
       "appId": 3159330,
+      "disabled": false,
+      "boosterOnly": false
+    },
+    {
+      "name": "Anno 1800",
+      "appId": 916440,
       "disabled": false,
       "boosterOnly": false
     },
