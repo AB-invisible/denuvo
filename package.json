@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "prestart": "node scripts/prestart-db.js && prisma db push --accept-data-loss",
-    "start": "ts-node src/index.ts",
+    "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
     "build": "prisma generate && tsc",
     "prisma:seed": "ts-node prisma/seed.ts",
