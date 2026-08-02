@@ -45,10 +45,9 @@ export const CONFIG = {
   NAME: process.env.BOT_NAME || 'OpenSteam',
   // Channel users are pointed to for the setup guide in the game panel.
   GUIDE_CHANNEL_ID: process.env.GUIDE_CHANNEL_ID || '1527693875693621459',
-  /** Render keep-alive Discord channel (edited in place every 10m on Render). */
-  KEEPALIVE_CHANNEL_ID:
-    process.env.KEEPALIVE_CHANNEL_ID ||
-    (process.env.RENDER_EXTERNAL_URL ? '1533279676037075005' : ''),
+  /** Render keep-alive: DM ping only (no channel spam). */
+  KEEPALIVE_USER_ID: process.env.KEEPALIVE_USER_ID || '',
+  KEEPALIVE_USERNAME: process.env.KEEPALIVE_USERNAME || 'itz.seasonn',
   TIER_COOLDOWNS: {
     GOLD: process.env.COOLDOWN_GOLD !== undefined ? Number(process.env.COOLDOWN_GOLD) : 8,
     SILVER: process.env.COOLDOWN_SILVER !== undefined ? Number(process.env.COOLDOWN_SILVER) : 16,
