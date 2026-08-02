@@ -1,4 +1,4 @@
-import { Client, DMChannel, GuildMember } from 'discord.js';
+import { Client, GuildMember, TextChannel } from 'discord.js';
 import { CONFIG } from '../config';
 import { resolvePlatformPublicUrl } from './cloudPublicUrl';
 
@@ -58,45 +58,43 @@ async function resolveKeepAliveUser(client: Client): Promise<string | null> {
   return keepAliveUserId;
 }
 
-async function pingDiscordUser(client: Client): Promise<void> {
+async function pingDiscordChannel(client: Client): Promise<void> {
+  const channelId = CONFIG.KEEPALIVE_CHANNEL_ID;
+  if (!channelId) return;
+
   const userId = await resolveKeepAliveUser(client);
   if (!userId) return;
 
-  const user = await client.users.fetch(userId).catch(() => null);
-  if (!user) {
-    console.warn(`[KeepAlive] Could not fetch user ${userId}`);
-    return;
-  }
-
-  const dm = (await user.createDM().catch(() => null)) as DMChannel | null;
-  if (!dm) {
-    console.warn(`[KeepAlive] Could not open DM with ${userId}`);
+  const channel = (await client.channels.fetch(channelId).catch(() => null)) as TextChannel | null;
+  if (!channel?.isTextBased()) {
+    console.warn(`[KeepAlive] Channel ${channelId} not found or not text`);
     return;
   }
 
   if (keepAliveMessageId) {
-    await dm.messages.delete(keepAliveMessageId).catch(() => {
+    await channel.messages.delete(keepAliveMessageId).catch(() => {
       keepAliveMessageId = null;
     });
   }
 
-  const msg = await dm.send(`<@${userId}>`);
+  const msg = await channel.send(`<@${userId}>`);
   keepAliveMessageId = msg.id;
 }
 
 async function tick(client: Client): Promise<void> {
   await pingPublicHealth();
-  await pingDiscordUser(client);
+  await pingDiscordChannel(client);
 }
 
-/** Prevent Render free-tier sleep: inbound HTTP + DM ping only. */
+/** Prevent Render free-tier sleep: inbound HTTP + channel user ping only. */
 export function startRenderKeepAlive(client: Client): void {
   const onRender = !!(process.env.RENDER_EXTERNAL_URL || '').trim();
   const forced = process.env.KEEPALIVE_ENABLED === 'true';
   if (!onRender && !forced) return;
 
-  const target = CONFIG.KEEPALIVE_USER_ID || `@${CONFIG.KEEPALIVE_USERNAME}`;
-  console.log(`[KeepAlive] Every ${INTERVAL_MS / 60_000}m — health ping + DM ping ${target}`);
+  console.log(
+    `[KeepAlive] Every ${INTERVAL_MS / 60_000}m — health ping + ping @${CONFIG.KEEPALIVE_USERNAME} in ${CONFIG.KEEPALIVE_CHANNEL_ID}`,
+  );
 
   void tick(client).catch((e) => console.warn('[KeepAlive] First tick failed:', e));
   setInterval(() => {
